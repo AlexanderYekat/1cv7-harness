@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "recorded_on": "2026-10-10",
+  "purpose": "Starting point after workspace cleanup, before the first harness feature",
+  "root_repository": {
+    "scope": ["documentation", "feature tasks", "research scripts"],
+    "nested_repositories": "Independent repositories, excluded from root Git; not submodules",
+    "restoration": "Copy or clone all three repositories and check out the tool revisions below. Restore local inputs separately."
+  },
+  "repositories": [
+    {
+      "path": "1cv77-devtools",
+      "revision": "24cbe3fa6b3c8e505980150455101279ddc876e8",
+      "scope": "Existing tools, lint77, its tests and documentation"
+    },
+    {
+      "path": "77MCP",
+      "revision": "23dbcac943a750d6a58dddccf7c5dd2af5b25799",
+      "scope": "Existing metadata and MCP tools; unchanged"
+    }
+  ],
+  "verification": {
+    "lint77": {
+      "repository": "1cv77-devtools",
+      "suite": "tests/test_lint77.py",
+      "runner": "unittest discovery; temporary files redirected into .local/maintenance",
+      "tests": 31,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    "bracket_parser": {
+      "repository": "77MCP",
+      "command": "python -B -m pytest tests/test_bracket_parser.py -q -p no:cacheprovider",
+      "tests": 14,
+      "status": "passed"
+    },
+    "full_77mcp_suite": {
+      "status": "not_verified",
+      "reason": "Full test collection is blocked by missing olefile in the current Python environment; platform and server dependencies were not installed for this snapshot."
+    },
+    "platform_execution": "not_run"
+  },
+  "first_feature_task": "docs/tasks/001-compiler-protocol.md",
+  "first_feature_status": "specified_not_implemented",
+  "excluded_local_inputs": [
+    ".local/",
+    ".artifacts/",
+    "research/kudir/corpus/",
+    "research/archive/",
+    ".env and .env.* (except .env.example and .env.sample)"
+  ]
+}

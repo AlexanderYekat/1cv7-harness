@@ -1,0 +1,29 @@
+# Local databases, maintenance snapshots and future generated runs.
+/.local/
+/.artifacts/
+
+# Independent repositories; exact baseline revisions are in docs/baseline.json.
+/1cv77-devtools/
+/77MCP/
+
+# Original application evidence, pending selection of shareable fixtures.
+/research/kudir/corpus/
+/research/archive/
+
+# Python environments and generated files.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+/build/
+/dist/
+.env
+.env.*
+!.env.example
+!.env.sample
