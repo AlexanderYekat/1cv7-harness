@@ -1,0 +1,492 @@
+{
+  "schema_version": 1,
+  "tool": "compiler-protocol77",
+  "scope": "imported_platform_protocol",
+  "status": "failed",
+  "protocol_sha256": "f73eccbb8f57e137a2f81a8ce2191af042a616eb78722821a1613d8a5e77e3b1",
+  "input_encoding": "utf-8",
+  "diagnostics": [
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 63,
+      "column": 38,
+      "message": "Ожидается имя формального параметра",
+      "source_line": "Процедура КУДиР_ПисатьCSVСтроку(Знач Строка) далее",
+      "protocol_line": 2
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 64,
+      "column": 1,
+      "message": "Ожидается ключевое слово 'КонецПроцедуры' ('EndProcedure')",
+      "source_line": "Процедура КУДиР_ЗакрытьCSV() далее",
+      "protocol_line": 4
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 66,
+      "column": 40,
+      "message": "Ожидается имя формального параметра",
+      "source_line": "Процедура КУДиР_ПисатьIdMapСтроку(Знач Строка) далее",
+      "protocol_line": 6
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 101,
+      "column": 32,
+      "message": "Переменная не определена (выбУровеньЛога)",
+      "source_line": "Если СокрЛП(\"\" + выбУровеньЛога) = \"\" Тогда",
+      "protocol_line": 8
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 107,
+      "column": 63,
+      "message": "Переменная не определена (выбУровеньЛога)",
+      "source_line": "таб = КУДиР_Выполнить(выбДатаНач, выбДатаКонец, выбУровеньЛога);",
+      "protocol_line": 10
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 304,
+      "column": 46,
+      "message": "Ожидается имя формального параметра",
+      "source_line": "Процедура КУДиР_ДописатьФайл(Знач Путь, Знач Строка)",
+      "protocol_line": 12
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 306,
+      "column": 9,
+      "message": "Переменная не определена (FSO)",
+      "source_line": "Если FSO.FileExists(Путь) = 1 Тогда",
+      "protocol_line": 14
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 307,
+      "column": 9,
+      "message": "Переменная не определена (FSO)",
+      "source_line": "TS = FSO.OpenTextFile(Путь, 8, 0);",
+      "protocol_line": 16
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 309,
+      "column": 9,
+      "message": "Переменная не определена (FSO)",
+      "source_line": "TS = FSO.CreateTextFile(Путь, 1, 0);",
+      "protocol_line": 18
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 16,
+      "message": "Ожидается символ '('",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 20
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Неопознанный оператор",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 22
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ИнициализироватьПути)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 24
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ДатаISO)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 26
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ДатаСжатая)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 28
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_НачалоГода)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 30
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_КонецКвартала)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 32
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_Pad3)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 34
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_НовыйRunId)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 36
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СоздатьТаблицуОплат)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 38
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СоздатьТаблицуКлиентов)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 40
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СобратьКлиентов)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 42
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СобратьОплаты)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 44
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СобратьLedger)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 46
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СобратьДокументы)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 48
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СобратьСальдо)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 50
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗаписатьВыгрузку)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 52
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗаписатьСтатусЭкспорта)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 54
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗаписатьPayments)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 56
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗаголовокDocuments)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 58
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ОткрытьCSV)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 60
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗакрытьCSV)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 62
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ОткрытьIdMap)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 64
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗакрытьIdMap)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 66
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗакрытьВсеПотоки)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 68
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ОсвободитьЭкспорт)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 70
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗавершитьВыгрузкуОшибкой)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 72
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗапуститьPython)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 74
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_КопейкиВРубли)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 76
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЭтоЦелыеКопейки)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 78
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_НовыйСловарь)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 80
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЕстьКлюч)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 82
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_CSVСледСимвол)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 84
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_CSVВернутьСимвол)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 86
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ПрочитатьЛогическуюCSVСтроку)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 88
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ТипСущностиВерный)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 90
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СверитьСуммыСPayments)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 92
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЗагрузитьИВосстановить)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 94
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_Состояние)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 96
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_СостояниеПрогресс)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 98
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_Лог)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 100
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ПисатьЛог)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 102
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЛогУр)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 104
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЛогФайл)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 106
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_Этап)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 108
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_НачатьЛог)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 110
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ПеренестиЛогВКаталогЗапуска)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 112
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ВидРасчетовРеквизитДок)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 114
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ВидРасчетовИзПроводок62)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 116
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЕстьВидДокумента)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 118
+    },
+    {
+      "file": "C:\\project\\kudir_export.ert",
+      "line": 311,
+      "column": 28,
+      "message": "Процедура или функция с указанным именем объявлена, но не определена в текущем модуле (КУДиР_ЕстьРеквизитДокумента)",
+      "source_line": "TS.Write(Строка + Симв(13) + Симв(10));",
+      "protocol_line": 120
+    }
+  ],
+  "unparsed_lines": [],
+  "issues": []
+}

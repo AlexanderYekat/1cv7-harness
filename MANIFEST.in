@@ -1,0 +1,8 @@
+include README.md
+include requirements-build.txt
+recursive-include tests *.py *.txt *.json
+recursive-include docs *.md *.json
+recursive-include examples *.1s
+include scripts/verify_package77.py
+prune research
+prune third_party

@@ -1,2 +1,9 @@
 # Preserve upstream patch bytes and significant blank context lines.
 research/platform77/patches/*.patch -text whitespace=-blank-at-eol,-blank-at-eof
+
+src/** text eol=lf
+tests/*.py text eol=lf
+tests/fixtures/compiler_protocol77/*.txt -text
+tests/fixtures/compiler_protocol77/*.json text eol=lf
+*.toml text eol=lf
+requirements-build.txt text eol=lf

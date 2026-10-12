@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "tool": "compiler-protocol77",
+  "scope": "imported_platform_protocol",
+  "status": "failed",
+  "protocol_sha256": "224669676500f8783aabedfab6561f3f968397467d2493f53d3dc0b70d3a045f",
+  "input_encoding": "utf-8",
+  "diagnostics": [
+    {
+      "file": "C:\\project\\kudir_export_agent.ert",
+      "line": 423,
+      "column": 32,
+      "message": "Процедура не обнаружена (ОбработкаПрерыванияПользователя)",
+      "source_line": "ОбработкаПрерыванияПользователя();",
+      "protocol_line": 2
+    },
+    {
+      "file": "C:\\project\\kudir_export_agent.ert",
+      "line": 428,
+      "column": 32,
+      "message": "Процедура не обнаружена (ОбработкаПрерыванияПользователя)",
+      "source_line": "ОбработкаПрерыванияПользователя();",
+      "protocol_line": 4
+    },
+    {
+      "file": "C:\\project\\kudir_export_agent.ert",
+      "line": 1012,
+      "column": 32,
+      "message": "Процедура не обнаружена (ОбработкаПрерыванияПользователя)",
+      "source_line": "ОбработкаПрерыванияПользователя();",
+      "protocol_line": 6
+    },
+    {
+      "file": "C:\\project\\kudir_export_agent.ert",
+      "line": 1045,
+      "column": 32,
+      "message": "Процедура не обнаружена (ОбработкаПрерыванияПользователя)",
+      "source_line": "ОбработкаПрерыванияПользователя();",
+      "protocol_line": 8
+    },
+    {
+      "file": "C:\\project\\kudir_export_agent.ert",
+      "line": 1229,
+      "column": 32,
+      "message": "Процедура не обнаружена (ОбработкаПрерыванияПользователя)",
+      "source_line": "ОбработкаПрерыванияПользователя();",
+      "protocol_line": 10
+    },
+    {
+      "file": "C:\\project\\kudir_export_agent.ert",
+      "line": 1443,
+      "column": 32,
+      "message": "Процедура не обнаружена (ОбработкаПрерыванияПользователя)",
+      "source_line": "ОбработкаПрерыванияПользователя();",
+      "protocol_line": 12
+    },
+    {
+      "file": "C:\\project\\kudir_export_agent.ert",
+      "line": 2393,
+      "column": 32,
+      "message": "Процедура не обнаружена (ОбработкаПрерыванияПользователя)",
+      "source_line": "ОбработкаПрерыванияПользователя();",
+      "protocol_line": 14
+    }
+  ],
+  "unparsed_lines": [],
+  "issues": []
+}

@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "recorded_on": "2026-10-13",
+  "source_repository": "1cv77-devtools",
+  "source_url": "https://github.com/AlexanderYekat/1cv77-sync-modules-txt",
+  "source_revision": "ba88209f7d7a86130e25f05a447d5a090f80c978",
+  "local_patch": null,
+  "history_preserved_at": "1cv77-devtools/.git",
+  "files": [
+    {
+      "source": "lint77.py",
+      "destination": "src/harness77/lint77.py",
+      "source_sha256": "d464984d42ee13780bb021a586013cdcf171a63bae993ae4ac7cee2458e05999",
+      "git_blob_sha256": "d464984d42ee13780bb021a586013cdcf171a63bae993ae4ac7cee2458e05999",
+      "import_sha256": "245ab31e92f6173bef2686483891333f6a98aba5296bdbcfe8070d2fe0541153",
+      "changes": [
+        "LF line endings",
+        "relative package import",
+        "read builtin dictionary via importlib.resources"
+      ]
+    },
+    {
+      "source": "ert_module.py",
+      "destination": "src/harness77/ert_module.py",
+      "source_sha256": "b295815a69656d5a53963bfbd7d10ba8c2f15341f5a5176fe58b9e438b919d3e",
+      "git_blob_sha256": "b295815a69656d5a53963bfbd7d10ba8c2f15341f5a5176fe58b9e438b919d3e",
+      "import_sha256": "b295815a69656d5a53963bfbd7d10ba8c2f15341f5a5176fe58b9e438b919d3e",
+      "changes": [
+        "LF line endings"
+      ]
+    },
+    {
+      "source": "compiler_protocol77.py",
+      "destination": "src/harness77/compiler_protocol77.py",
+      "source_sha256": "0ee69d0dd18f8139291e061fb1c505aa7aef2c357919647b37c9712d94b65614",
+      "git_blob_sha256": "0ee69d0dd18f8139291e061fb1c505aa7aef2c357919647b37c9712d94b65614",
+      "import_sha256": "0ee69d0dd18f8139291e061fb1c505aa7aef2c357919647b37c9712d94b65614",
+      "changes": [
+        "LF line endings"
+      ]
+    },
+    {
+      "source": "lint77-builtins.json",
+      "destination": "src/harness77/lint77-builtins.json",
+      "source_sha256": "cd542d802e2fb98f1ebca3923ff62b71ffbffaafc8ecfe145a65b499595fe91b",
+      "git_blob_sha256": "cd542d802e2fb98f1ebca3923ff62b71ffbffaafc8ecfe145a65b499595fe91b",
+      "import_sha256": "cd542d802e2fb98f1ebca3923ff62b71ffbffaafc8ecfe145a65b499595fe91b",
+      "changes": []
+    },
+    {
+      "source": "tests/test_lint77.py",
+      "destination": "tests/test_lint77.py",
+      "source_sha256": "f3373766be31303610ef3dcd95f1db7f7120774a6c3b1d1afa41a1c07ca19e9b",
+      "git_blob_sha256": "f3373766be31303610ef3dcd95f1db7f7120774a6c3b1d1afa41a1c07ca19e9b",
+      "import_sha256": "849b462c493bd174e26bb7887152bc37579e6aeaff09525553753a43b5110304",
+      "changes": [
+        "LF line endings",
+        "installed package imports and CLI, no source path injection"
+      ]
+    },
+    {
+      "source": "tests/test_compiler_protocol77.py",
+      "destination": "tests/test_compiler_protocol77.py",
+      "source_sha256": "d0a0906d26815ab310268dc4599dae25a716d1f262d03e2c1958e802de1ac2ef",
+      "git_blob_sha256": "d0a0906d26815ab310268dc4599dae25a716d1f262d03e2c1958e802de1ac2ef",
+      "import_sha256": "f28d40e3a8c92f388300ef9630a70657bc4a1c3f6f87b3a2f3423e0d7907ba7b",
+      "changes": [
+        "LF line endings",
+        "installed package imports and CLI, no source path injection"
+      ]
+    },
+    {
+      "source": "tests/test_ert_dialog.py",
+      "destination": "tests/test_ert_dialog.py",
+      "source_sha256": "a7f80049b50dfdc2dab20ac8969e073ac7d7bc9df3ce099e7877e9eb0c72bd8b",
+      "git_blob_sha256": "a7f80049b50dfdc2dab20ac8969e073ac7d7bc9df3ce099e7877e9eb0c72bd8b",
+      "import_sha256": "58495b63621ece5c67b5a5ce241ff851709cf5b608ba5a2690c288421570a5cf",
+      "changes": [
+        "LF line endings",
+        "installed package imports and CLI, no source path injection"
+      ]
+    },
+    {
+      "source": "tests/fixtures/compiler_protocol77/manifest.json",
+      "destination": "tests/fixtures/compiler_protocol77/manifest.json",
+      "source_sha256": "de47f36d7027856eff40a136f3f346b29376de9186e24985b3f85fd8a5d832c4",
+      "git_blob_sha256": "de47f36d7027856eff40a136f3f346b29376de9186e24985b3f85fd8a5d832c4",
+      "import_sha256": "de47f36d7027856eff40a136f3f346b29376de9186e24985b3f85fd8a5d832c4",
+      "changes": []
+    },
+    {
+      "source": "tests/fixtures/compiler_protocol77/p1.expected.json",
+      "destination": "tests/fixtures/compiler_protocol77/p1.expected.json",
+      "source_sha256": "c9d6535562e7b52ff781218cc917aa7d8296b2d984f654493d51cfbc4b829758",
+      "git_blob_sha256": "c9d6535562e7b52ff781218cc917aa7d8296b2d984f654493d51cfbc4b829758",
+      "import_sha256": "c9d6535562e7b52ff781218cc917aa7d8296b2d984f654493d51cfbc4b829758",
+      "changes": []
+    },
+    {
+      "source": "tests/fixtures/compiler_protocol77/p1.txt",
+      "destination": "tests/fixtures/compiler_protocol77/p1.txt",
+      "source_sha256": "f73eccbb8f57e137a2f81a8ce2191af042a616eb78722821a1613d8a5e77e3b1",
+      "git_blob_sha256": "f73eccbb8f57e137a2f81a8ce2191af042a616eb78722821a1613d8a5e77e3b1",
+      "import_sha256": "f73eccbb8f57e137a2f81a8ce2191af042a616eb78722821a1613d8a5e77e3b1",
+      "changes": []
+    },
+    {
+      "source": "tests/fixtures/compiler_protocol77/p2.expected.json",
+      "destination": "tests/fixtures/compiler_protocol77/p2.expected.json",
+      "source_sha256": "a28c17ccd090ecfc653cc9c1376be9a61c4c3ad0e9f291e21bf0c9cda2ac8524",
+      "git_blob_sha256": "a28c17ccd090ecfc653cc9c1376be9a61c4c3ad0e9f291e21bf0c9cda2ac8524",
+      "import_sha256": "a28c17ccd090ecfc653cc9c1376be9a61c4c3ad0e9f291e21bf0c9cda2ac8524",
+      "changes": []
+    },
+    {
+      "source": "tests/fixtures/compiler_protocol77/p2.txt",
+      "destination": "tests/fixtures/compiler_protocol77/p2.txt",
+      "source_sha256": "224669676500f8783aabedfab6561f3f968397467d2493f53d3dc0b70d3a045f",
+      "git_blob_sha256": "224669676500f8783aabedfab6561f3f968397467d2493f53d3dc0b70d3a045f",
+      "import_sha256": "224669676500f8783aabedfab6561f3f968397467d2493f53d3dc0b70d3a045f",
+      "changes": []
+    },
+    {
+      "source": "tests/fixtures/compiler_protocol77/README.md",
+      "destination": "tests/fixtures/compiler_protocol77/README.md",
+      "source_sha256": "32455d6294be039ee85cc6e36d367c916df034e4895471e1809ff0d63fddba46",
+      "git_blob_sha256": "32455d6294be039ee85cc6e36d367c916df034e4895471e1809ff0d63fddba46",
+      "import_sha256": "32455d6294be039ee85cc6e36d367c916df034e4895471e1809ff0d63fddba46",
+      "changes": []
+    }
+  ],
+  "excluded": [
+    "KKT release and synchronization tools",
+    "77MCP metadata/server",
+    "local databases and application corpus",
+    "platform research runtime"
+  ]
+}

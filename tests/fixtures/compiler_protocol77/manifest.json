@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "p1",
+      "kind": "sanitized",
+      "protocol_file": "p1.txt",
+      "expected_file": "p1.expected.json",
+      "sha256": "f73eccbb8f57e137a2f81a8ce2191af042a616eb78722821a1613d8a5e77e3b1",
+      "encoding": "utf-8",
+      "diagnostic_count": 60,
+      "origin": "Локальный корпус КУДиР: p1-compile-errors/compiler-protocol.txt; сохранённый протокол Конфигуратора 1С 7.7.",
+      "transformations": [
+        "Личный каталог заменён на C:\\project; имя ERT сохранено.",
+        "Кодировка не менялась: оригинал и fixture — UTF-8 без BOM.",
+        "Переводы строк приведены к LF; после последней строки записан один LF.",
+        "Сообщения, исходные строки, маркеры, номера, порядок и повторы сохранены."
+      ],
+      "original_sha256": "f34bc11a4d9d2fe08b55c4863f207c036c590144480942dbb51ff497b7cc5504"
+    },
+    {
+      "id": "p2",
+      "kind": "sanitized",
+      "protocol_file": "p2.txt",
+      "expected_file": "p2.expected.json",
+      "sha256": "224669676500f8783aabedfab6561f3f968397467d2493f53d3dc0b70d3a045f",
+      "encoding": "utf-8",
+      "diagnostic_count": 7,
+      "origin": "Локальный корпус КУДиР: p2-compile-errors/compiler-protocol.txt; сохранённый протокол Конфигуратора 1С 7.7.",
+      "transformations": [
+        "Личный каталог заменён на C:\\project; имя ERT сохранено.",
+        "Кодировка не менялась: оригинал и fixture — UTF-8 без BOM.",
+        "Переводы строк приведены к LF; после последней строки записан один LF.",
+        "Сообщения, исходные строки, маркеры, номера, порядок и повторы сохранены."
+      ],
+      "original_sha256": "7aaa94b7a8601b7b559b8468ed7c47b6a20fa7fa3aeb3198ca9c0a5de1c3433d"
+    }
+  ]
+}
