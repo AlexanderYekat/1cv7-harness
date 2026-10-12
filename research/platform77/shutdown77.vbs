@@ -1,12 +1,13 @@
 ' Inserted only after fixed suite objects have been released.
-Dim shutdownPath, shutdownSource, shutdownInstaller, shutdownGlobalId
+Dim shutdownPath, shutdownSource, shutdownInstaller, shutdownGlobalId, shutdownStarted
 shutdownPath = fso.BuildPath(fso.GetParentFolderName(eventPath), "shutdown-events.jsonl")
+shutdownStarted = CDbl(Timer)
 
 Sub ShutdownEvent(name, value)
     Dim file
     Set file = fso.OpenTextFile(shutdownPath, 8, True, -1)
     file.WriteLine "{""run_id"":" & Quote(runId) & ",""name"":" & Quote(name) & _
-        ",""value"":" & Quote(value) & "}"
+        ",""value"":" & Quote(value) & ",""elapsed_ms"":" & Replace(CStr(Elapsed(shutdownStarted)), ",", ".") & "}"
     file.Close
 End Sub
 

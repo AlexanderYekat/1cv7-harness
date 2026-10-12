@@ -31,19 +31,15 @@ result = controller.Execute()
 CheckCOM "execute-controller"
 If result <> 1 Then Fail "execute-controller", CStr(result)
 Emit "phase", "controller", "ok", 0
-Set file = fso.CreateTextFile(fso.BuildPath(fso.GetParentFolderName(eventPath), "ert-operation-started"), False)
-file.WriteLine runId
-file.Close
 For Each command In Array(__COMMANDS__)
     evidencePath = fso.BuildPath(fso.GetParentFolderName(eventPath), command & ".txt")
+    CallMarker command, "started"
     t = CDbl(Timer)
     result = controller.Harness77Ert(ertPath, command, evidencePath, runId & ":" & command)
     CheckCOM command
     Emit "ert", command, CStr(result), Elapsed(t)
+    CallMarker command, "finished"
 Next
-Set file = fso.CreateTextFile(fso.BuildPath(fso.GetParentFolderName(eventPath), "ert-operation-finished"), False)
-file.WriteLine runId
-file.Close
 Set controller = Nothing
 CheckCOM "release-controller"
 __SHUTDOWN__
@@ -52,3 +48,13 @@ CheckCOM "release"
 ShutdownEvent "server_released", "ok"
 Log "released"
 Emit "complete", "ert", "done", 0
+
+Sub CallMarker(name, state)
+    Dim path, marker
+    path = fso.BuildPath(fso.GetParentFolderName(eventPath), "ert-" & name & "-" & state)
+    Set marker = fso.CreateTextFile(path & ".tmp", False)
+    marker.WriteLine runId
+    marker.Close
+    fso.MoveFile path & ".tmp", path
+    CheckCOM "call-marker-" & state
+End Sub

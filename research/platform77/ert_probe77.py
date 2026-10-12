@@ -84,6 +84,7 @@ def prepare(out, template, case, *, concurrent=False):
 
 def read_results(out, manifest, lifecycle, shutdown_result):
     issues = []
+    waiting = manifest["case"] == "wait"
     report = {"status": "blocked", "run_id": manifest["run_id"], "case": manifest["case"],
               "scope": "native loading/compilation of this synthetic ERT and its explicit function call; no visible form checks",
               "issues": issues, "operations": []}
@@ -95,7 +96,13 @@ def read_results(out, manifest, lifecycle, shutdown_result):
             issues.append("artifact missing: " + name)
     if lifecycle.get("run_id") != manifest["run_id"]:
         issues.append("lifecycle run_id mismatch")
-    if shutdown_result.get("status") != "passed":
+    if waiting:
+        from modal_wait77 import wait_issues
+        issues.extend(wait_issues(out, manifest, lifecycle))
+        if (shutdown_result.get("status") != "blocked"
+                or shutdown_result.get("issues") != ["timeout_phase: ert-operation"]):
+            issues.append("shutdown after timeout not verified")
+    elif shutdown_result.get("status") != "passed":
         issues.append("shutdown contract not met")
     if not lifecycle.get("private_desktop") or lifecycle.get("desktop_closed") is not True:
         issues.append("private desktop lifecycle not verified")
@@ -107,6 +114,8 @@ def read_results(out, manifest, lifecycle, shutdown_result):
     expected = [("phase", "base"), ("phase", "controller"), *[("ert", c) for c in manifest["commands"]], ("complete", "ert")]
     if [(e.get("kind"), e.get("name")) if isinstance(e, dict) else None for e in events] != expected:
         issues.append("event set/order mismatch")
+    if waiting and lifecycle.get("wait_timeout", {}).get("events") != events[:3]:
+        issues.append("events before timeout differ from final evidence")
     for event in events:
         if not isinstance(event, dict) or event.get("run_id") != manifest["run_id"] or not isinstance(event.get("value"), str):
             issues.append("invalid event or foreign run_id")
@@ -148,10 +157,17 @@ def read_results(out, manifest, lifecycle, shutdown_result):
             elif name == "execute":
                 row["expectation_met"] = ("value:42" in actual.splitlines() if manifest["case"] == "ok"
                     else "runtime-error:" in actual and manifest["case"] == "runtime")
+            elif name == "wait" and waiting:
+                row["status"] = "blocked"
+                row["outcome"] = "timeout"
+                row["expectation_met"] = ("value:" not in actual and "runtime-error:" not in actual
+                                          and 30000 <= event["elapsed_ms"] <= 45000)
         elif not loaded and any(d["line"] == manifest["expected_error_line"] for d in diagnostics):
             row["status"] = "failed"
             row["expectation_met"] = manifest["case"] in ("syntax", "unused-syntax", "unused-name")
         report["operations"].append(row)
     report["expectations_met"] = all(row["expectation_met"] for row in report["operations"])
+    if waiting:
+        report["timeout_verified"] = not issues and report["expectations_met"]
     report["status"] = "blocked" if issues or any(r["status"] == "blocked" for r in report["operations"]) else "passed" if report["expectations_met"] else "failed"
     return report

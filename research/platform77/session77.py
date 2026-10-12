@@ -8,6 +8,7 @@ alone, and an unverified handle must not be passed to TerminateProcess.
 import ctypes as C
 from ctypes import wintypes as W
 import datetime as dt
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -49,7 +50,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
     if desktop is not None:
         report["private_desktop"] = desktop
         report["desktop_switch_requested"] = False
-    operation_started = None
+    operation_started = {}
+    recovery_until = None
 
     def launch(command, stdout, cwd=None):
         if desktop is not None:
@@ -174,14 +176,6 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         permit = out / "initialize-permit.tmp"
                         permit.write_text(report["run_id"], encoding="ascii")
                         permit.replace(out / "initialize-permit")
-                if report.get("ert_operation_timeout_seconds"):
-                    marker = out / "ert-operation-started"
-                    if operation_started is None and marker.exists():
-                        operation_started = now
-                    if (operation_started is not None and not (out / "ert-operation-finished").exists()
-                            and now - operation_started >= report["ert_operation_timeout_seconds"]):
-                        report["timeout_phase"] = "ert-operation"
-                        raise TimeoutError("native ERT operation deadline")
                 try:
                     events = read_events(out)
                 except (OSError, UnicodeError, ValueError):
@@ -207,6 +201,47 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         raise RuntimeError("concurrent process inventory changed; stop only owned session")
                 elif any(p["pid"] != report["server"]["pid"] for p in inventory):
                     raise RuntimeError("foreign 1C process appeared; stop only owned session")
+                if report.get("ert_operation_timeout_seconds"):
+                    for command in report["ert_commands"]:
+                        marker = out / ("ert-" + command + "-started")
+                        finished = out / ("ert-" + command + "-finished")
+                        if marker.exists():
+                            if marker.read_text(encoding="ascii").strip() != report["run_id"]:
+                                raise ValueError("foreign ERT operation marker")
+                            operation_started.setdefault(command, now)
+                        if command not in operation_started:
+                            continue
+                        if finished.exists():
+                            if finished.read_text(encoding="ascii").strip() != report["run_id"]:
+                                raise ValueError("foreign ERT completion marker")
+                            if command == "wait" and recovery_until is not None:
+                                report["wait_call_returned_after_dismissal"] = True
+                                recovery_until = None
+                            continue
+                        if recovery_until is not None:
+                            if now >= recovery_until:
+                                report["timeout_phase"] = "modal-recovery"
+                                raise TimeoutError("modal call did not return after dismissal")
+                            continue
+                        if now - operation_started[command] < report["ert_operation_timeout_seconds"]:
+                            continue
+                        report["timeout_phase"] = "ert-operation"
+                        report["timeout_operation"] = command
+                        if command != "wait" or report.get("case") != "wait" or not report.get("proxy_verified_before_initialize"):
+                            raise TimeoutError("native ERT operation deadline")
+                        from win32_modal77 import OwnedModal
+                        modal = OwnedModal(handle, report["server"], report["proxy_identity"]["tid"], desktop, report["run_id"])
+                        windows = modal.snapshot()
+                        snapshot = {"run_id": report["run_id"], "elapsed_seconds": round(now - operation_started[command], 3),
+                            "call_finished": finished.exists(), "protocol_finished": (out / "wait.txt").exists(),
+                            "events": [json.loads(line) for line in (out / "ert-events.jsonl").read_text(encoding="utf-16").splitlines()],
+                            "windows": windows}
+                        report["wait_timeout"] = snapshot
+                        atomic_json(out / "wait-timeout.json", snapshot)
+                        if snapshot["call_finished"] or snapshot["protocol_finished"]:
+                            raise RuntimeError("modal wait already returned before dismissal")
+                        report["modal_dismissal"] = modal.dismiss(windows)
+                        recovery_until = time.monotonic() + 10
                 if client.poll() is not None and client.returncode != 0:
                     raise RuntimeError("client failed with code " + str(client.returncode))
                 if debugger.poll() is not None and client.poll() is not None:

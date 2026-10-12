@@ -28,6 +28,8 @@ def main(argv=None):
         identity = args.identity_dll.resolve(strict=True) if args.identity_dll else None
         if args.activation_only and identity is None:
             raise ValueError("activation-only requires identity-dll")
+        if args.case == "wait" and identity is None:
+            raise ValueError("modal wait requires verified proxy ownership before Initialize")
         if identity is not None and sha256(identity) != IDENTITY_SHA:
             raise ValueError("unqualified proxy inspector")
         report["activation_only"] = args.activation_only
@@ -51,6 +53,7 @@ def main(argv=None):
         out = destination
         manifest, shutdown_manifest = prepare(out, base / "ExtForms/rp14q1.GRP/FIO.ERT", args.case, concurrent=identity is not None)
         report["run_id"] = manifest["run_id"]
+        report["ert_commands"] = manifest["commands"]
         with PrivateDesktop() as desktop:
             report = run_session(base, exe, cdb, helper, args.user, out, report, desktop=desktop.name, identity_dll=identity)
         report["desktop_closed"] = True
