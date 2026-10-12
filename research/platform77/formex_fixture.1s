@@ -1,0 +1,30 @@
+// Synthetic form: no business objects, data writes or startup calls.
+Перем Harness77Clicks;
+Перем Harness77Changes;
+
+Процедура ПриОткрытии()
+    Harness77Clicks = 0;
+    Harness77Changes = 0;
+    Фамилия = "initial";
+    Имя = "";
+    Отчество = "0";
+КонецПроцедуры
+
+Процедура Harness77Changed()
+    Harness77Changes = Harness77Changes + 1;
+    Отчество = Строка(Harness77Changes);
+КонецПроцедуры
+
+Процедура Выполнить() Экспорт
+    Harness77Clicks = Harness77Clicks + 1;
+    Имя = Фамилия + "|" + Строка(Harness77Clicks);
+КонецПроцедуры
+
+Процедура Очистить()
+    Фамилия = "";
+    Имя = "";
+КонецПроцедуры
+
+Функция Harness77Snapshot() Экспорт
+    Возврат Фамилия + ";" + Имя + ";" + Отчество;
+КонецФункции

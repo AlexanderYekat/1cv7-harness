@@ -6,6 +6,11 @@
 /1cv77-devtools/
 /77MCP/
 
+# Downloaded upstream snapshots; provenance is in third_party/manifest.json.
+/third_party/archives/
+/third_party/sources/
+/third_party/inventories/
+
 # Original application evidence, pending selection of shareable fixtures.
 /research/kudir/corpus/
 /research/archive/

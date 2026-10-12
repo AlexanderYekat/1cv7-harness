@@ -1,0 +1,9 @@
+--- a/Source/ADDIN.CPP
++++ b/Source/ADDIN.CPP
+@@ -358,4 +358,4 @@
+ 
+-	if (hLibBasic != NULL)
+-		FreeLibrary(hLibBasic);
++	// GetModuleHandle returns a borrowed handle, without a loader reference.
++	// BASIC.dll lifetime belongs to the host and the import loader.
+ 
