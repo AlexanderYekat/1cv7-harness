@@ -93,6 +93,14 @@ def process_identity(handle):
     return {"image": image.value, "creation_filetime": (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime}
 
 
+def process_cpu_ms(handle):
+    """Cumulative CPU time from a retained process handle, also after exit."""
+    times = [W.FILETIME() for _ in range(4)]
+    if not kernel.GetProcessTimes(handle, *[C.byref(t) for t in times]):
+        raise C.WinError(C.get_last_error())
+    return round(sum((t.dwHighDateTime << 32) | t.dwLowDateTime for t in times[2:]) / 10000, 3)
+
+
 class BaselineProcesses:
     """Hold query/synchronize-only handles to existing sessions, never stop them."""
     def __init__(self, inventory):

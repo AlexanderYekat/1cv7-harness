@@ -33,8 +33,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
     commands = out / "debugger.txt"
     observer = ""
     if identity_dll is not None:
-        from proxy_debug77 import prepare_observer, observed_identity
-        observer, report["identity_challenge"] = prepare_observer(out, report["run_id"])
+        from proxy_debug77 import DEFAULT_OBSERVER, prepare_observer, observed_identity, observer_retired
+        profile = report.setdefault("identity_observer_profile", DEFAULT_OBSERVER)
+        observer, report["identity_challenge"] = prepare_observer(out, report["run_id"], profile)
         report["identity_observer_hashes_before"] = {p.name: sha256(p) for p in out.glob("identity-*.txt")}
     commands.write_text(
         'sxe -c ".echo HARNESS77_FIRST_CHANCE_AV; .exr -1; r; kv; ~*kv; lm; '
@@ -52,6 +53,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         report["desktop_switch_requested"] = False
     operation_started = {}
     recovery_until = None
+    shutdown_observed_at = None
+    report["shutdown_observations"] = []
 
     def launch(command, stdout, cwd=None):
         if desktop is not None:
@@ -63,6 +66,14 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
     def debug_text():
         path = out / "debugger.log"
         return path.read_text(errors="replace") if path.exists() else ""
+
+    def observe_timing(now, step):
+        from win32_session77 import process_cpu_ms
+        report["shutdown_observations"].append({
+            "elapsed_seconds": round(now - shutdown_observed_at, 3), "last_step": step,
+            "cpu_ms": {name: process_cpu_ms(h) for name, h in
+                       (("server", handle), ("client", int(client._handle)), ("debugger", int(debugger._handle)))},
+            "debugger_log_bytes": (out / "debugger.log").stat().st_size})
 
     try:
         report["hashes_before"] = hashes()
@@ -161,7 +172,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 if identity_dll is not None and not report.get("proxy_verified_before_initialize"):
                     challenge_path = out / "proxy-challenge-complete"
                     identity = observed_identity(debug_text(), report["run_id"], report["server"])
-                    if identity and challenge_path.exists():
+                    retired = (profile != "challenge-only-v2" or
+                               observer_retired(debug_text(), report["run_id"], report["server"]))
+                    if identity and retired and challenge_path.exists():
                         if challenge_path.read_text(encoding="ascii").strip() != report["run_id"]:
                             raise ValueError("foreign client challenge")
                         validate_proxy(identity, report["run_id"], report["server"])
@@ -171,6 +184,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         verify_server_desktop(identity["tid"], identity["pid"], desktop)
                         report["server_desktop_verified"] = True
                         report["proxy_identity"] = identity
+                        if profile == "challenge-only-v2":
+                            report["identity_observer_retired_before_initialize"] = True
                         report["proxy_verified_before_initialize"] = True
                         atomic_json(out / "proxy-verified.json", {"identity": identity, "server": report["server"], "desktop": desktop})
                         permit = out / "initialize-permit.tmp"
@@ -185,8 +200,15 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                        and e.get("name") == "modules_released" for e in events):
                     deadline.observe_shutdown(now)
                     report["shutdown_started_observed"] = True
+                    if shutdown_observed_at is None:
+                        shutdown_observed_at = now
+                    step = events[-1].get("name")
+                    if not report["shutdown_observations"] or report["shutdown_observations"][-1]["last_step"] != step:
+                        observe_timing(now, step)
                 expired = deadline.expired(now)
                 if expired:
+                    if shutdown_observed_at is not None:
+                        observe_timing(now, "deadline")
                     report["timeout_phase"] = expired
                     raise TimeoutError(expired + " deadline")
                 log = debug_text()
@@ -245,6 +267,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 if client.poll() is not None and client.returncode != 0:
                     raise RuntimeError("client failed with code " + str(client.returncode))
                 if debugger.poll() is not None and client.poll() is not None:
+                    if shutdown_observed_at is not None:
+                        report["shutdown_elapsed_seconds"] = round(now - shutdown_observed_at, 3)
+                        observe_timing(now, "processes-exited")
                     break
                 time.sleep(0.1)
     except Exception as error:
@@ -310,6 +335,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         if identity_dll is not None:
             attempt("identity hash", lambda: report.update(identity_hash_after=sha256(identity_dll)))
             attempt("observer hashes", lambda: report.update(identity_observer_hashes_after={p.name: sha256(p) for p in out.glob("identity-*.txt")}))
+            if profile == "challenge-only-v2":
+                attempt("observer retirement", lambda: report.update(
+                    identity_observer_retired_verified=observer_retired(debug_text(), report["run_id"], report["server"])))
         report["helper_exit_code"] = client.poll() if client else None
         report["debugger_exit_code"] = debugger.poll() if debugger else None
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)

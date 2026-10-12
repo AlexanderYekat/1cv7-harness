@@ -7,7 +7,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from concurrent77 import concurrency_issues, unexpected_processes, validate_proxy
-from proxy_debug77 import challenge_name, observed_identity
+from proxy_debug77 import challenge_name, observed_identity, observer_retired
 
 
 class ConcurrentTests(unittest.TestCase):
@@ -68,6 +68,31 @@ class ConcurrentTests(unittest.TestCase):
         for invalid in (line + line, line.replace(":c8:", ":32:")):
             with self.assertRaises(ValueError):
                 observed_identity(invalid, run_id, self.server)
+
+    def test_retirement_requires_empty_list_after_exact_lookup(self):
+        run_id = str(uuid.uuid4())
+        lookup = f"HARNESS77_LOOKUP:{challenge_name(run_id)}:c8:12c\n"
+        begin = "HARNESS77_OBSERVER_EMPTY_BEGIN:" + run_id + "\n"
+        end = "HARNESS77_OBSERVER_EMPTY_END:" + run_id + "\n"
+        log = lookup + begin + end
+        self.assertTrue(observer_retired(log, run_id, self.server))
+        for partial in (lookup, lookup + begin, begin + end, log.replace(run_id, "old")):
+            self.assertFalse(observer_retired(partial, run_id, self.server))
+        for invalid in (lookup + begin + "15 e active breakpoint\n" + end,
+                        begin + end + lookup, log + begin + end,
+                        log + "HARNESS77_LOOKUP:EvalExpr:c8:12c\n"):
+            with self.subTest(log=invalid), self.assertRaises(ValueError):
+                observer_retired(invalid, run_id, self.server)
+
+    def test_new_profile_cannot_accept_legacy_or_partial_retirement(self):
+        self.report["identity_observer_profile"] = "challenge-only-v2"
+        self.assertTrue(concurrency_issues(self.report))
+        self.report["identity_observer_retired_before_initialize"] = True
+        self.assertTrue(concurrency_issues(self.report))
+        self.report["identity_observer_retired_verified"] = True
+        self.assertEqual(concurrency_issues(self.report), [])
+        self.report["identity_observer_profile"] = "unknown"
+        self.assertTrue(concurrency_issues(self.report))
 
 
 if __name__ == "__main__":

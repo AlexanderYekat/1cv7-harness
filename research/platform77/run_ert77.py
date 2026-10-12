@@ -8,6 +8,7 @@ from run_shutdown77 import ROOT, preflight
 from shutdown77 import MODE, assess, atomic_json, sha256
 
 from concurrent77 import IDENTITY_SHA
+from proxy_debug77 import DEFAULT_OBSERVER, OBSERVER_PROFILES
 
 
 def main(argv=None):
@@ -18,9 +19,12 @@ def main(argv=None):
     parser.add_argument("--case", choices=CASES, default="ok")
     parser.add_argument("--identity-dll", type=Path, help="enable verified concurrent sessions with the pinned client inspector")
     parser.add_argument("--activation-only", action="store_true", help="verify proxy ownership and release it without opening any database")
+    parser.add_argument("--observer-profile", choices=OBSERVER_PROFILES, default=DEFAULT_OBSERVER,
+                        help="continuous-v1 is retained only for controlled timing comparisons")
     args = parser.parse_args(argv)
     report = {"schema_version": 1, "scope": "synthetic ERT research", "shutdown_mode": MODE,
-              "fault": "none", "case": args.case, "status": "blocked", "ert_operation_timeout_seconds": 30}
+              "fault": "none", "case": args.case, "status": "blocked", "ert_operation_timeout_seconds": 30,
+              "identity_observer_profile": args.observer_profile}
     gate = ROOT / ".artifacts/platform77/active-session.json"
     out = None
     owns_gate = False

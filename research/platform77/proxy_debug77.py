@@ -7,12 +7,17 @@ documented IClassFactory/IUnknown/IDispatch ABI (the fixed target is x86).
 import re
 import uuid
 
+OBSERVER_PROFILES = ("continuous-v1", "challenge-only-v2")
+DEFAULT_OBSERVER = "challenge-only-v2"
+
 
 def challenge_name(run_id):
     return "H77_" + uuid.UUID(run_id).hex
 
 
-def prepare_observer(out, run_id):
+def prepare_observer(out, run_id, profile=DEFAULT_OBSERVER):
+    if profile not in OBSERVER_PROFILES:
+        raise ValueError("unknown identity observer profile")
     name = challenge_name(run_id)
     def callback(file):
         return '"$><' + (out / file).as_posix() + '"'
@@ -39,6 +44,15 @@ def prepare_observer(out, run_id):
         "identity-names.txt":
             '.printf "HARNESS77_LOOKUP:%mu:%x:%x\\n", poi(poi(@esp+0xc)), @$tpid, @$tid; gc\n',
     }
+    if profile == "challenge-only-v2":
+        # The first lookup must be the nonce. Any earlier lookup fails closed:
+        # the controller never permits Initialize without the exact challenge.
+        # These are the only breakpoints in this private CDB. Exception filters
+        # (especially first-chance AV) are independent and remain installed.
+        files["identity-names.txt"] = (
+            '.printf "HARNESS77_LOOKUP:%mu:%x:%x\\n", poi(poi(@esp+0xc)), @$tpid, @$tid; '
+            'bc *; .echo HARNESS77_OBSERVER_EMPTY_BEGIN:' + run_id + '; bl; '
+            '.echo HARNESS77_OBSERVER_EMPTY_END:' + run_id + '; gc\n')
     for file, contents in files.items():
         (out / file).write_text(contents, encoding="ascii")
     return 'bu10 combase!CoRegisterClassObject ' + callback("identity-register.txt") + '\n', name
@@ -55,3 +69,21 @@ def observed_identity(log, run_id, server):
     if pid != server["pid"]:
         raise ValueError("challenge observed in unexpected process")
     return {"run_id": run_id, "pid": pid, "tid": tid, "method": "debugger-observed-GetIDsOfNames", "challenge": name}
+
+
+def observer_retired(log, run_id, server):
+    """Require the nonce, an empty breakpoint list, and no further lookups."""
+    if observed_identity(log, run_id, server) is None:
+        return False
+    begin = "HARNESS77_OBSERVER_EMPTY_BEGIN:" + run_id
+    end = "HARNESS77_OBSERVER_EMPTY_END:" + run_id
+    lines = log.splitlines()
+    if begin not in lines or end not in lines:
+        return False
+    if lines.count(begin) != 1 or lines.count(end) != 1:
+        raise ValueError("duplicate observer retirement")
+    first, last = lines.index(begin), lines.index(end)
+    lookups = [i for i, line in enumerate(lines) if line.startswith("HARNESS77_LOOKUP:")]
+    if last != first + 1 or len(lookups) != 1 or lookups[0] >= first:
+        raise ValueError("observer remained active or retirement evidence is invalid")
+    return True

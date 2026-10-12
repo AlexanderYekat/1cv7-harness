@@ -23,6 +23,13 @@ def concurrency_issues(report):
     issues = []
     if report.get("concurrent_mode") != "verified-proxy-v1":
         return ["unknown concurrent mode"]
+    profile = report.get("identity_observer_profile", "continuous-v1")
+    if profile not in ("continuous-v1", "challenge-only-v2"):
+        issues.append("unknown identity observer profile")
+    if profile == "challenge-only-v2":
+        for key in ("identity_observer_retired_before_initialize", "identity_observer_retired_verified"):
+            if report.get(key) is not True:
+                issues.append(key + " not verified")
     try:
         validate_proxy(report.get("proxy_identity"), report.get("run_id"), report.get("server", {}))
     except (ValueError, KeyError) as error:
