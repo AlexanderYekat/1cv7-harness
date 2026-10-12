@@ -33,20 +33,26 @@ Function Elapsed(start)
     Elapsed = Round(delta * 1000, 3)
 End Function
 
+Dim h77LogStream, h77EventStream
+
 Sub Log(text)
-    Dim file
-    Set file = fso.OpenTextFile(WScript.Arguments(2), 8, True, -1)
-    file.WriteLine CStr(Now) & " " & text
-    file.Close
+    On Error Resume Next
+    If Not IsObject(h77LogStream) Then Set h77LogStream = fso.OpenTextFile(WScript.Arguments(2), 8, True, -1)
+    h77LogStream.WriteLine CStr(Now) & " " & text
+    If Err.Number <> 0 Then WScript.Quit 2
 End Sub
 
 Sub Emit(kind, name, value, elapsedMs)
-    Dim file
-    Set file = fso.OpenTextFile(eventPath, 8, True, -1)
-    file.WriteLine "{""run_id"":" & Quote(runId) & ",""kind"":" & Quote(kind) & _
+    On Error Resume Next
+    If Not IsObject(h77EventStream) Then Set h77EventStream = fso.OpenTextFile(eventPath, 8, True, -1)
+    h77EventStream.WriteLine "{""run_id"":" & Quote(runId) & ",""kind"":" & Quote(kind) & _
         ",""name"":" & Quote(name) & ",""value"":" & Quote(value) & _
         ",""elapsed_ms"":" & Replace(CStr(elapsedMs), ",", ".") & "}"
-    file.Close
+    If kind = "complete" Then
+        h77EventStream.Close
+        If IsObject(h77LogStream) Then h77LogStream.Close
+    End If
+    If Err.Number <> 0 Then WScript.Quit 2
 End Sub
 
 Sub Fail(name, description)

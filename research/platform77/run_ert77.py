@@ -19,12 +19,13 @@ def main(argv=None):
     parser.add_argument("--case", choices=CASES, default="ok")
     parser.add_argument("--identity-dll", type=Path, help="enable verified concurrent sessions with the pinned client inspector")
     parser.add_argument("--activation-only", action="store_true", help="verify proxy ownership and release it without opening any database")
+    parser.add_argument("--missing-base", action="store_true", help="P05: Initialize a fresh absent path inside the result directory; never create a database")
     parser.add_argument("--observer-profile", choices=OBSERVER_PROFILES, default=DEFAULT_OBSERVER,
                         help="continuous-v1 is retained only for controlled timing comparisons")
     args = parser.parse_args(argv)
     report = {"schema_version": 1, "scope": "synthetic ERT research", "shutdown_mode": MODE,
               "fault": "none", "case": args.case, "status": "blocked", "ert_operation_timeout_seconds": 30,
-              "identity_observer_profile": args.observer_profile}
+              "identity_observer_profile": args.observer_profile, "client_log_profile": "held-streams-v2"}
     gate = ROOT / ".artifacts/platform77/active-session.json"
     out = None
     owns_gate = False
@@ -32,6 +33,8 @@ def main(argv=None):
         identity = args.identity_dll.resolve(strict=True) if args.identity_dll else None
         if args.activation_only and identity is None:
             raise ValueError("activation-only requires identity-dll")
+        if args.missing_base and (identity is None or args.activation_only or args.case != "ok"):
+            raise ValueError("missing-base requires identity-dll and cannot be combined with activation-only or another case")
         if args.case == "wait" and identity is None:
             raise ValueError("modal wait requires verified proxy ownership before Initialize")
         if identity is not None and sha256(identity) != IDENTITY_SHA:
@@ -55,13 +58,24 @@ def main(argv=None):
             stream.write(json.dumps({"output": str(destination), "scope": "synthetic ERT"}))
         destination.mkdir(parents=True, exist_ok=False)
         out = destination
-        manifest, shutdown_manifest = prepare(out, base / "ExtForms/rp14q1.GRP/FIO.ERT", args.case, concurrent=identity is not None)
+        if args.missing_base:
+            from open_failure77 import prepare as prepare_open_failure
+            manifest = prepare_open_failure(out)
+            report.update(case="missing-base", scope="missing-base research", open_failure_probe=True,
+                          ert_operation_timeout_seconds=0)
+        else:
+            manifest, shutdown_manifest = prepare(out, base / "ExtForms/rp14q1.GRP/FIO.ERT", args.case, concurrent=identity is not None)
         report["run_id"] = manifest["run_id"]
-        report["ert_commands"] = manifest["commands"]
+        report["ert_commands"] = manifest.get("commands", [])
+        report["ert_protocol_paths"] = manifest.get("protocol_paths", {})
         with PrivateDesktop() as desktop:
             report = run_session(base, exe, cdb, helper, args.user, out, report, desktop=desktop.name, identity_dll=identity)
         report["desktop_closed"] = True
-        if args.activation_only:
+        if args.missing_base:
+            from open_failure77 import assess as assess_open_failure
+            report["open_failure"] = assess_open_failure(out, manifest, report)
+            report["status"] = "blocked"
+        elif args.activation_only:
             from concurrent77 import concurrency_issues
             issues = concurrency_issues(report)
             for key in ("error", "cleanup_errors", "forced_cleanup", "first_chance_av_observed", "av_dump_saved"):
@@ -83,7 +97,7 @@ def main(argv=None):
         if report.get("cleanup_verified") and report["desktop_closed"]:
             gate.unlink()
             owns_gate = False
-        print(json.dumps({k: report.get(k) for k in ("status", "case", "run_id", "elapsed_seconds", "error", "timeout_phase", "cleanup_verified", "proxy_identity", "baseline_preserved", "activation_issues", "shutdown_assessment", "ert")}, ensure_ascii=False, indent=2))
+        print(json.dumps({k: report.get(k) for k in ("status", "case", "run_id", "elapsed_seconds", "error", "timeout_phase", "cleanup_verified", "proxy_identity", "baseline_preserved", "activation_issues", "open_failure", "shutdown_assessment", "ert")}, ensure_ascii=False, indent=2))
         return {"passed": 0, "failed": 1, "blocked": 2}[report["status"]]
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"

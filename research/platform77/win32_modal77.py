@@ -99,9 +99,24 @@ class OwnedModal:
         chosen = select_dialog(windows, self.run_id, self.server["pid"], self.tid, self.desktop)
         # Re-enumerate and verify the retained process immediately before messaging.
         current = select_dialog(self.snapshot(), self.run_id, self.server["pid"], self.tid, self.desktop)
+        return self.post_button(chosen, current, 2)
+
+    def cancel_registration(self, windows, target):
+        from open_failure77 import select_registration
+        chosen = select_registration(windows, self.run_id, self.server["pid"], self.tid, self.desktop, target)
+        current = select_registration(self.snapshot(), self.run_id, self.server["pid"], self.tid, self.desktop, target)
+        return self.post_button(chosen, current, 2)
+
+    def cancel_launcher(self, windows, target, prior):
+        from open_failure77 import select_launcher
+        chosen = select_launcher(windows, self.run_id, self.server["pid"], self.tid, self.desktop, target, prior)
+        current = select_launcher(self.snapshot(), self.run_id, self.server["pid"], self.tid, self.desktop, target, prior)
+        return self.post_button(chosen, current, 2)
+
+    def post_button(self, chosen, current, control_id):
         if current != chosen:
             raise RuntimeError("modal dialog changed before dismissal")
-        button = next(c for c in current["children"] if c["class"] == "Button")
+        button = next(c for c in current["children"] if c["class"] == "Button" and c["id"] == control_id)
         if not self.user.PostMessageW(current["hwnd"], 0x0111, button["id"], button["hwnd"]):
             raise C.WinError(C.get_last_error())
         return {"dialog": current, "requested": True, "message": "WM_COMMAND/BN_CLICKED",

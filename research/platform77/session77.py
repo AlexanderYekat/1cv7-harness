@@ -53,6 +53,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         report["desktop_switch_requested"] = False
     operation_started = {}
     recovery_until = None
+    open_started = None
     shutdown_observed_at = None
     report["shutdown_observations"] = []
 
@@ -77,6 +78,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
 
     try:
         report["hashes_before"] = hashes()
+        if report.get("open_failure_probe"):
+            from win32_session77 import base_titles_fingerprint
+            report["base_titles_before"] = base_titles_fingerprint()
         # Recheck immediately before launching, including after CLI preflight.
         report["processes_before"] = processes()
         if identity_dll is not None:
@@ -223,6 +227,34 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         raise RuntimeError("concurrent process inventory changed; stop only owned session")
                 elif any(p["pid"] != report["server"]["pid"] for p in inventory):
                     raise RuntimeError("foreign 1C process appeared; stop only owned session")
+                if report.get("open_failure_probe") and (out / "base-open-started").exists():
+                    if (out / "base-open-started").read_text(encoding="ascii").strip() != report["run_id"]:
+                        raise ValueError("foreign base-open marker")
+                    if open_started is None:
+                        open_started = now
+                    if not (out / "base-open-finished").exists():
+                        if now - open_started >= 2 and not report.get("open_windows_snapshot_saved"):
+                            from win32_modal77 import OwnedModal
+                            modal = OwnedModal(handle, report["server"], report["proxy_identity"]["tid"], desktop, report["run_id"])
+                            windows = modal.snapshot()
+                            atomic_json(out / "base-open-windows.json", {"run_id": report["run_id"], "windows": windows})
+                            report["open_windows_snapshot_saved"] = True
+                            target = out / ("absent-base-" + report["run_id"])
+                            if target.exists():
+                                raise RuntimeError("missing database path unexpectedly appeared")
+                            report["registration_cancel"] = modal.cancel_registration(windows, target)
+                        if (now - open_started >= 4 and report.get("registration_cancel")
+                                and not report.get("open_after_cancel_snapshot_saved")):
+                            from win32_modal77 import OwnedModal
+                            modal = OwnedModal(handle, report["server"], report["proxy_identity"]["tid"], desktop, report["run_id"])
+                            windows = modal.snapshot()
+                            atomic_json(out / "base-open-after-cancel.json", {"run_id": report["run_id"], "windows": windows})
+                            report["open_after_cancel_snapshot_saved"] = True
+                            report["launcher_cancel"] = modal.cancel_launcher(windows,
+                                out / ("absent-base-" + report["run_id"]), report["registration_cancel"])
+                        if now - open_started >= 30:
+                            report["timeout_phase"] = "open-base"
+                            raise TimeoutError("Initialize did not return for missing database path")
                 if report.get("ert_operation_timeout_seconds"):
                     for command in report["ert_commands"]:
                         marker = out / ("ert-" + command + "-started")
@@ -255,7 +287,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         modal = OwnedModal(handle, report["server"], report["proxy_identity"]["tid"], desktop, report["run_id"])
                         windows = modal.snapshot()
                         snapshot = {"run_id": report["run_id"], "elapsed_seconds": round(now - operation_started[command], 3),
-                            "call_finished": finished.exists(), "protocol_finished": (out / "wait.txt").exists(),
+                            "call_finished": finished.exists(), "protocol_finished": (out / report.get("ert_protocol_paths", {}).get("wait", "wait.txt")).exists(),
                             "events": [json.loads(line) for line in (out / "ert-events.jsonl").read_text(encoding="utf-16").splitlines()],
                             "windows": windows}
                         report["wait_timeout"] = snapshot
@@ -342,6 +374,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         report["debugger_exit_code"] = debugger.poll() if debugger else None
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
         attempt("hashes", lambda: report.update(hashes_after=hashes()))
+        if report.get("open_failure_probe"):
+            attempt("user database list", lambda: report.update(base_titles_after=base_titles_fingerprint()))
         attempt("process inventory", lambda: report.update(processes_after=processes()))
         attempt("debugger log", lambda: report.update(
             first_chance_av_observed="\nHARNESS77_FIRST_CHANCE_AV\n" in debug_text()))

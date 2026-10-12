@@ -15,6 +15,17 @@ import ert_module as ert
 
 TEMPLATE_SHA = "096e1a05f871158b9ec5adaafa397adca87cee4aae8cd6f28f130080ac318b4a"
 CASES = ("ok", "syntax", "unused-syntax", "unused-name", "runtime", "wait")
+PROTOCOL_DIRECTORY = "Протоколы проверки"
+
+
+def protocol_path(out, manifest, command):
+    paths = manifest.get("protocol_paths")
+    if paths is None:
+        return out / (command + ".txt")  # Historical evidence remains readable.
+    expected = {name: PROTOCOL_DIRECTORY + "/" + name + ".txt" for name in manifest["commands"]}
+    if paths != expected or command not in paths:
+        raise ValueError("unexpected protocol path mapping")
+    return out / paths[command]
 
 
 def prepare(out, template, case, *, concurrent=False):
@@ -62,6 +73,8 @@ def prepare(out, template, case, *, concurrent=False):
     controller = Path(__file__).with_name("ert_controller77.1s").read_text(encoding="utf-8")
     (out / "ert-controller.1s").write_text(controller, encoding="utf-8")
     commands = ["check", "wait"] if case == "wait" else ["check", "execute"]
+    protocol_root = out / PROTOCOL_DIRECTORY
+    protocol_root.mkdir()
     client = Path(__file__).with_suffix(".vbs").read_text(encoding="utf-8")
     client = client.replace("__PROXY_IDENTITY__", Path(__file__).with_name("proxy_identity77.vbs").read_text(encoding="utf-8") if concurrent else "")
     suite_template = Path(__file__).with_name("module_suite77.vbs").read_text(encoding="utf-8")
@@ -71,10 +84,12 @@ def prepare(out, template, case, *, concurrent=False):
         "IDENTITY": vb_literal(identity), "SOURCES": vb_assignment("sourceController", controller),
         "UTILITIES": utilities, "COMMANDS": ", ".join(vb_literal(c) for c in commands), "SHUTDOWN": shutdown}.items():
         client = client.replace("__" + key + "__", value)
+    client = client.replace("__PROTOCOL_ROOT__", vb_literal(str(protocol_root)))
     (out / "client.vbs").write_text(client, encoding="utf-16")
     shutdown_manifest["sources"]["client.vbs"] = sha256(out / "client.vbs")
     manifest = {"schema_version": 1, "run_id": run_id, "identity": identity, "case": case,
-        "commands": commands, "ert_path": str(target), "template_sha256": TEMPLATE_SHA,
+        "commands": commands, "protocol_paths": {c: PROTOCOL_DIRECTORY + "/" + c + ".txt" for c in commands},
+        "ert_path": str(target), "template_sha256": TEMPLATE_SHA,
         "streams": streams, "expected_error_line": 2 if case == "syntax" else 6 if case.startswith("unused-") else None,
         "sources": {str(p.relative_to(out)): sha256(p) for p in (target, out / "fixture.1s", out / "ert-controller.1s", out / "client.vbs")}}
     atomic_json(out / "ert-manifest.json", manifest)
@@ -132,9 +147,9 @@ def read_results(out, manifest, lifecycle, shutdown_result):
         name, actual = event["name"], event["value"]
         protocol = ""
         try:
-            data = (out / (name + ".txt")).read_bytes()
+            data = protocol_path(out, manifest, name).read_bytes()
             protocol = data.decode("utf-16" if data.startswith(b"\xff\xfe") else "cp1251")
-        except (OSError, UnicodeError) as error:
+        except (OSError, UnicodeError, ValueError) as error:
             issues.append("protocol unavailable: " + str(error))
         marker = manifest["run_id"] + ":" + name
         lines = protocol.splitlines()

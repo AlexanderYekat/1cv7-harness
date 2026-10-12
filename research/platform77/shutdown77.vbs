@@ -1,14 +1,15 @@
 ' Inserted only after fixed suite objects have been released.
-Dim shutdownPath, shutdownSource, shutdownInstaller, shutdownGlobalId, shutdownStarted
+Dim shutdownPath, shutdownSource, shutdownInstaller, shutdownGlobalId, shutdownStarted, shutdownStream
 shutdownPath = fso.BuildPath(fso.GetParentFolderName(eventPath), "shutdown-events.jsonl")
 shutdownStarted = CDbl(Timer)
 
 Sub ShutdownEvent(name, value)
-    Dim file
-    Set file = fso.OpenTextFile(shutdownPath, 8, True, -1)
-    file.WriteLine "{""run_id"":" & Quote(runId) & ",""name"":" & Quote(name) & _
+    On Error Resume Next
+    If Not IsObject(shutdownStream) Then Set shutdownStream = fso.OpenTextFile(shutdownPath, 8, True, -1)
+    shutdownStream.WriteLine "{""run_id"":" & Quote(runId) & ",""name"":" & Quote(name) & _
         ",""value"":" & Quote(value) & ",""elapsed_ms"":" & Replace(CStr(Elapsed(shutdownStarted)), ",", ".") & "}"
-    file.Close
+    If name = "server_released" Then shutdownStream.Close
+    If Err.Number <> 0 Then WScript.Quit 2
 End Sub
 
 Sub ShutdownError(name)

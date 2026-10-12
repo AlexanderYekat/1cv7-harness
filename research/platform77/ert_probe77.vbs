@@ -32,7 +32,7 @@ CheckCOM "execute-controller"
 If result <> 1 Then Fail "execute-controller", CStr(result)
 Emit "phase", "controller", "ok", 0
 For Each command In Array(__COMMANDS__)
-    evidencePath = fso.BuildPath(fso.GetParentFolderName(eventPath), command & ".txt")
+    evidencePath = fso.BuildPath(__PROTOCOL_ROOT__, command & ".txt")
     CallMarker command, "started"
     t = CDbl(Timer)
     result = controller.Harness77Ert(ertPath, command, evidencePath, runId & ":" & command)

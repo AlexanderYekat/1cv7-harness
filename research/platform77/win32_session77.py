@@ -2,6 +2,7 @@
 import ctypes as C
 from ctypes import wintypes as W
 import hashlib
+import json
 import winreg
 
 
@@ -99,6 +100,29 @@ def process_cpu_ms(handle):
     if not kernel.GetProcessTimes(handle, *[C.byref(t) for t in times]):
         raise C.WinError(C.get_last_error())
     return round(sum((t.dwHighDateTime << 32) | t.dwLowDateTime for t in times[2:]) / 10000, 3)
+
+
+def base_titles_fingerprint():
+    """Read-only snapshot of the 7.7 user database list; no names in the report."""
+    root = r"Software\1C\1Cv7\7.7\Titles"
+    entries = []
+
+    def visit(key, path):
+        subkeys, values, unused = winreg.QueryInfoKey(key)
+        for index in range(values):
+            name, value, kind = winreg.EnumValue(key, index)
+            entries.append((path, name, kind, repr(value)))
+        for index in range(subkeys):
+            name = winreg.EnumKey(key, index)
+            with winreg.OpenKey(key, name) as child:
+                visit(child, path + "\\" + name)
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, root, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as key:
+            visit(key, root)
+    except FileNotFoundError:
+        return {"root": root, "present": False}
+    data = json.dumps(sorted(entries), ensure_ascii=True).encode("ascii")
+    return {"root": root, "present": True, "values": len(entries), "sha256": hashlib.sha256(data).hexdigest()}
 
 
 class BaselineProcesses:

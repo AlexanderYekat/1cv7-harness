@@ -44,7 +44,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     gate = ROOT / ".artifacts/platform77/active-session.json"
     owns_gate = False
-    report = {"schema_version": 1, "shutdown_mode": MODE, "fault": args.fault,
+    report = {"schema_version": 1, "shutdown_mode": MODE, "fault": args.fault, "client_log_profile": "held-streams-v2",
               "status": "blocked", "cleanup_verified": False,
               "scope": "fixed synthetic native modules; ERT/P00-P08 not accepted"}
     out = None

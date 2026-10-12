@@ -11,6 +11,17 @@ from shutdown77 import sha256
 
 
 class ErtEvidenceTests(unittest.TestCase):
+    def test_protocol_paths_with_spaces_and_cyrillic(self):
+        folder = self.out / "Протоколы проверки"
+        folder.mkdir()
+        self.manifest["commands"] = ["check", "execute"]
+        self.manifest["protocol_paths"] = {c: "Протоколы проверки/" + c + ".txt" for c in self.manifest["commands"]}
+        for command in self.manifest["commands"]:
+            (self.out / (command + ".txt")).replace(folder / (command + ".txt"))
+        self.assertEqual(self.result()["status"], "passed")
+        self.manifest["protocol_paths"]["execute"] = "../old/execute.txt"
+        self.assertEqual(self.result()["status"], "blocked")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
