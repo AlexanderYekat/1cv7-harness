@@ -1,0 +1,15 @@
+schema_version = 1
+
+# Portable demonstration stand: the simulation backend drives the full-cycle
+# control flow against scenario.json without 1C. It never sets platform_checked;
+# a real platform check requires a native stand (see stand-native.toml.example).
+[stand]
+name = "simulation-demo"
+backend = "simulation"
+scenario = "scenario.json"
+platform_version = "simulation"
+screenshots = true
+
+[stand.base]
+path = "simulation-base-for-test"
+user = "ВВВ"

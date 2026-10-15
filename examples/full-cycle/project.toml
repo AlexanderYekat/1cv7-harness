@@ -1,0 +1,30 @@
+schema_version = 1
+
+[project]
+id = "example-full-cycle"
+
+[build]
+template = "form.ert"
+source = "module.1s"
+
+[analysis]
+strict = false
+
+[platform]
+# Each declared test maps to one operation reported by the backend. expect is the
+# required operation status; expect="failed" states a verified negative control.
+[[platform.tests]]
+name = "control-42"
+command = "execute"
+expect = "passed"
+expect_value = "42"
+description = "Контрольная функция компилируется, исполняется и возвращает 42"
+
+# The calculation deadline belongs to the report/test; the others to the stand.
+# No value is a prototype 30/145 default: every phase must be stated explicitly.
+[deadlines]
+open_timeout_s = 60
+calculation_timeout_s = 1800
+cancel_timeout_s = 15
+shutdown_timeout_s = 30
+total_timeout_s = 2000

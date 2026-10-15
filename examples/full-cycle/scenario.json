@@ -1,0 +1,74 @@
+{
+  "platform_identity": {
+    "platform_version": "simulation"
+  },
+  "open": {
+    "duration_s": 5.0,
+    "samples": 5
+  },
+  "calculation": {
+    "duration_s": 600.0,
+    "samples": 30,
+    "progress": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      {
+        "percent": 50
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "load": {
+      "status": "passed",
+      "diagnostics": []
+    },
+    "operations": [
+      {
+        "name": "execute",
+        "status": "passed",
+        "value": "42"
+      }
+    ],
+    "result_files": [
+      {
+        "name": "report.csv",
+        "size_bytes": 50000,
+        "fill": "a",
+        "complete": true,
+        "expected_sha256": "77a0f923b96d18567b52376c56638acc5f030009735888bc47f2da5b4b65e3af"
+      }
+    ]
+  },
+  "shutdown": {
+    "duration_s": 3.0,
+    "status": "ok",
+    "server_exit_code": 0,
+    "cleanup_verified": true,
+    "others_preserved": true
+  }
+}

@@ -1,0 +1,34 @@
+# Native stand profile (пример). Скопируйте в локальный файл вне Git и подставьте
+# свои пути/хеши. Машинные пути и выбранная база остаются локальными; в общий
+# отчёт попадают только имя базы, версия платформы и хеши — без паролей.
+#
+# Нативный бэкенд вызывает launcher на реальном стенде. Принятый launcher —
+# research/platform77/stage4_launcher77.py поверх исследовательского контроллера:
+# владение процессом доказывается до Initialize, отдельный desktop, проверяемое
+# завершение coordinated-icpp-v1, сохранность чужих сеансов.
+schema_version = 1
+
+[stand]
+name = "local-7.70.027"
+backend = "native"
+launcher = "C:/MyProjects/harness77/research/platform77/stage4_launcher77.py"
+platform_version = "7.70.027"
+screenshots = false
+
+[stand.paths]
+exe = "C:/Program Files (x86)/1Cv77/BIN/1cv7l.exe"
+cdb = "C:/Program Files (x86)/Windows Kits/10/Debuggers/x86/cdb.exe"
+helper = "C:/MyProjects/harness77/.artifacts/platform77/com-coordinated-build-v3-20261011/com_cleanup77.dll"
+identity = "C:/MyProjects/harness77/.artifacts/platform77/proxy-challenge-build-20261011/proxy_identity77.dll"
+
+[stand.base]
+# Принятый стенд; база используется напрямую, без копирования на каждый прогон.
+path = "C:/MyProjects/harness77/.local/bases/base-for-test"
+user = "ВВВ"
+
+[stand.pinned]
+exe = "562790a34f8491782886e91e36a0800b8fd359afe91bfcf6f575ee4cb181f9bf"
+"1Cv7.MD" = "931b26eb2e388ba3000196ab024351e65cb324e02e885dc4cef5be68059ecfa1"
+"1Cv7.DD" = "618e7da54316d74f260e2d02931cc377032ab9f94be577041cd02890e7b82cbd"
+"1CPP.dll" = "d690756abc7ecb839f258a5b1abcbabd622d3f3d85410141b00493edcf7c2bfb"
+"FormEx.dll" = "32fa9996a24bd6075d5010051550671af5f7cfd8ba98e990ac67a1ed1585f798"
