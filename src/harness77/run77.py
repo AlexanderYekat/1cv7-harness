@@ -57,13 +57,22 @@ class Observations:
 
 
 def _static_stage(project):
-    from .lint77 import analyze, collect_paths, load_sources
+    from .ert_module import CompoundFile, ErtError
+    from .lint77 import analyze, collect_paths, ert_dialog, load_sources
     stage = Stage("static", required=True, scope=STAGE_SCOPES["static"])
     try:
         sources = [s for path in collect_paths([str(project.source)]) for s in load_sources(path)]
+        # The module is built into the template: its dialog is the form context (L7711).
+        try:
+            dialog = ert_dialog(CompoundFile(Path(project.template).read_bytes()))
+        except (OSError, ErtError):
+            dialog = None  # the build stage reports an unreadable template
+        for source in sources:
+            if source.dialog is None:
+                source.dialog = dialog
         globals_sources = [s for path in project.globals for s in load_sources(Path(path))]
         report = analyze(sources, globals_sources, project.allow, project.strict)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, ErtError) as error:
         return stage.finish(BLOCKED, reason=f"static_input_error: {type(error).__name__}: {error}")
     status = FAILED if report["errors"] else PASSED
     return stage.finish(status, diagnostics=report["diagnostics"],

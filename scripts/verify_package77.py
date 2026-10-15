@@ -74,7 +74,8 @@ def verify(args):
         wheel, = dist.glob("*.whl")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            assert "harness77/lint77-builtins.json" in names
+            for resource in ("lint77-builtins.json", "lint77-globals.json", "catalog77.json"):
+                assert "harness77/" + resource in names, resource
             assert all(n.startswith(("harness77/", "harness77-0.1.0.dist-info/")) for n in names)
         summary["distributions"] = [{"file": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
                                     for p in (sdist, wheel)]
@@ -88,9 +89,10 @@ def verify(args):
         foreign.mkdir()
         run("installed-resource", [python, "-c",
             "import sys, pathlib, json, importlib.metadata as m; import harness77; "
-            "from harness77.lint77 import load_builtins; "
+            "from harness77.lint77 import load_builtins, load_catalog; "
             "assert pathlib.Path(harness77.__file__).is_relative_to(pathlib.Path(sys.prefix)); "
             "assert len(load_builtins()) > 10; "
+            "assert len(load_catalog().reserved) == 162 and load_catalog().readable; "
             "assert [d.metadata['Name'] for d in m.distributions()] == ['harness77']; "
             "print(json.dumps({'python':sys.version,'module':harness77.__file__,'builtins':len(load_builtins())}))"], foreign)
         run("console-version", [console, "--version"], foreign)

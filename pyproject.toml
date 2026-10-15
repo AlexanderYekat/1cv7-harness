@@ -17,4 +17,4 @@ harness77 = "harness77.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-harness77 = ["lint77-builtins.json"]
+harness77 = ["lint77-builtins.json", "lint77-globals.json", "catalog77.json"]

@@ -14,16 +14,27 @@ import struct
 import sys
 import zlib
 
-from .ert_module import CompoundFile, ErtError, decode_source_bytes
+from .catalog77 import load_packaged
+from .ert_module import (DIALOG_STREAM, CompoundFile, ErtError, decode_dialog, decode_source_bytes,
+                         dialog_controls)
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 LIMITATIONS = [
     'Частичный разбор языка; отсутствие диагностик не означает успешную компиляцию 1С.',
-    'Словарь встроенных функций неполон: неизвестные вызовы по умолчанию — предупреждения.',
-    'Методы объектов, COM, реквизиты форм, типы и динамически исполняемый код не проверяются.',
+    'Имена встроенных функций и методов — из каталога платформы 7.70.027; неизвестные вызовы '
+    'по умолчанию — предупреждения.',
+    'Типы, методы конфигурации, COM и внешних компонент, динамически исполняемый код не проверяются.',
+    'Объявление переменных (L7711) проверяется только в модуле с известным диалогом: ERT или --dialog.',
     'Доступность известных встроенных функций в конкретном контексте модуля не проверяется.',
     'Проводки, запросы и корректность бухгалтерского учета не проверяются.',
 ]
+# Confirmed on 7.70.027 (docs/tasks/005-kudir-rules-acceptance.md): the 1C 7.7 module
+# compiler accepts much longer lines; the Configurator refused a 590-character one.
+LINE_LIMIT = 500
+# A token after these starts a statement, so "Имя =" there is an assignment.
+STATEMENT_START = {'тогда', 'then', 'иначе', 'else', 'цикл', 'do', 'попытка', 'try',
+                   'исключение', 'except'}
+CYRILLIC = re.compile('[А-Яа-яЁё]')
 KEYWORDS = set('если if тогда then иначе else иначеесли elsif elseif конецесли endif '
                'пока while для for по to цикл do конеццикла enddo '
                'попытка try исключение except конецпопытки endtry '
@@ -84,6 +95,7 @@ class Symbol:
     optional: list[bool]
     exported: bool = False
     forward: bool = False
+    params: list[Token] = field(default_factory=list)
 
 
 @dataclass
@@ -92,6 +104,8 @@ class Source:
     module: str
     text: str
     is_global: bool = False
+    # Identifiers of the form dialog (casefolded); None: the form context is unknown.
+    dialog: frozenset[str] | None = None
 
 
 @dataclass
@@ -241,14 +255,20 @@ def parse(source: Source) -> Parsed:
         if end is None:
             continue
         name = tokens[i+1]
-        optional = [any(t.text == '=' for t in part) for part in split_arguments(tokens, i+3, end)]
+        parts = split_arguments(tokens, i+3, end)
+        optional = [any(t.text == '=' for t in part) for part in parts]
+        params = [([t for t in (part[:[t.text for t in part].index('=')] if any(t.text == '=' for t in part)
+                                else part) if t.kind == 'id'] or [None])[-1] for part in parts]
         last = end + 1
         flags = set()
-        while last < len(tokens) and tokens[last].key in ('экспорт', 'export', 'далее', 'forward'):
+        # "Экспорт = 1;" opening the body is an assignment, not a header flag.
+        while (last < len(tokens) and tokens[last].key in ('экспорт', 'export', 'далее', 'forward')
+               and (last + 1 == len(tokens) or tokens[last+1].text != '=')):
             flags.add(tokens[last].key)
             last += 1
         symbol = Symbol(name.text, name, DECL[token.key], optional,
-                        bool(flags & {'экспорт', 'export'}), bool(flags & {'далее', 'forward'}))
+                        bool(flags & {'экспорт', 'export'}), bool(flags & {'далее', 'forward'}),
+                        [param for param in params if param is not None])
         result.header_tokens.update(range(i, last))
         result.declarations[i] = (last, symbol)
         target = forwards if symbol.forward else definitions
@@ -335,6 +355,204 @@ def check_calls(parsed: Parsed, globals_: dict[str, Symbol], builtins: set[str],
                           'error' if strict else 'warning')
 
 
+@dataclass
+class Catalog:
+    """Names from the packaged platform catalog (catalog77.json), casefolded."""
+    reserved: set[str]
+    calls: set[str]
+    # Readable without declaration: probed global names and the form context.
+    readable: set[str]
+    # Largest parameter count of a Cyrillic method name; None: variadic signature.
+    method_limits: dict[str, int | None]
+    provenance: dict
+
+
+_CATALOG: Catalog | None = None
+
+
+def load_catalog() -> Catalog:
+    global _CATALOG
+    if _CATALOG is None:
+        data = load_packaged()
+        globals_ = json.loads(files('harness77').joinpath('lint77-globals.json').read_text(encoding='utf-8'))
+        calls, readable, limits = set(), {n.casefold() for n in globals_['names']}, {}
+        for item in data['items']:
+            names = [n.casefold() for n in (item['name_ru'], item['name_en']) if n]
+            if item['kind'] in ('global_function', 'method'):
+                calls.update(names)
+            if item['kind'] == 'attribute' and item['folder'].startswith('Контекст формы/') and '/Объект' not in item['folder']:
+                readable.update(names)
+            name = item['name_ru']
+            if item['kind'] == 'method' and name and CYRILLIC.search(name):
+                key, limit = name.casefold(), item['max_params']
+                limits[key] = None if limit is None or limits.get(key, 0) is None else max(limit, limits.get(key, 0))
+        provenance = {'platform_version': data['platform_version'],
+                      'sources': [{'name': s['name'], 'sha256': s['sha256']} for s in data['sources']],
+                      'globals_evidence': globals_['provenance']['evidence']}
+        _CATALOG = Catalog({n.casefold() for n in data['reserved']['names']}, calls, readable, limits, provenance)
+    return _CATALOG
+
+
+def check_method_arity(parsed: Parsed, catalog: Catalog, strict=False):
+    """L7709: a known method called with more arguments than any of its signatures."""
+    tokens = parsed.tokens
+    for i, token in enumerate(tokens[:-1]):
+        if (token.kind != 'id' or not i or tokens[i-1].text != '.' or tokens[i+1].text != '('
+                or catalog.method_limits.get(token.key) is None):
+            continue
+        end = parsed.pairs.get(i+1)
+        if end is None:
+            continue
+        count, limit = len(split_arguments(tokens, i+2, end)), catalog.method_limits[token.key]
+        if count > limit:
+            parsed.report(token, 'L7709', f'{token.text}: передано {count}, в справочнике 7.7 у метода '
+                          f'не больше {limit}. Компилятор это не проверяет; при исполнении часть объектов '
+                          'отвечает «Слишком много параметров…», другие лишний аргумент игнорируют.',
+                          'error' if strict else 'warning')
+
+
+def check_line_length(parsed: Parsed):
+    """L7710: physical lines, CR/LF and BOM excluded, longer than the guard."""
+    text = parsed.source.text.lstrip('﻿').replace('\r\n', '\n').replace('\r', '\n')
+    for number, line in enumerate(text.split('\n'), 1):
+        if len(line) > LINE_LIMIT:
+            parsed.diagnostics.append(Diagnostic(
+                parsed.source.path, parsed.source.module, number, LINE_LIMIT + 1, 'L7710', 'warning',
+                f'Длина строки {len(line)} больше защитного предела {LINE_LIMIT}. Конфигуратор 7.7 '
+                'отказывает в такой строке («Одна из строк исходного текста превышает допустимые '
+                'размеры»), исполнение её принимает; разбейте выражение на несколько строк.'))
+
+
+def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict=False):
+    """L7708 reserved names declared; L7711 reads of names not declared at that point.
+
+    1C 7.7 declares a local by its first assignment in the text of the procedure;
+    a read before it, in another procedure, or in the module body is "Переменная
+    не определена". Module and procedure Перем, parameters, loop counters, the form
+    dialog, global module exports and the probed global names declare names.
+    """
+    tokens, dialog = parsed.tokens, parsed.source.dialog
+    # The probed global names belong to one configuration: another may add more.
+    severity = 'error' if strict else 'warning'
+
+    def reserved(token, role):
+        if token.key in catalog.reserved:
+            parsed.report(token, 'L7708', f'{token.text}: ключевое слово или встроенная функция 7.7 '
+                          f'не может быть именем {role}.')
+
+    for _, symbol in parsed.declarations.values():
+        for param in symbol.params:
+            reserved(param, 'параметра')
+    closers = {'procedure': ('конецпроцедуры', 'endprocedure'), 'function': ('конецфункции', 'endfunction')}
+    definitions = sorted((start, last, symbol) for start, (last, symbol) in parsed.declarations.items()
+                         if not symbol.forward)
+    module_vars: set[str] = set()
+
+    def walk(start, end, declared):
+        reported, prev, i = set(), None, start
+        while i < end:
+            token = tokens[i]
+            if i in parsed.header_tokens:
+                prev, i = None, i + 1
+                continue
+            if token.kind != 'id' or (prev is not None and prev.text in ('.', '~')):
+                prev, i = token, i + 1
+                continue
+            begins = prev is None or prev.text in (';', ':') or (prev.kind == 'id' and prev.key in STATEMENT_START)
+            following = tokens[i+1] if i + 1 < len(tokens) else None
+            if begins and following is not None and following.text == '=':
+                # Keywords too: "Не = 1;" and "Возврат = 1;" are rejected declarations in 7.7.
+                reserved(token, 'переменной')
+                declared.add(token.key)
+                prev, i = token, i + 1
+                continue
+            if token.key in ('перем', 'var') and begins:
+                # A name follows Перем or a comma; Экспорт after a name only marks it exported.
+                depth, expect_name, i = 0, True, i + 1
+                while i < end and tokens[i].text != ';':
+                    item = tokens[i]
+                    depth += {'[': 1, ']': -1}.get(item.text, 0)
+                    if item.text == ',' and not depth:
+                        expect_name = True
+                    elif item.kind == 'id' and not depth and expect_name:
+                        reserved(item, 'переменной')
+                        declared.add(item.key)
+                        expect_name = False
+                    i += 1
+                prev = tokens[i] if i < end else None
+                i += 1
+                continue
+            if token.key in ('для', 'for') and following is not None and following.kind == 'id':
+                reserved(following, 'счётчика цикла')
+                declared.add(following.key)
+                prev, i = following, i + 2
+                continue
+            if token.key in KEYWORDS or (following is not None and following.text == '('):
+                pass
+            # Reserved names are keywords or intrinsics: Контекст is read legitimately.
+            elif (dialog is not None and token.key not in reported and token.key not in declared
+                  and token.key not in module_vars and token.key not in dialog and token.key not in known
+                  and token.key not in parsed.symbols and token.key not in catalog.reserved):
+                reported.add(token.key)
+                parsed.report(token, 'L7711', f'Переменная не определена ({token.text}): не параметр, '
+                              'не Перем, не присвоена выше в этой процедуре, не реквизит диалога '
+                              'и не глобальное имя. Глобальное имя конфигурации добавьте --allow/--globals.',
+                              severity)
+            prev, i = token, i + 1
+
+    first = definitions[0][0] if definitions else len(tokens)
+    walk(0, first, module_vars)
+    tail = first
+    for start, last, symbol in definitions:
+        end = next((j for j in range(last, len(tokens)) if tokens[j].key in closers[symbol.kind]
+                    and tokens[j-1].text != '.' and (j + 1 == len(tokens) or tokens[j+1].text != '=')),
+                   len(tokens))
+        walk(last, end, {param.key for param in symbol.params})
+        tail = end + 1
+    if definitions:
+        walk(tail, len(tokens), set())
+
+
+def exported_variables(parsed: Parsed) -> set[str]:
+    """Module variables declared "Перем Имя Экспорт" before the first procedure."""
+    tokens, names = parsed.tokens, set()
+    first = min(parsed.declarations, default=len(tokens))
+    i = 0
+    while i < first:
+        if tokens[i].key in ('перем', 'var') and (not i or tokens[i-1].text == ';'):
+            depth, current, i = 0, None, i + 1
+            while i < first and tokens[i].text != ';':
+                token = tokens[i]
+                depth += {'[': 1, ']': -1}.get(token.text, 0)
+                if token.kind == 'id' and not depth:
+                    if token.key in ('экспорт', 'export'):
+                        names.update([current] if current else [])
+                    else:
+                        current = token.key
+                i += 1
+        i += 1
+    return names
+
+
+def ert_dialog(compound: CompoundFile) -> frozenset[str] | None:
+    """Identifiers of the form dialog; None if the ERT has no readable dialog."""
+    try:
+        controls = dialog_controls(decode_dialog(compound.read_stream(compound.find_stream(DIALOG_STREAM))))
+    except ErtError:
+        return None
+    return frozenset(control.identifier.casefold() for control in controls if control.identifier)
+
+
+def dialog_context(path: Path) -> frozenset[str]:
+    """Form context for text modules: the dialog of an explicit ERT, or an error."""
+    if path.suffix.casefold() != '.ert':
+        raise ValueError(f'Контекст формы задаётся файлом ERT: {path}')
+    dialog = ert_dialog(CompoundFile(path.read_bytes()))
+    if dialog is None:
+        raise ValueError(f'В {path.name} нет читаемого диалога формы.')
+    return dialog
+
+
 def cfb_paths(compound: CompoundFile) -> dict[int, str]:
     entries, paths, seen = compound.directory_entries, {}, set()
     pending = [(struct.unpack_from('<I', entries[0].raw, 76)[0], '')]
@@ -364,6 +582,7 @@ def load_sources(path: Path) -> list[Source]:
         return [Source(str(path), '', text)]
     compound = CompoundFile(path.read_bytes())
     paths = cfb_paths(compound)
+    dialog = ert_dialog(compound) if path.suffix.casefold() == '.ert' else None
     result = []
     for entry in compound.directory_entries:
         if entry.object_type != 2 or entry.name != 'MD Programm text':
@@ -377,7 +596,7 @@ def load_sources(path: Path) -> list[Source]:
             text = zlib.decompress(raw, -15).decode('cp1251')
         except (zlib.error, UnicodeError) as exc:
             raise ErtError(f'Не удалось прочитать модуль {module}: {exc}') from exc
-        result.append(Source(str(path), module, text, module.startswith('TypedText/ModuleText_Number1/')))
+        result.append(Source(str(path), module, text, module.startswith('TypedText/ModuleText_Number1/'), dialog))
     if not result:
         raise ErtError(f'В {path.name} не найдены модули кода.')
     return result
@@ -421,7 +640,11 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
                 if key in globals_ and globals_[key] != symbol:
                     raise ValueError(f'Неоднозначный глобальный контекст: {symbol.name}')
                 globals_[key] = symbol
-    builtins = load_builtins() | {name.casefold() for name in allow}
+    catalog = load_catalog()
+    builtins = load_builtins() | catalog.calls | {name.casefold() for name in allow}
+    global_vars = set().union(*(exported_variables(item) for item in external
+                                + [item for item in parsed if item.source.is_global]))
+    known = catalog.readable | global_vars | set(external_symbols) | {name.casefold() for name in allow}
     diagnostics = []
     # Context that failed to parse must not silently produce a clean result.
     for item in external:
@@ -429,10 +652,15 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
     for item in parsed:
         visible_globals = {**external_symbols, **own_globals.get(item.source.path, {})}
         check_calls(item, visible_globals, builtins, strict)
+        check_method_arity(item, catalog, strict)
+        check_line_length(item)
+        check_declarations(item, catalog, known | set(visible_globals), strict)
         diagnostics.extend(item.diagnostics)
     diagnostics.sort(key=lambda d: (d.path, d.module, d.line, d.column, d.rule))
     return {'schema_version': 1, 'tool': 'lint77', 'version': VERSION,
             'modules': len(parsed), 'global_context_modules': len(external),
+            'form_context_modules': sum(item.source.dialog is not None for item in parsed),
+            'catalog': catalog.provenance,
             'errors': sum(d.severity == 'error' for d in diagnostics),
             'warnings': sum(d.severity == 'warning' for d in diagnostics),
             'limitations': LIMITATIONS, 'diagnostics': [asdict(d) for d in diagnostics]}
@@ -445,6 +673,8 @@ def main(argv=None) -> int:
                         help='Глобальный модуль (текст) или MD; только экспортные функции. Можно повторять.')
     parser.add_argument('--allow', action='append', default=[], metavar='NAME',
                         help='Явно разрешить функцию внешнего контекста; можно повторять.')
+    parser.add_argument('--dialog', type=Path, metavar='FORM.ert',
+                        help='ERT, чей диалог — контекст формы текстовых модулей (для L7711).')
     parser.add_argument('--strict', action='store_true', help='Неизвестные вызовы считать ошибками')
     parser.add_argument('--format', choices=('text', 'json'), default='text')
     parser.add_argument('--output', type=Path, help='Записать отчёт в файл')
@@ -454,12 +684,18 @@ def main(argv=None) -> int:
         inputs = collect_paths(args.paths)
         contexts = [Path(name).resolve() for name in args.globals]
         if args.output:
-            protected = inputs + contexts + [Path(__file__).resolve(),
-                                             Path(__file__).with_name('lint77-builtins.json').resolve()]
+            protected = inputs + contexts + ([args.dialog.resolve()] if args.dialog else []) + [
+                Path(__file__).resolve()] + [Path(__file__).with_name(name).resolve() for name in (
+                    'lint77-builtins.json', 'lint77-globals.json', 'catalog77.json')]
             if (args.output.resolve() in set(protected)
                     or (args.output.exists() and any(os.path.samefile(args.output, path) for path in protected))):
                 raise ValueError('Путь отчёта совпадает с исходником, контекстом или файлом инструмента.')
         sources = [source for path in inputs for source in load_sources(path)]
+        if args.dialog:
+            dialog = dialog_context(args.dialog)
+            for source in sources:
+                if Path(source.path).suffix.casefold() not in ('.ert', '.md'):
+                    source.dialog = dialog
         global_sources = []
         for path in contexts:
             loaded = load_sources(path)
