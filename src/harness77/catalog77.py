@@ -2,7 +2,8 @@
 
 Sources are the platform's own files: the syntax helper ``1cv7Lang.als`` (names,
 folders, component flags and parameter counts of every signature) and the string
-resources of ``1crcrus.dll`` (``English,Русское`` name pairs). Descriptions and
+resources of ``1crcrus.dll`` (``English,Русское`` name pairs and the messages of
+the language processor). Descriptions and
 insertion templates are not copied: the catalog keeps names and arity only.
 The same input bytes always give the same output bytes.
 """
@@ -28,7 +29,12 @@ LIMITATIONS = [
     "Пары из 1crcrus.dll не имеют вида: это известные платформе имена, без указания контекста.",
     "reserved — непрерывный блок строк 1crcrus.dll от таблицы ключевых слов (If,Если); "
     "что эти имена нельзя объявлять, установлено пробой 7.70.027, а не самим файлом.",
+    "messages — строки 1crcrus.dll между опорными «Ошибок не обнаружено», «Индексное выражение должно "
+    "иметь целочисленный тип» и таблицей ключевых слов; блоки compile/runtime — по расположению строк. "
+    "Что сообщение выдаёт компилятор, установлено пробами 7.70.027 только для наблюдённых сообщений.",
 ]
+_COMPILE_ANCHOR = "Ошибок не обнаружено"
+_RUNTIME_ANCHOR = "Индексное выражение должно иметь целочисленный тип"
 _TOKEN = re.compile(r'"((?:[^"]|"")*)"|([{}])|(,)|(\s+)|(.)', re.S)
 _IDENT = re.compile(r"[A-Za-zА-Яа-яЁё_][\wЁё]*")
 _PAIR = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-zА-Яа-яЁё_][\wЁё]*)\s*")
@@ -278,6 +284,32 @@ def reserved_block(data: bytes) -> dict:
     return {"first_id": first, "last_id": last, "names": names}
 
 
+def compiler_messages(data: bytes) -> list[dict]:
+    """Messages of the language processor: the compile block, then the runtime block.
+
+    In 1crcrus.dll 7.70.027 the compile block starts at "Ошибок не обнаружено"
+    (1440), the runtime block at the integer index message (1600), and both end
+    before the keyword table (1640). Text templates with % are not messages.
+    """
+    table = {string_id: text for string_id, _language, text in string_table(data)}
+    anchors = {}
+    for name, text in (("compile", _COMPILE_ANCHOR), ("runtime", _RUNTIME_ANCHOR)):
+        found = [string_id for string_id, value in table.items() if value == text]
+        if len(found) != 1:
+            raise CatalogError(f"В ресурсах нет единственной опорной строки сообщений «{text}».")
+        anchors[name] = found[0]
+    end = reserved_block(data)["first_id"]
+    if not anchors["compile"] < anchors["runtime"] < end:
+        raise CatalogError("Раскладка сообщений компилятора в ресурсах не распознана.")
+    messages = []
+    for block, first, last in (("compile", anchors["compile"], anchors["runtime"]),
+                               ("runtime", anchors["runtime"], end)):
+        messages += [{"id": string_id, "block": block, "text": table[string_id]}
+                     for string_id in range(first, last)
+                     if string_id in table and "%" not in table[string_id]]
+    return messages
+
+
 def _source(path: Path, data: bytes) -> dict:
     return {"name": path.name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
@@ -293,13 +325,14 @@ def build_catalog(als_path: Path, strings_path: Path) -> dict:
     pairs = name_pairs(strings)
     if not pairs:
         raise CatalogError("В ресурсах не найдено пар имён English,Русское.")
+    messages = compiler_messages(strings)
     return {"schema_version": SCHEMA_VERSION, "tool": "harness77", "scope": "platform_catalog",
             "platform_version": platform, "strings_file_version": version,
             "sources": [_source(als_path, als), _source(strings_path, strings)],
             "limitations": LIMITATIONS,
-            "counts": {"items": len(items), "pairs": len(pairs)},
+            "counts": {"items": len(items), "pairs": len(pairs), "messages": len(messages)},
             "reserved": reserved_block(strings),
-            "items": items, "pairs": pairs}
+            "items": items, "pairs": pairs, "messages": messages}
 
 
 def dumps(catalog: dict) -> str:
@@ -309,7 +342,7 @@ def dumps(catalog: dict) -> str:
     for position, key in enumerate(keys):
         value = catalog[key]
         tail = "," if position < len(keys) - 1 else ""
-        if key in ("items", "pairs"):
+        if key in ("items", "pairs", "messages"):
             rows = [json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in value]
             lines.append(f' "{key}": [')
             lines.extend("  " + row + ("," if n < len(rows) - 1 else "") for n, row in enumerate(rows))

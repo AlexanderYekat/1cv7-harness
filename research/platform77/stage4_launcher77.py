@@ -215,9 +215,26 @@ def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters
     return manifest, shutdown_manifest, target
 
 
+def protocol_diagnostics(protocol):
+    """Line and message of every `{path(line)}: message`; column and source line too
+    when the line before carries the platform marker (task 009 marking needs them)."""
+    import re
+    lines = protocol.splitlines()
+    diagnostics = []
+    for index, line in enumerate(lines):
+        match = re.match(r"\{[^\r\n]*\(([0-9]{1,9})\)\}:[ \t]*([^\r\n]*)", line)
+        if not match:
+            continue
+        row = {"line": int(match[1]), "message": match[2]}
+        source = lines[index - 1] if index else ""
+        if source.count("<<?>>") == 1:
+            row.update(column=source.index("<<?>>") + 1, source_line=source.replace("<<?>>", "", 1))
+        diagnostics.append(row)
+    return diagnostics
+
+
 def interpret(out, manifest, lifecycle, shutdown_result, adapter=None):
     """Validate the external-ERT response with the run markers; the adapter judges."""
-    import re
     adapter = adapter or Harness77Adapter()
     operations, issues = [], []
     try:
@@ -241,8 +258,7 @@ def interpret(out, manifest, lifecycle, shutdown_result, adapter=None):
         except (OSError, UnicodeError) as error:
             issues.append("protocol unavailable for " + command + ": " + str(error))
         marker = manifest["run_id"] + ":" + command
-        row["diagnostics"] = [{"line": int(m[1]), "message": m[2]} for m in re.finditer(
-            r"^\{[^\r\n]*\(([0-9]{1,9})\)\}:[ \t]*([^\r\n]*)", protocol, re.MULTILINE)]
+        row["diagnostics"] = protocol_diagnostics(protocol)
         begin_ok = lines and lines[0] == "selected:" + manifest["ert_path"]
         marker_ok = protocol.splitlines()[:1] == ["HARNESS77-BEGIN:" + marker] and \
             protocol.splitlines()[-1:] == ["HARNESS77-END:" + marker]

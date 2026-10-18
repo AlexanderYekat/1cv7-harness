@@ -66,5 +66,25 @@ class BaseTraceTests(unittest.TestCase):
         self.assertEqual(launcher.PHASES["open"], "open")
 
 
+
+class ProtocolDiagnosticsTests(unittest.TestCase):
+    """Task 009: the load protocol keeps column and source line for the marking."""
+
+    def test_marker_line_gives_column_and_source(self):
+        protocol = ("HARNESS77-BEGIN:r:check\r\n"
+                    "Ф77 = Строка<<?>> + \"x\";\r\n"
+                    "{C:\\X\\ОБРАБОТКА.ERT(6)}: Ожидается символ '('\r\n"
+                    "{C:\\X\\ОБРАБОТКА.ERT(28)}: Процедура или функция объявлена (Поздняя77)\r\n"
+                    "HARNESS77-END:r:check")
+        self.assertEqual(launcher.protocol_diagnostics(protocol), [
+            {"line": 6, "message": "Ожидается символ '('", "column": 13, "source_line": 'Ф77 = Строка + "x";'},
+            {"line": 28, "message": "Процедура или функция объявлена (Поздняя77)"}])
+
+    def test_no_marker_or_two_markers_keep_line_and_message_only(self):
+        protocol = "А<<?>> Б<<?>>\n{(2)}: Ошибка в выражении\n{(3)}: Неопознанный оператор"
+        self.assertEqual(launcher.protocol_diagnostics(protocol),
+                         [{"line": 2, "message": "Ошибка в выражении"}, {"line": 3, "message": "Неопознанный оператор"}])
+
+
 if __name__ == "__main__":
     unittest.main()

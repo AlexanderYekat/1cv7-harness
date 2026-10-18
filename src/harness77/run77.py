@@ -138,6 +138,22 @@ def _judge_tests(project, platform_result, platform_passed):
                         reason=None if met else "a declared test expectation was not met")
 
 
+def _triage(diagnostics, ert_path):
+    """Root/cascade marking against the module this run built (task 009)."""
+    from .ert_module import ErtError, extract_text
+    from .triage77 import triage
+    try:
+        text = extract_text(Path(ert_path))
+    except (OSError, ErtError):
+        text = None
+    try:
+        result = triage(diagnostics, module_text=text)
+    except ValueError as error:
+        return {"error": f"{type(error).__name__}: {error}"}
+    result.pop("limitations", None)
+    return result
+
+
 def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project=None):
     from .backends77 import load_backend
     stage = Stage("platform_check", required=True, scope=STAGE_SCOPES["platform_check"])
@@ -168,8 +184,11 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
         status, reason = BLOCKED, "; ".join(linkage)
     elif incomplete and status == PASSED:
         status, reason = BLOCKED, "a required result file is missing or incomplete"
-    stage.finish(status, reason=reason,
-                 diagnostics=(result.get("load") or {}).get("diagnostics", []),
+    diagnostics = (result.get("load") or {}).get("diagnostics", [])
+    triage = _triage(diagnostics, built["path"]) if diagnostics else None
+    if triage is not None and "diagnostics" in triage:
+        diagnostics = triage.pop("diagnostics")
+    stage.finish(status, reason=reason, diagnostics=diagnostics, triage=triage,
                  platform_checked=result.get("platform_checked", False), backend=backend.name,
                  load=result.get("load"), linkage_ok=not linkage,
                  result_files=result.get("result_files", []),

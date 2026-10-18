@@ -106,6 +106,9 @@ def make_pe(strings, version=(7, 70, 0, 27)):
 
 
 PE_STRINGS = {
+    1440: "Ошибок не обнаружено", 1441: "Нераспознанная синтаксическая ошибка",
+    1488: "Ожидается имя формального параметра", 1500: "Function %s(%s)",
+    1600: "Индексное выражение должно иметь целочисленный тип", 1611: "Деление на 0",
     1621: "Сообщение, не пара",
     1640: "If,Если", 1641: "Then,Тогда", 1642: "String,Строка", 1643: "CreateObject,СоздатьОбъект",
     1650: "Message,Сообщить", 1651: "Accs,Счета,Account,Счет", 1652: "Name,Name",
@@ -171,6 +174,22 @@ class StringResourceTests(unittest.TestCase):
         self.assertEqual(block["names"], ["If", "Если", "Then", "Тогда", "String", "Строка",
                                           "CreateObject", "СоздатьОбъект"])
 
+    def test_messages_are_split_into_compile_and_runtime_blocks(self):
+        messages = catalog77.compiler_messages(make_pe(PE_STRINGS))
+        self.assertEqual([(m["id"], m["block"]) for m in messages],
+                         [(1440, "compile"), (1441, "compile"), (1488, "compile"),
+                          (1600, "runtime"), (1611, "runtime"), (1621, "runtime")])
+        self.assertNotIn(1500, [m["id"] for m in messages])  # a text template, not a message
+
+    def test_unknown_message_layout_is_rejected(self):
+        without_runtime = {k: v for k, v in PE_STRINGS.items() if k != 1600}
+        swapped = {**PE_STRINGS, 1440: "Индексное выражение должно иметь целочисленный тип",
+                   1600: "Ошибок не обнаружено"}
+        doubled = {**PE_STRINGS, 1442: "Ошибок не обнаружено"}
+        for strings in (without_runtime, swapped, doubled):
+            with self.subTest(strings=sorted(set(strings.items()) ^ set(PE_STRINGS.items()))),                     self.assertRaises(catalog77.CatalogError):
+                catalog77.compiler_messages(make_pe(strings))
+
     def test_missing_keyword_table_and_bad_pe(self):
         with self.assertRaises(catalog77.CatalogError):
             catalog77.reserved_block(make_pe({1650: "Message,Сообщить"}))
@@ -227,9 +246,19 @@ class PackagedCatalogTests(unittest.TestCase):
         self.assertEqual(len(reserved), 162)
 
     def test_counts_and_known_signatures(self):
-        self.assertEqual(self.catalog["counts"], {"items": 1133, "pairs": 1322})
+        self.assertEqual(self.catalog["counts"], {"items": 1133, "pairs": 1322, "messages": 95})
         methods = {i["name_ru"]: i for i in self.catalog["items"] if i["kind"] == "method"}
         self.assertEqual(methods["ПолучитьПроводку"]["max_params"], 0)
+
+    def test_messages_seen_from_the_native_compiler(self):
+        # Native probes of task 009 (7.70.027) produced these messages at load.
+        messages = {m["id"]: m for m in self.catalog["messages"]}
+        self.assertEqual(sum(m["block"] == "compile" for m in messages.values()), 72)
+        for string_id, text in ((1475, "Обнаружено логическое завершение исходного текста модуля"),
+                                (1488, "Ожидается имя формального параметра"), (1531, "Процедура не обнаружена"),
+                                (1539, "Слишком много фактических параметров"), (1535, "Переменная не определена")):
+            self.assertEqual((messages[string_id]["text"], messages[string_id]["block"]), (text, "compile"))
+        self.assertEqual(messages[1611]["block"], "runtime")
 
     @unittest.skipUnless((BIN / "1cv7Lang.als").is_file() and (BIN / "1crcrus.dll").is_file(),
                          "installed 1C 7.7 BIN not available")

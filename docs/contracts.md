@@ -1,7 +1,7 @@
 # Контракты harness77 0.1
 
 Реализованы операции: `lint`, `compiler-protocol`, `extract`, `build`, `run`, `catalog`,
-`form-extract`.
+`form-extract`, `triage`.
 `harness77 --version` и `python -m harness77 --version` выводят версию пакета.
 У каждой операции есть `--help`. Пути разрешаются относительно CWD вызывающего;
 пакет, словарь и зависимости от CWD не зависят. Stdout/stderr CLI — UTF-8.
@@ -39,12 +39,35 @@ L7711 — чтение необъявленного к этому месту и�
 Код 0 — JSON с путём, размером и SHA-256 результата, версией и хешами источников
 в stdout; код 2 — `blocked` в stderr. Пакет содержит каталог 7.70.027
 (`catalog77.json`) и список глобальных имён стенда (`lint77-globals.json`).
+Задача 009 добавила раздел `messages`: номер строки ресурса, текст и блок
+(`compile` — 72, `runtime` — 23) сообщений языка из `1crcrus.dll`; блоки
+определяются по опорным строкам, другая раскладка — `blocked`. Прежние разделы
+не изменились.
 
 `harness77 compiler-protocol INPUT [--encoding auto|utf-8|cp1251]
 [--format json] [--output OUTPUT]` сохраняет [контракт 1.1](tasks/001-compiler-protocol.md).
 Код 1 и `failed` означают пригодный протокол ошибок; код 2 и `blocked` —
 непригодный вход. Ошибки файлов/публикации дают код 2 и сообщение stderr.
 Импорт никогда не выдаёт `passed`. Он не связывает старый протокол с новой ERT.
+
+## Корень и каскад — команда `triage` ([задача 009](tasks/009-protocol-root-cascade.md))
+
+`harness77 triage PROTOCOL [--source МОДУЛЬ.txt | --ert ФАЙЛ.ert] [--encoding auto|utf-8|cp1251]
+[--output NEW.json]` размечает протокол Конфигуратора (с завершающим маркером) или
+нативный протокол загрузки (`native/Протоколы проверки/*.txt`, без маркера).
+JSON `schema_version=1`, `operation=triage`: `protocol` (имя, SHA-256, вид, кодировка),
+`module` (`used`, `verified`, причина отказа, вид и SHA-256 источника), `catalog`,
+`summary`, `rules` (код → нативные пробы-основания), `diagnostics`, `issues`,
+`limitations`. Каждая диагностика сохраняет поля разбора и получает `index`,
+`message_id`, `argument`, `role` (`root`|`cascade`|`link`|`unknown`), `cause`
+(`index` корня для каскада), `confidence` (`high`|`medium`|`low`), `rule` и
+`explanation`. `summary`: число диагностик по ролям, `complete` (нет признаков
+остановки компиляции), `compiled_through_line`, `to_fix` (корни и `link`).
+Диагностики не удаляются и не переставляются. Модуль используется, только если
+строки протокола совпадают с ним без учёта пробелов по краям. Код 1 — `failed`
+(протокол ошибок размечен), код 2 — `blocked` (непригодный протокол, существующий
+выход, ошибка файла). `--output` — только новый файл, без него — stdout.
+Разметка — подсказка: после исправления корней нужна новая компиляция.
 
 ## Сборка и извлечение
 
@@ -166,6 +189,11 @@ shutdown/total`; общий покрывает сумму фаз; несогла
 `timeout_phase`, `reason`; `shutdown` и `screenshots`. Большие результаты —
 файлы каталога запуска; размер и SHA-256 считаются потоком, полная копия файла
 в памяти не держится.
+
+Задача 009: если загрузка дала диагностики, этап `platform_check` размечает их
+по модулю собранной в этом запуске ERT — поля `triage` выше в `diagnostics`,
+`summary`, `module`, `rules`, `catalog` в `triage`. `load.diagnostics` остаются
+неразмеченными. Нативный launcher дополнительно передаёт `column` и `source_line`.
 
 Задача 006 ([задание](tasks/006-long-native-report.md)): `[platform.parameters]`
 профиля проекта — плоские строки, числа и логические значения — передаются

@@ -45,8 +45,20 @@ class RunCycleTests(unittest.TestCase):
                                         "diagnostics": [{"line": 2, "message": "Ошибка в выражении"}]})
         report = self.go(scenario)
         self.assertEqual((report["status"], report["exit_code"]), ("failed", 1))
-        self.assertEqual(self.stage(report, "platform_check")["status"], "failed")
+        platform = self.stage(report, "platform_check")
+        self.assertEqual(platform["status"], "failed")
         self.assertEqual(self.stage(report, "tests")["status"], "skipped")
+        # Task 009: the diagnostics are marked against the module this run built.
+        marked = platform["diagnostics"][0]
+        self.assertEqual((marked["line"], marked["message"], marked["message_id"], marked["role"]),
+                         (2, "Ошибка в выражении", 1521, "root"))
+        self.assertEqual(platform["triage"]["summary"]["to_fix"], [1])
+        self.assertEqual(platform["triage"]["module"], {"used": True, "verified": False, "reason": None})
+        self.assertEqual(platform["load"]["diagnostics"], [{"line": 2, "message": "Ошибка в выражении"}])
+
+    def test_successful_load_has_no_marking(self):
+        platform = self.stage(self.go(base_scenario(result_files=[])), "platform_check")
+        self.assertEqual((platform["diagnostics"], platform["triage"]), ([], None))
 
     def test_runtime_error_fails_the_test(self):
         scenario = base_scenario(operations=[{"name": "control-42", "status": "failed",
