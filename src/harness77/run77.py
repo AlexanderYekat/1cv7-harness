@@ -160,7 +160,8 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
     backend = load_backend(stand, ert_path=built["path"], ert_sha256=built["sha256"],
                            run_id=run_id, run_dir=run_dir, clock=clock,
                            parameters=project.parameters if project else None,
-                           commands=project.commands() if project else ())
+                           commands=project.commands() if project else (),
+                           captures=project.visual.captures() if project and project.visual else ())
     # The backend owns the clock (manual for simulation, monotonic natively); the
     # run clock must share it so the §8.5 deadlines see the same time.
     run_clock = RunClock(deadlines, run_id, clock=backend.clock)
@@ -197,6 +198,7 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
                  phase_durations_s=result.get("phase_durations_s", {}),
                  open=result.get("open"),
                  screenshots=result.get("screenshots", []),
+                 **({"captures": result["captures"]} if "captures" in result else {}),
                  shutdown=result.get("shutdown"))
     return stage, result, backend
 
@@ -224,7 +226,7 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
               "inputs": project.public(), "platform": stand.public(),
               "platform_checked": False, "cancelled": False, "timeout_phase": None,
               "reason": None, "stages": [], "result_files": []}
-    static = _build = platform = tests = None
+    static = _build = platform = tests = visual = None
     platform_result = None
     try:
         static = _static_stage(project)
@@ -235,6 +237,9 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
                 SKIPPED, reason="no ERT was built")
             tests = Stage("tests", required=True, scope=STAGE_SCOPES["tests"]).finish(
                 SKIPPED, reason="no ERT was built")
+            if project.visual is not None:
+                from .visual77 import STAGE_SCOPE
+                visual = Stage("visual", required=True, scope=STAGE_SCOPE).finish(SKIPPED, reason="no ERT was built")
         else:
             report["artifact"] = build_stage.evidence[0]
             report["artifact"]["module_sha256"] = build_stage.details["module_sha256"]
@@ -248,9 +253,13 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
             report["screenshots"] = platform_result.get("screenshots", [])
             report["shutdown"] = platform_result.get("shutdown")
             tests = _judge_tests(project, platform_result, platform.status == PASSED)
+            if project.visual is not None:
+                # Task 010: captures against approved baselines; a run never writes a baseline.
+                from .visual77 import visual_stage
+                visual = visual_stage(project.visual, platform_result, run_dir, platform.status == PASSED)
     finally:
         observe.close()
-    stages = [s for s in (static, _build, platform, tests) if s is not None]
+    stages = [s for s in (static, _build, platform, tests, visual) if s is not None]
     status = _overall(stages)
     first_bad = next((s for s in stages if s.required and s.status in (FAILED, BLOCKED)), None)
     report.update(status=status, exit_code=exit_code(status), finished_at=_now_iso(),

@@ -11,6 +11,7 @@ import ctypes as C
 from ctypes import wintypes as W
 import statistics
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -20,6 +21,11 @@ BM_CLICK = 0x00F5
 FIRST_WINDOW_ID = 4152
 SMTO_ABORTIFHUNG = 0x0002
 TOLERANCE_PX = 2
+SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
+GWL_STYLE = -16
+WS_VISIBLE = 0x10000000
+PW_CLIENTONLY, PW_RENDERFULLCONTENT = 1, 2
+DESKTOP_ACCESS = 0x0001 | 0x0002 | 0x0040 | 0x0080  # read/create windows, enumerate, write objects
 
 
 def _line(points, sizes):
@@ -105,6 +111,79 @@ class RECT(C.Structure):
     _fields_ = [("left", W.LONG), ("top", W.LONG), ("right", W.LONG), ("bottom", W.LONG)]
 
 
+class GUITHREADINFO(C.Structure):
+    _fields_ = [("cbSize", W.DWORD), ("flags", W.DWORD), ("hwndActive", W.HWND), ("hwndFocus", W.HWND),
+                ("hwndCapture", W.HWND), ("hwndMenuOwner", W.HWND), ("hwndMoveSize", W.HWND),
+                ("hwndCaret", W.HWND), ("rcCaret", RECT)]
+
+
+class LOGFONTW(C.Structure):
+    _fields_ = [("lfHeight", W.LONG), ("lfWidth", W.LONG), ("lfEscapement", W.LONG), ("lfOrientation", W.LONG),
+                ("lfWeight", W.LONG), ("lfItalic", W.BYTE), ("lfUnderline", W.BYTE), ("lfStrikeOut", W.BYTE),
+                ("lfCharSet", W.BYTE), ("lfOutPrecision", W.BYTE), ("lfClipPrecision", W.BYTE),
+                ("lfQuality", W.BYTE), ("lfPitchAndFamily", W.BYTE), ("lfFaceName", W.WCHAR * 32)]
+
+
+class NONCLIENTMETRICSW(C.Structure):
+    _fields_ = [("cbSize", W.UINT), ("iBorderWidth", C.c_int), ("iScrollWidth", C.c_int),
+                ("iScrollHeight", C.c_int), ("iCaptionWidth", C.c_int), ("iCaptionHeight", C.c_int),
+                ("lfCaptionFont", LOGFONTW), ("iSmCaptionWidth", C.c_int), ("iSmCaptionHeight", C.c_int),
+                ("lfSmCaptionFont", LOGFONTW), ("iMenuWidth", C.c_int), ("iMenuHeight", C.c_int),
+                ("lfMenuFont", LOGFONTW), ("lfStatusFont", LOGFONTW), ("lfMessageFont", LOGFONTW),
+                ("iPaddedBorderWidth", C.c_int)]
+
+
+class HIGHCONTRASTW(C.Structure):
+    _fields_ = [("cbSize", W.UINT), ("dwFlags", W.DWORD), ("lpszDefaultScheme", W.LPWSTR)]
+
+
+def environment(window, configuration_sha256, platform_version):  # pragma: no cover - native
+    """What the image of a form depends on besides the form: compared before any pixel.
+
+    Platform and configuration, Windows build, system and window DPI, theme,
+    system fonts and smoothing, locale and the capture method. Read in the
+    measuring process of the same user session.
+    """
+    user = C.WinDLL("user32", use_last_error=True)
+    kernel32 = C.WinDLL("kernel32")
+    uxtheme = C.WinDLL("uxtheme")
+    user.SystemParametersInfoW.argtypes = [W.UINT, W.UINT, C.c_void_p, W.UINT]
+    user.GetDpiForWindow.argtypes = [W.HWND]
+    version = sys.getwindowsversion()
+
+    def parameter(action, value, sized=True):
+        if not user.SystemParametersInfoW(action, C.sizeof(value) if sized else 0, C.byref(value), 0):
+            raise C.WinError(C.get_last_error())
+        return value
+
+    def font(record):
+        return {"face": record.lfFaceName, "height": record.lfHeight, "weight": record.lfWeight,
+                "quality": record.lfQuality}
+
+    metrics = parameter(0x0029, NONCLIENTMETRICSW(cbSize=C.sizeof(NONCLIENTMETRICSW)))  # SPI_GETNONCLIENTMETRICS
+    contrast = parameter(0x0042, HIGHCONTRASTW(cbSize=C.sizeof(HIGHCONTRASTW)))  # SPI_GETHIGHCONTRAST
+    smoothing = parameter(0x004A, W.BOOL(), sized=False)  # SPI_GETFONTSMOOTHING
+    smoothing_type = parameter(0x200A, W.UINT(), sized=False)  # SPI_GETFONTSMOOTHINGTYPE
+    name = C.create_unicode_buffer(260)
+    themed = uxtheme.GetCurrentThemeName(name, 260, None, 0, None, 0) == 0
+    units = user.GetDialogBaseUnits()
+    return {"platform_version": platform_version, "configuration": configuration_sha256,
+            "windows_build": f"{version.major}.{version.minor}.{version.build}",
+            "system_dpi": user.GetDpiForSystem(), "window_dpi": user.GetDpiForWindow(window),
+            "theme": {"active": bool(uxtheme.IsThemeActive()), "app_themed": bool(uxtheme.IsAppThemed()),
+                      "name": Path(name.value).name if themed else None,
+                      "high_contrast": bool(contrast.dwFlags & 1)},
+            "font": {"dialog_base_units": [units & 0xFFFF, (units >> 16) & 0xFFFF],
+                     "smoothing": bool(smoothing.value), "smoothing_type": smoothing_type.value,
+                     "caption": font(metrics.lfCaptionFont), "message": font(metrics.lfMessageFont),
+                     "caption_height": metrics.iCaptionHeight, "border_width": metrics.iBorderWidth,
+                     "padded_border_width": metrics.iPaddedBorderWidth},
+            "locale": {"user_lcid": kernel32.GetUserDefaultLCID(), "ansi_cp": kernel32.GetACP(),
+                       "oem_cp": kernel32.GetOEMCP()},
+            "capture": {"method": "PrintWindow", "flags": PW_RENDERFULLCONTENT, "desktop": "private",
+                        "main_window": "SW_SHOWNOACTIVATE"}}
+
+
 class OwnedForm:  # pragma: no cover - native, verified on the stand
     """Read-only inventory of the owned windows plus one verified button click."""
 
@@ -152,6 +231,66 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
 
     def dpi(self, hwnd):
         return self.dpi_for_window(hwnd) if self.dpi_for_window else None
+
+    def state(self, hwnd):
+        """Own WS_VISIBLE bit and IsWindowVisible (false while any ancestor is hidden)."""
+        self.user.GetWindowLongW.argtypes = [W.HWND, C.c_int]
+        style = self.user.GetWindowLongW(hwnd, GWL_STYLE) & 0xFFFFFFFF
+        return {"hwnd": hwnd, "style": style, "ws_visible": bool(style & WS_VISIBLE),
+                "visible": bool(self.user.IsWindowVisible(hwnd))}
+
+    def show(self, hwnd, command, budget_s=5.0):
+        """``ShowWindowAsync`` to an owned top-level window, then wait for the visibility to follow.
+
+        Only the run's own server thread on its own private desktop is touched;
+        no activation (``SW_SHOWNOACTIVATE`` / ``SW_HIDE``) and no desktop switch.
+        """
+        self.modal.verify()
+        if self.modal.owner(hwnd) != (self.modal.server["pid"], self.modal.tid):
+            raise RuntimeError("window is not on the verified server thread")
+        self.user.ShowWindowAsync.argtypes = [W.HWND, C.c_int]
+        before = self.state(hwnd)
+        started = time.monotonic()
+        if not self.user.ShowWindowAsync(hwnd, command):
+            raise C.WinError(C.get_last_error())
+        wanted = command != SW_HIDE
+        while self.state(hwnd)["visible"] != wanted and time.monotonic() - started < budget_s:
+            time.sleep(0.05)
+        after = self.state(hwnd)
+        return {"command": command, "before": before, "after": after, "reached": after["visible"] == wanted,
+                "elapsed_s": round(time.monotonic() - started, 3), "identity_rechecked": True}
+
+    def caret(self, target):
+        """The server thread's caret as a rectangle of ``target``'s window image, or None.
+
+        The system caret blinks, so captures differ in its rectangle (V0); the
+        rectangle comes from ``GetGUIThreadInfo`` and is masked, nothing else.
+        """
+        self.user.GetGUIThreadInfo.argtypes = [W.DWORD, C.POINTER(GUITHREADINFO)]
+
+        def read():
+            info = GUITHREADINFO(cbSize=C.sizeof(GUITHREADINFO))
+            if not self.user.GetGUIThreadInfo(self.modal.tid, C.byref(info)):
+                raise C.WinError(C.get_last_error())
+            return info
+        info = on_desktop(self.modal.desktop, read)
+        focus = None
+        if info.hwndFocus:
+            focus = {"id": self.user.GetDlgCtrlID(info.hwndFocus)}
+        if not info.hwndCaret or info.rcCaret.right <= info.rcCaret.left:
+            return None, focus
+        rect = RECT(info.rcCaret.left, info.rcCaret.top, info.rcCaret.right, info.rcCaret.bottom)
+        self.user.MapWindowPoints(info.hwndCaret, None, C.byref(rect), 2)
+        origin = RECT()
+        if not self.user.GetWindowRect(target, C.byref(origin)):
+            raise C.WinError(C.get_last_error())
+        caret = {"x": rect.left - origin.left, "y": rect.top - origin.top,
+                 "width": rect.right - rect.left, "height": rect.bottom - rect.top}
+        size = (origin.right - origin.left, origin.bottom - origin.top)
+        if caret["x"] + caret["width"] <= 0 or caret["y"] + caret["height"] <= 0 \
+                or caret["x"] >= size[0] or caret["y"] >= size[1]:
+            return None, focus  # the caret is outside this window
+        return caret, focus
 
     def inventory(self, budget_s=10.0):
         """All owned top-level windows with their descendants: class, text, ID, parent."""
@@ -224,6 +363,116 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                 "elapsed_s": round(time.monotonic() - started, 3), "identity_rechecked": True,
                 "button": {k: button[k] for k in ("hwnd", "class", "text", "visible", "enabled", "rect",
                                                   "inside_client")}}
+
+
+class BITMAPINFOHEADER(C.Structure):
+    _fields_ = [("biSize", W.DWORD), ("biWidth", W.LONG), ("biHeight", W.LONG), ("biPlanes", W.WORD),
+                ("biBitCount", W.WORD), ("biCompression", W.DWORD), ("biSizeImage", W.DWORD),
+                ("biXPelsPerMeter", W.LONG), ("biYPelsPerMeter", W.LONG), ("biClrUsed", W.DWORD),
+                ("biClrImportant", W.DWORD)]
+
+
+def _print_window(hwnd, flags):  # pragma: no cover - native GDI
+    """PrintWindow into a 32-bit top-down DIB section; returns an RGB image."""
+    from harness77.visual77 import Image
+    user = C.WinDLL("user32", use_last_error=True)
+    gdi = C.WinDLL("gdi32", use_last_error=True)
+    user.GetWindowRect.argtypes = user.GetClientRect.argtypes = [W.HWND, C.POINTER(RECT)]
+    user.PrintWindow.argtypes = [W.HWND, W.HDC, W.UINT]
+    gdi.CreateCompatibleDC.argtypes = [W.HDC]
+    gdi.CreateCompatibleDC.restype = W.HDC
+    gdi.CreateDIBSection.argtypes = [W.HDC, C.POINTER(BITMAPINFOHEADER), W.UINT, C.POINTER(C.c_void_p),
+                                     W.HANDLE, W.DWORD]
+    gdi.CreateDIBSection.restype = W.HBITMAP
+    gdi.SelectObject.argtypes = [W.HDC, W.HGDIOBJ]
+    gdi.SelectObject.restype = W.HGDIOBJ
+    gdi.DeleteObject.argtypes = [W.HGDIOBJ]
+    gdi.DeleteDC.argtypes = [W.HDC]
+    rect = RECT()
+    measure = user.GetClientRect if flags & PW_CLIENTONLY else user.GetWindowRect
+    if not measure(hwnd, C.byref(rect)):
+        raise C.WinError(C.get_last_error())
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"window has no area: {width}x{height}")
+    header = BITMAPINFOHEADER(biSize=C.sizeof(BITMAPINFOHEADER), biWidth=width, biHeight=-height,
+                              biPlanes=1, biBitCount=32)
+    memory = gdi.CreateCompatibleDC(None)
+    if not memory:
+        raise RuntimeError("CreateCompatibleDC failed")
+    bits = C.c_void_p()
+    bitmap = gdi.CreateDIBSection(memory, C.byref(header), 0, C.byref(bits), None, 0)
+    try:
+        if not bitmap or not bits.value:
+            raise RuntimeError("CreateDIBSection failed")
+        previous = gdi.SelectObject(memory, bitmap)
+        C.set_last_error(0)
+        printed = user.PrintWindow(hwnd, memory, flags)
+        error = C.get_last_error()
+        gdi.GdiFlush()
+        data = C.string_at(bits.value, width * height * 4)
+        gdi.SelectObject(memory, previous)
+    finally:
+        if bitmap:
+            gdi.DeleteObject(bitmap)
+        gdi.DeleteDC(memory)
+    if not printed:
+        raise RuntimeError(f"PrintWindow failed, last error {error}")
+    rgb = bytearray(width * height * 3)
+    rgb[0::3], rgb[1::3], rgb[2::3] = data[2::4], data[1::4], data[0::4]
+    return Image(width, height, bytes(rgb))
+
+
+def capture(hwnd, flags=0, desktop=None, timeout_s=10.0):  # pragma: no cover - native
+    """One window to an RGB image by ``PrintWindow``, in this thread or on ``desktop``."""
+    if desktop is None:
+        return _print_window(hwnd, flags)
+    return on_desktop(desktop, lambda: _print_window(hwnd, flags), timeout_s)
+
+
+def on_desktop(desktop, work, timeout_s=10.0):  # pragma: no cover - native
+    """``work()`` in a fresh thread attached to ``desktop``; its value or its exception.
+
+    ``SetThreadDesktop`` changes only that thread (a thread without windows may
+    switch); the input desktop is never switched. Some calls need it:
+    ``GetGUIThreadInfo`` for a thread of another desktop is denied (V1).
+    """
+    outcome = {}
+
+    def run():
+        user = C.WinDLL("user32", use_last_error=True)
+        kernel32 = C.WinDLL("kernel32")
+        user.OpenDesktopW.argtypes = [W.LPCWSTR, W.DWORD, W.BOOL, W.DWORD]
+        user.OpenDesktopW.restype = W.HANDLE
+        user.GetThreadDesktop.argtypes = [W.DWORD]
+        user.GetThreadDesktop.restype = W.HANDLE
+        user.SetThreadDesktop.argtypes = [W.HANDLE]
+        user.CloseDesktop.argtypes = [W.HANDLE]
+        original = user.GetThreadDesktop(kernel32.GetCurrentThreadId())
+        handle = user.OpenDesktopW(desktop, 0, False, DESKTOP_ACCESS)
+        if not handle:
+            outcome["error"] = C.WinError(C.get_last_error())
+            return
+        try:
+            if not user.SetThreadDesktop(handle):
+                outcome["error"] = C.WinError(C.get_last_error())
+                return
+            try:
+                outcome["value"] = work()
+            except (OSError, RuntimeError, ValueError) as error:
+                outcome["error"] = error
+            finally:
+                user.SetThreadDesktop(original)
+        finally:
+            user.CloseDesktop(handle)
+    worker = threading.Thread(target=run, name="harness77-desktop", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        raise RuntimeError("desktop thread did not finish in time")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def awareness():  # pragma: no cover - native

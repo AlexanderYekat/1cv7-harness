@@ -71,10 +71,11 @@ class SimulationBackend(_Backend):
 
     name = "simulation"
 
-    def __init__(self, scenario, *, clock, **kwargs):
+    def __init__(self, scenario, *, clock, captures=(), **kwargs):
         super().__init__(**kwargs)
         self.scenario = scenario
         self.clock = clock
+        self.captures = list(captures)
 
     def _steps(self, spec, timer, cancel):
         duration = float(spec.get("duration_s", 0.0))
@@ -135,6 +136,7 @@ class SimulationBackend(_Backend):
             return result
         result["operations"] = [dict(op) for op in calc.get("operations", [])]
         self._persist_results(calc, result)
+        self._captures(result)
         if result["reason"] == "artifact_write_error":
             self._screenshots(result, "calculation")
             self._shutdown(result, run_clock, cancel, observe)
@@ -167,6 +169,33 @@ class SimulationBackend(_Backend):
             evidence = file_evidence(target, root=self.run_dir, complete=complete,
                                      expected_sha256=spec.get("expected_sha256"))
             result["result_files"].append(evidence)
+
+    def _captures(self, result):
+        """Scripted form captures (task 010): each requested state and window the scenario draws."""
+        if not self.captures:
+            return
+        from .visual77 import Image, encode_png
+        drawn = {(c.get("state"), c.get("window")): c for c in self.scenario.get("captures", [])}
+        result["captures"] = []
+        for request in self.captures:
+            spec = drawn.get((request["state"], request["window"]))
+            if spec is None:
+                continue  # not captured: the visual stage blocks the check
+            record = {key: spec[key] for key in ("environment", "caret", "error") if key in spec}
+            record.update(state=request["state"], window=request["window"], stable=spec.get("stable", True),
+                          attempts=spec.get("attempts", 2))
+            if "image" in spec:
+                width, height = spec["image"]["width"], spec["image"]["height"]
+                pixels = bytearray(bytes(spec["image"].get("fill", [240, 240, 240])) * (width * height))
+                for x, y, w, h, colour in spec["image"].get("rects", []):
+                    for row in range(y, y + h):
+                        pixels[(row * width + x) * 3:(row * width + x + w) * 3] = bytes(colour) * w
+                target = self.run_dir / "form" / f"capture-{request['state']}-{request['window']}.png"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(encode_png(Image(width, height, bytes(pixels))))
+                record["file"] = file_evidence(target, root=self.run_dir, complete=True)
+                record.update(width=width, height=height)
+            result["captures"].append(record)
 
     def _stop(self, result, run_clock, cancel, observe, outcome):
         if outcome == "cancelled":
@@ -247,18 +276,19 @@ class ImportBackend(_Backend):
         return result
 
 
-def load_backend(stand, *, ert_path, ert_sha256, run_id, run_dir, clock=None, parameters=None, commands=()):
+def load_backend(stand, *, ert_path, ert_sha256, run_id, run_dir, clock=None, parameters=None, commands=(),
+                 captures=()):
     common = {"ert_path": ert_path, "ert_sha256": ert_sha256, "run_id": run_id,
               "run_dir": run_dir, "base_name": Path(stand.base).name}
     if stand.backend == "simulation":
         from .deadlines77 import ManualClock
         scenario = json.loads(Path(stand.scenario).read_text(encoding="utf-8"))
         # Simulation drives time explicitly, so scripted long runs are instant.
-        return SimulationBackend(scenario, clock=ManualClock(), **common)
+        return SimulationBackend(scenario, clock=ManualClock(), captures=captures, **common)
     if stand.backend == "import":
         return ImportBackend(stand.import_protocol, clock=clock or Clock(), **common)
     if stand.backend == "native":
         from . import native77
         return native77.NativeBackend(stand, clock=clock or Clock(), parameters=parameters,
-                                      commands=commands, **common)
+                                      commands=commands, captures=captures, **common)
     raise ValueError(f"unknown backend: {stand.backend}")

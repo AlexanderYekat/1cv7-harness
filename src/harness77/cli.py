@@ -13,7 +13,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="harness77", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("command", choices=("lint", "compiler-protocol", "extract", "build", "run", "catalog",
-                                            "form-extract", "triage"))
+                                            "form-extract", "triage", "visual"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.command == "lint":
@@ -28,6 +28,8 @@ def main(argv=None):
         from .form77 import main as operation
     elif args.command == "triage":
         from .triage77 import main as operation
+    elif args.command == "visual":
+        from .visual77 import main as operation
     else:
         from .artifacts import main as artifact_main
         return artifact_main(args.command, args.arguments)

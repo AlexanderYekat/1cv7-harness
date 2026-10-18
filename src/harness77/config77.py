@@ -75,6 +75,8 @@ class ProjectProfile:
     parameters: dict = field(default_factory=dict)
     # Form description (task 008); None keeps the template's form.
     form: Path | None = None
+    # Visual checks of the form against approved baselines (task 010).
+    visual: object | None = None
 
     def public(self):
         return {"project_id": self.project_id, "profile": path_tag(self.path),
@@ -83,7 +85,8 @@ class ProjectProfile:
                 "encoding": self.encoding, "legacy_normalize": self.legacy_normalize,
                 "analysis": {"globals": [path_tag(p) for p in self.globals],
                              "allow": list(self.allow), "strict": self.strict},
-                "tests": [dict(t) for t in self.tests], "parameters": dict(self.parameters)}
+                "tests": [dict(t) for t in self.tests], "parameters": dict(self.parameters),
+                "visual": self.visual.public() if self.visual is not None else None}
 
     def commands(self):
         """Commands of the declared tests, in declaration order, without repeats."""
@@ -150,6 +153,13 @@ def load_project(path) -> ProjectProfile:
     if not isinstance(parameters, dict) or not all(
             isinstance(value, (str, int, float, bool)) for value in parameters.values()):
         raise ConfigError(f"{path}: [platform.parameters] допускает только строки, числа и логические значения")
+    visual = None
+    if "visual" in data:
+        from .visual77 import VisualError, parse_config
+        try:
+            visual = parse_config(data["visual"], base_dir)
+        except VisualError as error:
+            raise ConfigError(f"{path}: {error}") from None
     return ProjectProfile(
         path=path, project_id=str(_require(project, "id", "project")),
         template=_resolve(base_dir, _require(build, "template", "build"), "build.template"),
@@ -160,7 +170,7 @@ def load_project(path) -> ProjectProfile:
         allow=tuple(str(a) for a in analysis.get("allow", [])),
         strict=bool(analysis.get("strict", False)),
         tests=tuple(tests), deadlines_raw=dict(data.get("deadlines", {})), parameters=dict(parameters),
-        form=_resolve(base_dir, build["form"], "build.form") if "form" in build else None)
+        form=_resolve(base_dir, build["form"], "build.form") if "form" in build else None, visual=visual)
 
 
 def load_stand(path) -> StandProfile:

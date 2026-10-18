@@ -36,10 +36,11 @@ class NativeBackend:
     name = "native"
 
     def __init__(self, stand, *, clock, ert_path, ert_sha256, run_id, run_dir, base_name="",
-                 parameters=None, commands=()):
+                 parameters=None, commands=(), captures=()):
         self.stand = stand
         self.parameters = dict(parameters or {})
         self.commands = list(commands)
+        self.captures = list(captures)
         self.clock = clock
         self.ert_path = Path(ert_path)
         self.ert_sha256 = ert_sha256
@@ -97,6 +98,9 @@ class NativeBackend:
                 command += ["--" + role, str(path)]
         if self.stand.screenshots:
             command.append("--screenshots")
+        if self.captures:
+            # Form states the visual checks need (task 010); older launchers ignore it.
+            command += ["--captures-json", json.dumps(self.captures)]
         # The launcher owns the phase deadlines; this is only a hard wall-clock backstop.
         backstop = deadlines.total_s + max(30.0, deadlines.shutdown_s)
         # After a cancellation the launcher gets the cancel and shutdown phases to return.
@@ -141,6 +145,15 @@ class NativeBackend:
             return self._blocked(f"native_launcher_error: unreadable result: {error}")
         return self._map(produced, exit_code, forced, cancelled)
 
+    def _capture(self, spec):
+        """A reported form capture with its file re-evidenced from disk (task 010)."""
+        record = dict(spec)
+        file = spec.get("file") or {}
+        if file.get("path"):
+            record["file"] = file_evidence(self.run_dir / file["path"], root=self.run_dir,
+                                           complete=file.get("complete"), expected_sha256=file.get("sha256"))
+        return record
+
     def _map(self, produced, exit_code, forced, cancelled):
         result = {"backend": self.name, "scope": "native 1C 7.7 run via the stand launcher",
                   "run_id": produced.get("run_id"), "ert_sha256": produced.get("ert_sha256"),
@@ -164,6 +177,9 @@ class NativeBackend:
                  **{key: spec[key] for key in ("operation", "package", "package_status") if key in spec})
             if "path" in spec else spec
             for spec in produced.get("result_files", [])]
+        if self.captures:
+            result["captures"] = [self._capture(spec) for spec in produced.get("captures", [])
+                                  if isinstance(spec, dict)]
         if forced and result["status"] == "passed":
             result["status"], result["reason"] = "blocked", "launcher terminated by backstop; shutdown unverified"
         # A clean shutdown is never inferred from the process exiting.

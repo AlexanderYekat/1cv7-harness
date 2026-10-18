@@ -190,6 +190,43 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(item["status"], "blocked")
         self.assertIn("no form loaded marker", issue)
 
+    def test_capture_requests(self):
+        requests = [{"state": "open", "window": "form"}, {"state": "clicked", "window": "dialog"},
+                    {"state": "open", "window": "form"}]
+        self.assertEqual(form.capture_requests(requests), requests[:2])
+        self.assertEqual(form.capture_requests([]), [])
+        for bad in ({"state": "open"}, [{"state": "closed", "window": "form"}], [{"state": "open", "window": "main"}],
+                    [{"state": "open", "window": "form", "extra": 1}], ["open"]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                form.capture_requests(bad)
+
+    def test_clicked_state_needs_a_click(self):
+        adapter = form.FormAdapter()
+        adapter.request_captures([{"state": "clicked", "window": "form"}])
+        (self.root / "noclick").mkdir()
+        with self.assertRaisesRegex(ValueError, "click_id"):
+            adapter.prepare(self.root / "noclick", {})
+        self.assertFalse((self.root / "noclick" / "form").exists())
+
+    def test_captures_come_from_the_watcher_evidence(self):
+        self.assertIsNone(self.adapter(inspection=self.inspection()).captures(self.run_dir))
+        adapter = form.FormAdapter()
+        adapter.request_captures([{"state": "open", "window": "form"}])
+        (self.root / "cap").mkdir()
+        adapter.prepare(self.root / "cap", {})
+        self.assertEqual(adapter.captures(self.root / "cap"), [])  # the watcher recorded nothing
+        shot = {"state": "open", "window": "form", "stable": True, "file": {"path": "form/capture-open-form.png"}}
+        (self.root / "cap" / "form" / "form-window.json").write_text(json.dumps({"captures": [shot, "junk"]}),
+                                                                    encoding="utf-8")
+        self.assertEqual(adapter.captures(self.root / "cap"), [shot])
+
+    def test_default_adapter_refuses_captures(self):
+        default = launcher.Harness77Adapter()
+        default.request_captures([])
+        self.assertIsNone(default.captures(self.root))
+        with self.assertRaisesRegex(ValueError, "does not capture"):
+            default.request_captures([{"state": "open", "window": "form"}])
+
     def test_result_files_and_platform_status(self):
         adapter = self.adapter(inspection=self.inspection())
         files = adapter.result_files(self.run_dir, [])

@@ -179,6 +179,15 @@ class Harness77Adapter:
         """A context around the session for an adapter's own observer; none by default."""
         return contextlib.nullcontext()
 
+    def request_captures(self, requests):
+        """Form states the product's visual checks need (task 010); this adapter captures none."""
+        if requests:
+            raise ValueError("this launcher does not capture form states")
+
+    def captures(self, run_dir):
+        """Captures for the platform result (task 010); None when none were requested."""
+        return None
+
 
 def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters=None):
     """Reconstruct the controller/client/shutdown scaffolding for an external ERT."""
@@ -281,6 +290,7 @@ def main(argv=None, adapter=None):
     parser.add_argument("--parameters-json", default="{}", help="[platform.parameters] of the project")
     parser.add_argument("--commands-json", default="[]", help="commands of the declared tests, in order")
     parser.add_argument("--screenshots", action="store_true")
+    parser.add_argument("--captures-json", default="[]", help="form states to capture (visual checks)")
     args, _ = parser.parse_known_args(argv)
     out = Path(args.run_dir).resolve()
     result_path = Path(args.result)
@@ -304,6 +314,7 @@ def main(argv=None, adapter=None):
         if sha256(identity_dll) != IDENTITY_SHA:
             raise ValueError("unqualified proxy inspector")
         commands = adapter.commands(parameters, json.loads(args.commands_json))
+        adapter.request_captures(json.loads(args.captures_json))
         # preflight requires a fresh output directory, so validate before creating it.
         adapter.preflight(base, exe, cdb, helper, drive)
         drive.mkdir(parents=True, exist_ok=False)
@@ -340,6 +351,9 @@ def main(argv=None, adapter=None):
         operations, issues = interpret(drive, manifest, lifecycle, shutdown_result, adapter)
         report["operations"] = operations
         report["result_files"] = adapter.result_files(out, operations)
+        captures = adapter.captures(out)
+        if captures is not None:
+            report["captures"] = captures
         report["load"] = {"status": operations[0]["status"] if operations else "blocked",
                           "diagnostics": operations[0]["diagnostics"] if operations else []}
         report["phase_durations_s"] = {"session": lifecycle.get("elapsed_seconds"),
