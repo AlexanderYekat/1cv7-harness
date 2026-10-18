@@ -71,6 +71,8 @@ class ProjectProfile:
     strict: bool
     tests: tuple
     deadlines_raw: dict
+    # Application parameters for the stand launcher, e.g. a report window.
+    parameters: dict = field(default_factory=dict)
 
     def public(self):
         return {"project_id": self.project_id, "profile": path_tag(self.path),
@@ -78,7 +80,11 @@ class ProjectProfile:
                 "encoding": self.encoding, "legacy_normalize": self.legacy_normalize,
                 "analysis": {"globals": [path_tag(p) for p in self.globals],
                              "allow": list(self.allow), "strict": self.strict},
-                "tests": [dict(t) for t in self.tests]}
+                "tests": [dict(t) for t in self.tests], "parameters": dict(self.parameters)}
+
+    def commands(self):
+        """Commands of the declared tests, in declaration order, without repeats."""
+        return list(dict.fromkeys(test["command"] for test in self.tests))
 
 
 @dataclass(frozen=True)
@@ -137,6 +143,10 @@ def load_project(path) -> ProjectProfile:
         if "expect_value" in item:
             test["expect_value"] = str(item["expect_value"])
         tests.append(test)
+    parameters = platform.get("parameters", {})
+    if not isinstance(parameters, dict) or not all(
+            isinstance(value, (str, int, float, bool)) for value in parameters.values()):
+        raise ConfigError(f"{path}: [platform.parameters] допускает только строки, числа и логические значения")
     return ProjectProfile(
         path=path, project_id=str(_require(project, "id", "project")),
         template=_resolve(base_dir, _require(build, "template", "build"), "build.template"),
@@ -146,7 +156,7 @@ def load_project(path) -> ProjectProfile:
         globals=tuple(_resolve(base_dir, g, "analysis.globals") for g in analysis.get("globals", [])),
         allow=tuple(str(a) for a in analysis.get("allow", [])),
         strict=bool(analysis.get("strict", False)),
-        tests=tuple(tests), deadlines_raw=dict(data.get("deadlines", {})))
+        tests=tuple(tests), deadlines_raw=dict(data.get("deadlines", {})), parameters=dict(parameters))
 
 
 def load_stand(path) -> StandProfile:

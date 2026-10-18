@@ -130,11 +130,13 @@ def _judge_tests(project, platform_result, platform_passed):
                         reason=None if met else "a declared test expectation was not met")
 
 
-def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, observe):
+def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project=None):
     from .backends77 import load_backend
     stage = Stage("platform_check", required=True, scope=STAGE_SCOPES["platform_check"])
     backend = load_backend(stand, ert_path=built["path"], ert_sha256=built["sha256"],
-                           run_id=run_id, run_dir=run_dir, clock=clock)
+                           run_id=run_id, run_dir=run_dir, clock=clock,
+                           parameters=project.parameters if project else None,
+                           commands=project.commands() if project else ())
     # The backend owns the clock (manual for simulation, monotonic natively); the
     # run clock must share it so the §8.5 deadlines see the same time.
     run_clock = RunClock(deadlines, run_id, clock=backend.clock)
@@ -146,8 +148,12 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
         linkage.append("result run_id does not match this run")
     if result.get("ert_sha256") != built["sha256"]:
         linkage.append("checked ERT hash does not match this run's build")
+    # A missing or incomplete file blocks success unless it belongs to an operation
+    # that already failed: then it is that failure's evidence, judged by the tests.
+    statuses = {op.get("name"): op.get("status") for op in result.get("operations", [])}
     incomplete = [f for f in result.get("result_files", [])
-                  if f.get("complete") is False or f.get("exists") is False]
+                  if (f.get("complete") is False or f.get("exists") is False)
+                  and statuses.get(f.get("operation"), PASSED) == PASSED]
     status = result.get("status", BLOCKED)
     reason = result.get("reason")
     if linkage:
@@ -205,7 +211,7 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
             report["artifact"] = build_stage.evidence[0]
             report["artifact"]["module_sha256"] = build_stage.details["module_sha256"]
             platform, platform_result, backend = _platform_stage(
-                stand, built, run_id, run_dir, deadlines, clock, cancel, observe)
+                stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project)
             report["platform_checked"] = platform_result.get("platform_checked", False)
             report["platform"].update(platform_result.get("platform_identity", {}))
             report["cancelled"] = platform_result.get("cancelled", False)
@@ -272,11 +278,14 @@ def main(argv=None):
         print(json.dumps(blocked, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
     cancel = threading.Event()
-    previous = signal.getsignal(signal.SIGINT)
+    signals = [signal.SIGINT] + ([signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else [])
+    previous = {}
     try:
-        signal.signal(signal.SIGINT, lambda *_: cancel.set())
+        for number in signals:
+            previous[number] = signal.getsignal(number)
+            signal.signal(number, lambda *_: cancel.set())
     except ValueError:
-        previous = None  # Not the main thread; cancellation stays injectable only.
+        previous = {}  # Not the main thread; cancellation stays injectable only.
     try:
         report = execute(project, stand, deadlines, output_root=args.output_root, run_id=args.run_id, cancel=cancel)
     except OSError as error:
@@ -285,7 +294,7 @@ def main(argv=None):
         print(json.dumps(blocked, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
     finally:
-        if previous is not None:
-            signal.signal(signal.SIGINT, previous)
+        for number, handler in previous.items():
+            signal.signal(number, handler)
     print(json.dumps(_summary(report), ensure_ascii=False, indent=2))
     return report["exit_code"]

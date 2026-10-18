@@ -77,6 +77,56 @@ class SessionFailureTests(unittest.TestCase):
         self.cleanup.assert_called_once()
         self.assertNotIn("server", result)
 
+    def test_caller_cancel_takes_the_owned_cleanup_and_client_limit_is_configurable(self):
+        # Reach the main loop: the debugger reports ready, the client is a separate process.
+        (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
+        client = Mock(pid=11, _handle=43)
+        client.poll.return_value = None
+        # The client process ends once the cleanup asked it to and waited.
+        client.wait.side_effect = lambda timeout=None: setattr(client.poll, "return_value", 0)
+        cancel = self.out / "caller-cancel"
+        cancel.write_text("simulation", encoding="ascii")
+        self.report.update(cancel_path=str(cancel), client_timeout_seconds=3600)
+        # before, ownership, ancestry recheck, before activation, after cleanup
+        self.inventory = [[], [self.candidate], [self.candidate], [self.candidate], []]
+        launched = []
+
+        def popen(command, **kwargs):
+            launched.append(command)
+            return self.debugger if len(launched) == 1 else client
+
+        with patch.object(session.subprocess, "Popen", side_effect=popen), patch.object(session.time, "sleep"):
+            result = self.run_simulated_popen()
+        self.assertIn("//T:3600", launched[1])
+        self.assertTrue(result["user_cancelled"])
+        self.assertIn("cancelled by the caller", result["error"])
+        self.assertIsNone(result.get("timeout_phase"))
+        client.wait.assert_called()
+        self.kernel.TerminateProcess.assert_called_once_with(123, 0xE0000077)
+        self.assertTrue(result["cleanup_verified"])
+
+    def test_client_limit_defaults_to_the_accepted_140_seconds(self):
+        self.assertIn('report.get("client_timeout_seconds", 140)',
+                      (Path(__file__).resolve().parents[1] / "session77.py").read_text(encoding="utf-8"))
+
+    def run_simulated_popen(self):
+        """run_simulated with the caller's Popen patch left in place."""
+        def image_name(handle, flags, buf, size):
+            buf.value = str(self.exe)
+            return 1
+
+        def digest(path):
+            return PINNED["exe" if path == self.exe else "helper" if path == self.helper else path.name]
+
+        self.kernel.QueryFullProcessImageNameW.side_effect = image_name
+        with (patch.object(session, "kernel", self.kernel),
+              patch.object(session, "processes", side_effect=self.inventory),
+              patch.object(session, "register_cleanup_helper", return_value=self.cleanup),
+              patch.object(session, "sha256", side_effect=lambda p: "commands" if p.name == "debugger.txt" else digest(p)),
+              patch.object(session.subprocess, "CREATE_NO_WINDOW", 0, create=True)):
+            return session.run_session(self.out / "base", self.exe, self.out / "cdb.exe",
+                                       self.helper, "test", self.out, self.report)
+
     def test_failure_stops_only_verified_handle_and_records_registry_error(self):
         self.cleanup.side_effect = PermissionError("registry cleanup denied")
         result = self.run_simulated()

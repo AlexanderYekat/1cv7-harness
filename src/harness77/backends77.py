@@ -247,7 +247,7 @@ class ImportBackend(_Backend):
         return result
 
 
-def load_backend(stand, *, ert_path, ert_sha256, run_id, run_dir, clock=None):
+def load_backend(stand, *, ert_path, ert_sha256, run_id, run_dir, clock=None, parameters=None, commands=()):
     common = {"ert_path": ert_path, "ert_sha256": ert_sha256, "run_id": run_id,
               "run_dir": run_dir, "base_name": Path(stand.base).name}
     if stand.backend == "simulation":
@@ -259,5 +259,6 @@ def load_backend(stand, *, ert_path, ert_sha256, run_id, run_dir, clock=None):
         return ImportBackend(stand.import_protocol, clock=clock or Clock(), **common)
     if stand.backend == "native":
         from . import native77
-        return native77.NativeBackend(stand, clock=clock or Clock(), **common)
+        return native77.NativeBackend(stand, clock=clock or Clock(), parameters=parameters,
+                                      commands=commands, **common)
     raise ValueError(f"unknown backend: {stand.backend}")

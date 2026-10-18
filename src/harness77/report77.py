@@ -53,12 +53,12 @@ def file_evidence(path, *, root=None, complete=None, expected_sha256=None):
         except ValueError:
             record["path"] = str(path)
     try:
-        data = path.read_bytes()
+        size, digest = path.stat().st_size, sha256_file(path)
     except OSError as error:
         record.update(exists=False, size_bytes=0, sha256=None, complete=False,
                       error=f"{type(error).__name__}: {error}")
         return record
-    record.update(exists=True, size_bytes=len(data), sha256=sha256_bytes(data))
+    record.update(exists=True, size_bytes=size, sha256=digest)
     if expected_sha256 is not None:
         record["sha256_matches"] = record["sha256"] == expected_sha256
         if not record["sha256_matches"]:

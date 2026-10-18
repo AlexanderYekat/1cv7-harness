@@ -35,8 +35,11 @@ class NativeBackend:
     platform_checked = True  # Only asserted after the launcher confirms a native run.
     name = "native"
 
-    def __init__(self, stand, *, clock, ert_path, ert_sha256, run_id, run_dir, base_name=""):
+    def __init__(self, stand, *, clock, ert_path, ert_sha256, run_id, run_dir, base_name="",
+                 parameters=None, commands=()):
         self.stand = stand
+        self.parameters = dict(parameters or {})
+        self.commands = list(commands)
         self.clock = clock
         self.ert_path = Path(ert_path)
         self.ert_sha256 = ert_sha256
@@ -85,7 +88,9 @@ class NativeBackend:
                    "--ert-sha256", self.ert_sha256, "--run-id", self.run_id,
                    "--base", str(self.stand.base), "--user", self.stand.user,
                    "--exe", str(self.stand.exe), "--result", str(result_path),
-                   "--deadlines-json", json.dumps(deadlines.effective())]
+                   "--deadlines-json", json.dumps(deadlines.effective()),
+                   "--parameters-json", json.dumps(self.parameters, ensure_ascii=False),
+                   "--commands-json", json.dumps(self.commands, ensure_ascii=False)]
         for role in ("cdb", "helper", "identity"):
             path = getattr(self.stand, role)
             if path is not None:
@@ -94,23 +99,26 @@ class NativeBackend:
             command.append("--screenshots")
         # The launcher owns the phase deadlines; this is only a hard wall-clock backstop.
         backstop = deadlines.total_s + max(30.0, deadlines.shutdown_s)
+        # After a cancellation the launcher gets the cancel and shutdown phases to return.
+        after_cancel = deadlines.cancel_s + deadlines.shutdown_s + 10.0
         started = time.monotonic()
+        # Console Ctrl+C reaches only this process; the launcher learns of it by file.
+        group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         try:
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       creationflags=group)
         except OSError as error:
             return self._blocked(f"native_launcher_error: {type(error).__name__}: {error}")
         cancelled = forced = False
+        cancelled_at = None
         while process.poll() is None:
             observe(run_clock.observe())
             if cancel.is_set() and not cancelled:
-                cancelled = True
+                cancelled, cancelled_at = True, time.monotonic()
                 # Ask the launcher to cancel; it must return and shut down cleanly.
                 (self.run_dir / "cancel").write_text(self.run_id, encoding="ascii")
-            if time.monotonic() - started > backstop:
-                process.kill()
-                forced = True
-                break
-            if cancelled and time.monotonic() - started > backstop:
+            now = time.monotonic()
+            if now - started > backstop or (cancelled and now - cancelled_at > after_cancel):
                 process.kill()
                 forced = True
                 break
@@ -150,8 +158,9 @@ class NativeBackend:
         result["screenshots"] = produced.get("screenshots", [])
         # Re-evidence result files from disk; never trust a reported hash alone.
         result["result_files"] = [
-            file_evidence(self.run_dir / spec["path"], root=self.run_dir,
-                          complete=spec.get("complete"), expected_sha256=spec.get("sha256"))
+            dict(file_evidence(self.run_dir / spec["path"], root=self.run_dir,
+                               complete=spec.get("complete"), expected_sha256=spec.get("sha256")),
+                 **{key: spec[key] for key in ("operation", "package", "package_status") if key in spec})
             if "path" in spec else spec
             for spec in produced.get("result_files", [])]
         if forced and result["status"] == "passed":

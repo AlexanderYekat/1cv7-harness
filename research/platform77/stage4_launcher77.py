@@ -11,13 +11,23 @@ headless contract (a ``ПриОткрытии`` that reports ``loaded:harness77`
 ``completed:harness77`` and, on ``execute``, ``value:<n>``; ``СтатусВозврата(0)``
 so no form is shown). The constant marker ties the response to the module, while
 the run_id and the ERT SHA-256 (verified here and echoed to the backend) tie the
-result to this run. The short control cycle uses the accepted research core
-limits (operation 30 s, session 145 s); a tens-of-minutes application report
-needs a launcher that raises those explicitly, which stays an owner step.
+result to this run.
+
+Deadlines come from section 8.5 (``--deadlines-json``): each ERT command gets
+the calculation deadline, the session limit is total (it covers opening the
+base, reindexing included), and the client (cscript) limit covers total +
+shutdown, so a tens-of-minutes report is not cut at 140 s. A
+``cancel`` file in the run directory (written by the backend on Ctrl+C) stops
+the session through the same owned-only cleanup as a deadline.
+
+An application with its own headless contract plugs in as an *adapter*
+(task 006): its commands, controller, environment, base preflight, reading of
+the response and result files. ``Harness77Adapter`` is the stage-4 contract.
 """
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import uuid
@@ -31,15 +41,110 @@ from concurrent77 import IDENTITY_SHA
 IDENTITY = "harness77"            # constant cooperation marker; run identity is separate
 COMMANDS = ("check", "execute")   # compile-only, then the control/report call
 PROTOCOL_DIRECTORY = probe.PROTOCOL_DIRECTORY
+# Core timeout phases in the section 8.5 vocabulary of the run report.
+PHASES = {"ownership": "open", "debugger-ready": "open", "open-base": "open",
+          "ert-operation": "calculation", "modal-recovery": "calculation",
+          "session": "total", "shutdown": "shutdown"}
 
 
-def scaffold(out, built_ert, run_id):
+def preflight_copy(base, exe, cdb, helper, out):
+    """The core preflight for another copy of the pinned base: same hashes, any path.
+
+    The core qualifies only .local/bases/base-for-test by path; a copy (the owner
+    keeps several) must carry exactly the pinned configuration and components,
+    and a base held by 1C in exclusive mode is refused before any 1C starts.
+    """
+    from shutdown77 import PINNED
+    import run_shutdown77
+    if base == (run_shutdown77.ROOT / ".local/bases/base-for-test").resolve():
+        preflight(base, exe, cdb, helper, out)
+        return
+    if out.is_relative_to(base) or base.is_relative_to(out):
+        raise ValueError("output and database trees must not overlap")
+    if any(c in str(out) for c in '"; \r\n') or not str(out).isascii():
+        raise ValueError("output must be ASCII without spaces or debugger separators")
+    if out.exists():
+        raise ValueError("output must be a fresh directory")
+    for name, path in {"exe": exe, "helper": helper,
+                       **{n: base / n for n in ("1Cv7.MD", "1Cv7.DD", "1CPP.dll", "FormEx.dll")}}.items():
+        if sha256(path) != PINNED[name]:
+            raise ValueError("unqualified binary/configuration: " + name)
+    data = cdb.read_bytes()
+    pe = int.from_bytes(data[0x3c:0x40], "little")
+    if data[:2] != b"MZ" or data[pe:pe + 6] != b"PE\0\0\x4c\x01":
+        raise ValueError("x86 CDB is required")
+    try:
+        with (base / "1SJOURN.DBF").open("rb") as stream:
+            stream.read(32)
+    except PermissionError:
+        raise ValueError("the base is open in 1C in exclusive mode") from None
+
+
+def session_limits(deadlines):
+    """Core limits from the section 8.5 deadlines: (operation, session, client) seconds.
+
+    Opening the base happens before the first ERT command and may include the
+    reindexing 1C does after an interrupted session (an hour or more on some
+    bases): it is covered by the session limit, which includes the open phase.
+    Each ERT command gets the calculation deadline, so a hang inside a report is
+    noticed after `calculation`, not after `open + calculation`.
+    """
+    operation = int(deadlines["calculation_timeout_s"])
+    session = deadlines["total_timeout_s"]
+    # The client must outlive the session deadline, which ends the run first.
+    client = int(session + deadlines["shutdown_timeout_s"])
+    return operation, session, client
+
+
+class Harness77Adapter:
+    """Stage-4 cooperation: loaded:/completed:harness77 markers and value:<n>."""
+
+    identity = IDENTITY
+
+    def commands(self, parameters, requested):
+        return list(COMMANDS)
+
+    def controller(self, parameters):
+        return Path(probe.__file__).with_name("ert_controller77.1s").read_text(encoding="utf-8")
+
+    def prepare(self, run_dir, parameters):
+        """Environment variables for the 1C process; the default needs none."""
+        return {}
+
+    def preflight(self, base, exe, cdb, helper, drive):
+        preflight(base, exe, cdb, helper, drive)
+
+    def operation(self, command, lines, actual, row):
+        """Judge one command from the controller's response; return an issue or None."""
+        loaded = ("loaded:" + IDENTITY) in lines
+        completed = ("completed:" + IDENTITY) in lines
+        if loaded and completed and "unexpected-visible-form" not in actual and "open-error:" not in actual:
+            # The module ran: passed unless it reported a runtime error.
+            row["status"] = "failed" if "runtime-error:" in actual else "passed"
+            row["value"] = next((ln.split(":", 1)[1] for ln in lines if ln.startswith("value:")), None)
+        elif row["diagnostics"]:
+            # Not loaded, but the compiler reported errors: a checked-code defect.
+            row["status"] = "failed"
+        else:
+            row["status"] = "blocked"
+            return "no cooperation markers and no diagnostic: " + command
+        return None
+
+    def platform_status(self, operations):
+        return "failed" if any(o["status"] == "failed" for o in operations) else "passed"
+
+    def result_files(self, run_dir, operations):
+        return []
+
+
+def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters=None):
     """Reconstruct the controller/client/shutdown scaffolding for an external ERT."""
+    adapter = adapter or Harness77Adapter()
     folder = out / "Тестовые обработки"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / "Обработка проверки.ert"
     shutil.copyfile(built_ert, target)
-    controller = Path(probe.__file__).with_name("ert_controller77.1s").read_text(encoding="utf-8")
+    controller = adapter.controller(parameters or {})
     (out / "ert-controller.1s").write_text(controller, encoding="utf-8")
     protocol_root = out / PROTOCOL_DIRECTORY
     protocol_root.mkdir(exist_ok=True)
@@ -52,23 +157,24 @@ def scaffold(out, built_ert, run_id):
     for key, value in {"RUN_ID": probe.vb_literal(run_id), "ERT_PATH": probe.vb_literal(str(target)),
                        "IDENTITY": probe.vb_literal(IDENTITY),
                        "SOURCES": vb_assignment("sourceController", controller), "UTILITIES": utilities,
-                       "COMMANDS": ", ".join(probe.vb_literal(c) for c in COMMANDS),
+                       "COMMANDS": ", ".join(probe.vb_literal(c) for c in commands),
                        "SHUTDOWN": shutdown}.items():
         client = client.replace("__" + key + "__", value)
     client = client.replace("__PROTOCOL_ROOT__", probe.vb_literal(str(protocol_root)))
     (out / "client.vbs").write_text(client, encoding="utf-16")
     shutdown_manifest["sources"]["client.vbs"] = sha256(out / "client.vbs")
     manifest = {"schema_version": 1, "run_id": run_id, "identity": IDENTITY, "ert_path": str(target),
-                "commands": list(COMMANDS),
-                "protocol_paths": {c: PROTOCOL_DIRECTORY + "/" + c + ".txt" for c in COMMANDS}}
+                "commands": list(commands),
+                "protocol_paths": {c: PROTOCOL_DIRECTORY + "/" + c + ".txt" for c in commands}}
     atomic_json(out / "ert-manifest.json", manifest)
     atomic_json(out / "shutdown-manifest.json", shutdown_manifest)
     return manifest, shutdown_manifest, target
 
 
-def interpret(out, manifest, lifecycle, shutdown_result):
-    """Validate the external-ERT response with the constant marker; own judging."""
+def interpret(out, manifest, lifecycle, shutdown_result, adapter=None):
+    """Validate the external-ERT response with the run markers; the adapter judges."""
     import re
+    adapter = adapter or Harness77Adapter()
     operations, issues = [], []
     try:
         events = [json.loads(line) for line in (out / "ert-events.jsonl").read_text(encoding="utf-16").splitlines()]
@@ -96,38 +202,30 @@ def interpret(out, manifest, lifecycle, shutdown_result):
         begin_ok = lines and lines[0] == "selected:" + manifest["ert_path"]
         marker_ok = protocol.splitlines()[:1] == ["HARNESS77-BEGIN:" + marker] and \
             protocol.splitlines()[-1:] == ["HARNESS77-END:" + marker]
-        loaded = ("loaded:" + IDENTITY) in lines
-        completed = ("completed:" + IDENTITY) in lines
         if not begin_ok or not marker_ok:
             issues.append("protocol/selected marker mismatch: " + command)
-        visible = "unexpected-visible-form" in actual
-        open_error = "open-error:" in actual
-        if loaded and completed and not visible and not open_error:
-            # The module ran: passed unless it reported a runtime error.
-            runtime_error = "runtime-error:" in actual
-            row["status"] = "failed" if runtime_error else "passed"
-            row["value"] = next((ln.split(":", 1)[1] for ln in lines if ln.startswith("value:")), None)
-        elif row["diagnostics"]:
-            # Not loaded, but the compiler reported errors: a checked-code defect.
-            row["status"] = "failed"
-        else:
-            row["status"] = "blocked"
-            issues.append("no cooperation markers and no diagnostic: " + command)
+        issue = adapter.operation(command, lines, actual, row)
+        if issue:
+            issues.append(issue)
         operations.append(row)
     return operations, issues
 
 
-def main(argv=None):
+def main(argv=None, adapter=None):
+    adapter = adapter or Harness77Adapter()
     parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     for name in ("run-dir", "ert", "ert-sha256", "run-id", "base", "user", "exe", "result", "deadlines-json"):
         parser.add_argument("--" + name, required=True)
     for name in ("cdb", "com-cleanup-dll", "helper", "identity"):
         parser.add_argument("--" + name)
+    parser.add_argument("--parameters-json", default="{}", help="[platform.parameters] of the project")
+    parser.add_argument("--commands-json", default="[]", help="commands of the declared tests, in order")
     parser.add_argument("--screenshots", action="store_true")
     args, _ = parser.parse_known_args(argv)
     out = Path(args.run_dir).resolve()
     result_path = Path(args.result)
     deadlines = json.loads(args.deadlines_json)
+    parameters = json.loads(args.parameters_json)
     report = {"run_id": args.run_id, "ert_sha256": args.ert_sha256, "platform_checked": False,
               "status": "blocked", "reason": None, "cancelled": False, "timeout_phase": None,
               "load": None, "operations": [], "result_files": [], "screenshots": [],
@@ -145,23 +243,28 @@ def main(argv=None):
         identity_dll = Path(args.identity).resolve(strict=True)
         if sha256(identity_dll) != IDENTITY_SHA:
             raise ValueError("unqualified proxy inspector")
+        commands = adapter.commands(parameters, json.loads(args.commands_json))
         # preflight requires a fresh output directory, so validate before creating it.
-        preflight(base, exe, cdb, helper, drive)
+        adapter.preflight(base, exe, cdb, helper, drive)
         drive.mkdir(parents=True, exist_ok=False)
-        manifest, shutdown_manifest, ert_target = scaffold(drive, built, args.run_id)
+        manifest, shutdown_manifest, ert_target = scaffold(drive, built, args.run_id, adapter, commands, parameters)
+        # The 1C process inherits the environment through CDB.
+        os.environ.update(adapter.prepare(out, parameters))
         # Honour the configured section 8.5 deadlines in this process (the owner's
         # long-report launchers do the same). The general executor never hardcodes
         # the research prototype 30/145; the core enforces whatever is configured.
-        operation_timeout = int(deadlines["open_timeout_s"] + deadlines["calculation_timeout_s"])
+        operation_timeout, total_s, client_timeout = session_limits(deadlines)
+        shutdown_s = deadlines["shutdown_timeout_s"]
         import session77
         import shutdown77
-        total_s, shutdown_s = deadlines["total_timeout_s"], deadlines["shutdown_timeout_s"]
         session77.Deadline = lambda started: shutdown77.Deadline(started, total=total_s, shutdown=shutdown_s)
         lifecycle = {"schema_version": 1, "scope": "stage-4 native full cycle", "shutdown_mode": MODE,
                      "fault": "none", "status": "blocked", "run_id": args.run_id,
                      "ert_operation_timeout_seconds": operation_timeout,
+                     "client_timeout_seconds": client_timeout,
+                     "cancel_path": str(out / "cancel"),
                      "identity_observer_profile": "challenge-only-v2",
-                     "client_log_profile": "held-streams-v2", "ert_commands": list(COMMANDS),
+                     "client_log_profile": "held-streams-v2", "ert_commands": list(commands),
                      "ert_protocol_paths": manifest["protocol_paths"]}
         from session77 import run_session
         from desktop77 import PrivateDesktop
@@ -170,8 +273,9 @@ def main(argv=None):
                                     desktop=desktop.name, identity_dll=identity_dll)
         lifecycle["desktop_closed"] = True
         shutdown_result = assess(drive, shutdown_manifest, lifecycle)
-        operations, issues = interpret(drive, manifest, lifecycle, shutdown_result)
+        operations, issues = interpret(drive, manifest, lifecycle, shutdown_result, adapter)
         report["operations"] = operations
+        report["result_files"] = adapter.result_files(out, operations)
         report["load"] = {"status": operations[0]["status"] if operations else "blocked",
                           "diagnostics": operations[0]["diagnostics"] if operations else []}
         report["phase_durations_s"] = {"session": lifecycle.get("elapsed_seconds"),
@@ -183,20 +287,24 @@ def main(argv=None):
                               "others_preserved": bool(lifecycle.get("baseline_preserved")),
                               "issues": shutdown_result["issues"]}
         report["platform_identity"]["platform_version"] = "7.70.027"
-        report["cancelled"] = bool(lifecycle.get("cancellation_requested"))
-        report["timeout_phase"] = lifecycle.get("timeout_phase")
+        report["cancelled"] = bool(lifecycle.get("user_cancelled"))
+        native_phase = lifecycle.get("timeout_phase")
+        report["timeout_phase"] = PHASES.get(native_phase, native_phase)
+        report["native_timeout_phase"] = native_phase
         clean = (not issues and not lifecycle.get("error") and lifecycle.get("cleanup_verified")
                  and shutdown_result["status"] == "passed")
         report["platform_checked"] = bool(clean)
-        if lifecycle.get("timeout_phase"):
-            report["status"], report["reason"] = "blocked", lifecycle["timeout_phase"] + "_timeout"
+        if report["cancelled"]:
+            report["status"], report["reason"] = "blocked", "cancelled"
+        elif report["timeout_phase"]:
+            report["status"], report["reason"] = "blocked", report["timeout_phase"] + "_timeout"
         elif not clean:
             report["status"] = "blocked"
             report["reason"] = lifecycle.get("error") or "; ".join(issues + shutdown_result["issues"]) or "native run not clean"
         elif report["load"]["status"] == "failed":
             report["status"], report["reason"] = "failed", "compilation_failed"
         else:
-            report["status"] = "failed" if any(o["status"] == "failed" for o in operations) else "passed"
+            report["status"] = adapter.platform_status(operations)
     except Exception as error:  # noqa: BLE001 - record any native failure as blocked
         report["reason"] = f"{type(error).__name__}: {error}"
         report["status"] = "blocked"

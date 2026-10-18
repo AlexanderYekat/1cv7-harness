@@ -52,6 +52,12 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         report["private_desktop"] = desktop
         report["desktop_switch_requested"] = False
     operation_started = {}
+
+    def caller_cancelled():
+        """A caller's cancellation request takes the same owned-only cleanup as a deadline."""
+        if report.get("cancel_path") and Path(report["cancel_path"]).exists():
+            report["user_cancelled"] = True
+            raise RuntimeError("cancelled by the caller")
     recovery_until = None
     open_started = None
     shutdown_observed_at = None
@@ -140,6 +146,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                     break
                 if debugger.poll() is not None:
                     raise RuntimeError("CDB exited before ownership was established")
+                caller_cancelled()
                 time.sleep(0.1)
             else:
                 report["timeout_phase"] = "ownership"
@@ -154,6 +161,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                     break
                 if debugger.poll() is not None:
                     raise RuntimeError("CDB exited before ready")
+                caller_cancelled()
                 time.sleep(0.1)
             else:
                 report["timeout_phase"] = "debugger-ready"
@@ -166,7 +174,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 raise RuntimeError("process inventory changed before OLE activation")
             client = launch(
                 [os.path.join(os.environ["WINDIR"], "SysWOW64", "cscript.exe"),
-                 "//B", "//NoLogo", "//T:140", str(out / "client.vbs"),
+                 # A long application report raises the client limit; the default stays 140 s.
+                 "//B", "//NoLogo", "//T:" + str(int(report.get("client_timeout_seconds", 140))), str(out / "client.vbs"),
                  str(base), user, str(out / "client.log"), str(report["server"]["pid"]),
                  "activation-only" if report.get("activation_only") else "ert"],
                 stdout=client_stdout)
@@ -215,6 +224,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         observe_timing(now, "deadline")
                     report["timeout_phase"] = expired
                     raise TimeoutError(expired + " deadline")
+                caller_cancelled()
                 log = debug_text()
                 if "\nHARNESS77_FIRST_CHANCE_AV\n" in log:
                     raise RuntimeError("first chance AV; guarded session stopped")
