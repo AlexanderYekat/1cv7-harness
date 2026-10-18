@@ -153,7 +153,8 @@ class NativeBackend:
                   "shutdown": produced.get("shutdown"),
                   "platform_identity": dict(produced.get("platform_identity", {}),
                                             backend=self.name, base=self.base_name),
-                  "launcher_exit_code": exit_code, "forced_cleanup": forced}
+                  "launcher_exit_code": exit_code, "forced_cleanup": forced,
+                  "open": produced.get("open")}
         self.platform_checked = result["platform_checked"]
         result["screenshots"] = produced.get("screenshots", [])
         # Re-evidence result files from disk; never trust a reported hash alone.

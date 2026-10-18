@@ -225,6 +225,12 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                     report["timeout_phase"] = expired
                     raise TimeoutError(expired + " deadline")
                 caller_cancelled()
+                # Opening ends when the first ERT command starts; reindexing happens before it.
+                if report.get("open_timeout_seconds") and report.get("ert_commands"):
+                    first = out / ("ert-" + report["ert_commands"][0] + "-started")
+                    if not first.exists() and now - started >= report["open_timeout_seconds"]:
+                        report["timeout_phase"] = "open"
+                        raise TimeoutError("open deadline")
                 log = debug_text()
                 if "\nHARNESS77_FIRST_CHANCE_AV\n" in log:
                     raise RuntimeError("first chance AV; guarded session stopped")

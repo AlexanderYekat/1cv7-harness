@@ -213,6 +213,12 @@ def resolve_deadlines(project: ProjectProfile, stand: StandProfile, overrides=No
             raise ConfigError(
                 f"срок '{key}' не задан (ни CLI, ни профиль проекта, ни стенд); "
                 "умолчаний нет, прототипные 30/145 с не применяются")
+    # Optional: extra open time used only after an interrupted session (task 007).
+    reindex = 0.0
+    for source, table in (("cli", overrides), ("project", project.deadlines_raw), ("stand", stand.deadlines_raw)):
+        if table.get("reindex_timeout_s") is not None:
+            reindex, sources["reindex"] = table["reindex_timeout_s"], source
+            break
     return Deadlines.create(open_s=values["open"], calculation_s=values["calculation"],
                             cancel_s=values["cancel"], shutdown_s=values["shutdown"],
-                            total_s=values["total"], sources=sources)
+                            total_s=values["total"], sources=sources, reindex_s=reindex)

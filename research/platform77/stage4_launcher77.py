@@ -42,7 +42,7 @@ IDENTITY = "harness77"            # constant cooperation marker; run identity is
 COMMANDS = ("check", "execute")   # compile-only, then the control/report call
 PROTOCOL_DIRECTORY = probe.PROTOCOL_DIRECTORY
 # Core timeout phases in the section 8.5 vocabulary of the run report.
-PHASES = {"ownership": "open", "debugger-ready": "open", "open-base": "open",
+PHASES = {"ownership": "open", "debugger-ready": "open", "open-base": "open", "open": "open",
           "ert-operation": "calculation", "modal-recovery": "calculation",
           "session": "total", "shutdown": "shutdown"}
 
@@ -78,6 +78,40 @@ def preflight_copy(base, exe, cdb, helper, out):
             stream.read(32)
     except PermissionError:
         raise ValueError("the base is open in 1C in exclusive mode") from None
+
+
+def base_trace(base):
+    """Signs, before starting, that the previous 1C session on the base was interrupted.
+
+    Observed natively (task 007, R1): a working 1C keeps 1Cv7.LCK without holding
+    it and locks 1SUSERS.DBF, so the users table cannot be read; a normal exit
+    deletes 1Cv7.LCK and sets the active-user counter to 0. An interrupted
+    session leaves 1Cv7.LCK and a readable 1SUSERS.DBF with active users > 0,
+    and 1C reindexes the base on the next open.
+    """
+    trace = {"lock_file": (base / "1Cv7.LCK").exists(), "users_readable": False, "active_users": None}
+    try:
+        data = (base / "1SUSERS.DBF").read_bytes()
+        trace["users_readable"] = True
+        records, header = int.from_bytes(data[4:8], "little"), int.from_bytes(data[8:10], "little")
+        offset, position = 1, 32
+        while position + 32 <= header and data[position] != 0x0D:
+            name = data[position:position + 11].split(b"\0", 1)[0].decode("ascii", "replace")
+            length = data[position + 16]
+            if name == "USRSCNT" and records:
+                trace["active_users"] = int(data[header + offset:header + offset + length].strip() or 0)
+            offset += length
+            position += 32
+    except (OSError, ValueError):
+        pass  # unreadable: a working 1C locks the users table
+    trace["interrupted"] = bool(trace["lock_file"] and trace["users_readable"] and (trace["active_users"] or 0) > 0)
+    return trace
+
+
+def open_deadline(deadlines, trace):
+    """The open deadline: the profile's open, plus the reindex allowance after an interruption."""
+    extra = deadlines.get("reindex_timeout_s", 0) if trace.get("interrupted") else 0
+    return int(deadlines["open_timeout_s"] + extra)
 
 
 def session_limits(deadlines):
@@ -254,6 +288,9 @@ def main(argv=None, adapter=None):
         # long-report launchers do the same). The general executor never hardcodes
         # the research prototype 30/145; the core enforces whatever is configured.
         operation_timeout, total_s, client_timeout = session_limits(deadlines)
+        trace = base_trace(base)
+        report["open"] = {"deadline_s": open_deadline(deadlines, trace),
+                          "reindex_expected": bool(trace["interrupted"]), "base_trace": trace}
         shutdown_s = deadlines["shutdown_timeout_s"]
         import session77
         import shutdown77
@@ -261,6 +298,7 @@ def main(argv=None, adapter=None):
         lifecycle = {"schema_version": 1, "scope": "stage-4 native full cycle", "shutdown_mode": MODE,
                      "fault": "none", "status": "blocked", "run_id": args.run_id,
                      "ert_operation_timeout_seconds": operation_timeout,
+                     "open_timeout_seconds": report["open"]["deadline_s"],
                      "client_timeout_seconds": client_timeout,
                      "cancel_path": str(out / "cancel"),
                      "identity_observer_profile": "challenge-only-v2",
@@ -280,6 +318,12 @@ def main(argv=None, adapter=None):
                           "diagnostics": operations[0]["diagnostics"] if operations else []}
         report["phase_durations_s"] = {"session": lifecycle.get("elapsed_seconds"),
                                        "shutdown": lifecycle.get("shutdown_elapsed_seconds")}
+        first = drive / ("ert-" + commands[0] + "-started")
+        if first.exists() and lifecycle.get("started_at"):
+            import datetime
+            begun = datetime.datetime.fromisoformat(lifecycle["started_at"]).timestamp()
+            report["open"]["elapsed_s"] = round(first.stat().st_mtime - begun, 1)
+        report["open"]["base_trace_after"] = base_trace(base)
         report["shutdown"] = {"status": shutdown_result["status"],
                               "cleanup_verified": bool(lifecycle.get("cleanup_verified")),
                               "forced_cleanup": bool(lifecycle.get("forced_cleanup")),

@@ -6,6 +6,10 @@ an external monotonic clock; a deadline is absolute from the moment a phase
 starts and is never renewed by progress messages or by silence. Silence alone is
 never a timeout: only reaching the absolute deadline is. The research prototype
 limits (30 s per operation, 145 s per session) are deliberately not defaults.
+
+``reindex`` is an optional allowance added to the open deadline only when the
+stand sees, before starting, that the previous 1C session on the base was
+interrupted: 1C then reindexes the base while opening it (task 007).
 """
 
 from __future__ import annotations
@@ -40,21 +44,29 @@ class Deadlines:
     shutdown_s: float
     total_s: float
     sources: dict
+    # Extra open time after an interrupted session; 0 means no allowance.
+    reindex_s: float = 0.0
 
     @classmethod
-    def create(cls, *, open_s, calculation_s, cancel_s, shutdown_s, total_s, sources=None):
+    def create(cls, *, open_s, calculation_s, cancel_s, shutdown_s, total_s, sources=None, reindex_s=0.0):
         values = {"open": open_s, "calculation": calculation_s, "cancel": cancel_s,
                   "shutdown": shutdown_s, "total": total_s}
         checked = {name: _finite_positive(name, value) for name, value in values.items()}
-        allowed = checked["open"] + checked["calculation"] + checked["cancel"] + checked["shutdown"]
+        if isinstance(reindex_s, bool) or not isinstance(reindex_s, (int, float)) \
+                or not math.isfinite(reindex_s) or reindex_s < 0:
+            raise DeadlineError("reindex: запас на переиндексацию должен быть конечным неотрицательным числом")
+        reindex_s = float(reindex_s)
+        allowed = (checked["open"] + reindex_s + checked["calculation"] + checked["cancel"]
+                   + checked["shutdown"])
         if checked["total"] < allowed:
             raise DeadlineError(
                 "total: общий срок %.3f с меньше суммы разрешённого времени фаз %.3f с "
-                "(open+calculation+cancel+shutdown)" % (checked["total"], allowed))
+                "(open+reindex+calculation+cancel+shutdown)" % (checked["total"], allowed))
         sources = dict(sources or {})
+        resolved = {name: sources.get(name, "default") for name in values}
+        resolved["reindex"] = sources.get("reindex", "absent" if not reindex_s else "default")
         return cls(checked["open"], checked["calculation"], checked["cancel"],
-                   checked["shutdown"], checked["total"],
-                   {name: sources.get(name, "default") for name in values})
+                   checked["shutdown"], checked["total"], resolved, reindex_s)
 
     def limit(self, phase):
         if phase not in PHASES:
@@ -64,8 +76,9 @@ class Deadlines:
     def effective(self):
         return {"open_timeout_s": self.open_s, "calculation_timeout_s": self.calculation_s,
                 "cancel_timeout_s": self.cancel_s, "shutdown_timeout_s": self.shutdown_s,
-                "total_timeout_s": self.total_s, "phase_sum_s": round(
-                    self.open_s + self.calculation_s + self.cancel_s + self.shutdown_s, 6),
+                "total_timeout_s": self.total_s, "reindex_timeout_s": self.reindex_s,
+                "phase_sum_s": round(self.open_s + self.reindex_s + self.calculation_s
+                                     + self.cancel_s + self.shutdown_s, 6),
                 "sources": dict(self.sources),
                 "clock": "external monotonic; absolute per-phase deadlines; progress does not extend"}
 

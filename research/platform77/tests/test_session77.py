@@ -105,6 +105,27 @@ class SessionFailureTests(unittest.TestCase):
         self.kernel.TerminateProcess.assert_called_once_with(123, 0xE0000077)
         self.assertTrue(result["cleanup_verified"])
 
+    def test_open_deadline_stops_a_session_whose_first_command_never_starts(self):
+        (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
+        client = Mock(pid=11, _handle=43)
+        client.poll.return_value = None
+        client.wait.side_effect = lambda timeout=None: setattr(client.poll, "return_value", 0)
+        # Opening (base, reindex, controller) has not reached the first command in time.
+        self.report.update(open_timeout_seconds=0.001, ert_commands=["check"])
+        self.inventory = [[], [self.candidate], [self.candidate], [self.candidate], []]
+        launched = []
+
+        def popen(command, **kwargs):
+            launched.append(command)
+            return self.debugger if len(launched) == 1 else client
+
+        with patch.object(session.subprocess, "Popen", side_effect=popen), patch.object(session.time, "sleep"):
+            result = self.run_simulated_popen()
+        self.assertEqual(result["timeout_phase"], "open")
+        self.assertIn("open deadline", result["error"])
+        self.kernel.TerminateProcess.assert_called_once_with(123, 0xE0000077)
+        self.assertTrue(result["cleanup_verified"])
+
     def test_client_limit_defaults_to_the_accepted_140_seconds(self):
         self.assertIn('report.get("client_timeout_seconds", 140)',
                       (Path(__file__).resolve().parents[1] / "session77.py").read_text(encoding="utf-8"))

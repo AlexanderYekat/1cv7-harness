@@ -168,6 +168,7 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
                  cancelled=result.get("cancelled", False),
                  timeout_phase=result.get("timeout_phase"),
                  phase_durations_s=result.get("phase_durations_s", {}),
+                 open=result.get("open"),
                  screenshots=result.get("screenshots", []),
                  shutdown=result.get("shutdown"))
     return stage, result, backend
@@ -260,6 +261,8 @@ def main(argv=None):
                        ("total", "total-timeout-s")):
         parser.add_argument("--" + key, type=float, default=None,
                             help=f"Переопределить срок фазы {phase} (секунды)")
+    parser.add_argument("--reindex-timeout-s", type=float, default=None,
+                        help="Запас к сроку открытия, если прошлый сеанс 1С на базе был прерван")
     parser.add_argument("--run-id", default=None, help="Задать run_id (по умолчанию новый UUID)")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
@@ -270,7 +273,7 @@ def main(argv=None):
         stand = load_stand(args.stand)
         overrides = {"open_timeout_s": args.open_timeout_s, "calculation_timeout_s": args.calculation_timeout_s,
                      "cancel_timeout_s": args.cancel_timeout_s, "shutdown_timeout_s": args.shutdown_timeout_s,
-                     "total_timeout_s": args.total_timeout_s}
+                     "total_timeout_s": args.total_timeout_s, "reindex_timeout_s": args.reindex_timeout_s}
         deadlines = resolve_deadlines(project, stand, overrides)
     except (ConfigError, DeadlineError, OSError) as error:
         blocked = {"schema_version": 1, "tool": "harness77", "operation": "run", "status": BLOCKED,

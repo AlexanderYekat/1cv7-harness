@@ -189,5 +189,40 @@ class ProfileAndEvidenceTests(unittest.TestCase):
                          (len(payload), True, True))
 
 
+class ReindexAllowanceTests(unittest.TestCase):
+    """Task 007: extra open time used only after an interrupted 1C session."""
+
+    def test_optional_and_counted_in_the_total(self):
+        from harness77.deadlines77 import DeadlineError, Deadlines
+        base = dict(open_s=120, calculation_s=3600, cancel_s=15, shutdown_s=30)
+        plain = Deadlines.create(total_s=3765, **base)
+        self.assertEqual((plain.reindex_s, plain.effective()["sources"]["reindex"]), (0.0, "absent"))
+        with self.assertRaises(DeadlineError):  # 120 + 600 + 3600 + 15 + 30 = 4365 > 4000
+            Deadlines.create(total_s=4000, reindex_s=600, **base)
+        with self.assertRaises(DeadlineError):
+            Deadlines.create(total_s=5000, reindex_s=-1, **base)
+        allowed = Deadlines.create(total_s=4400, reindex_s=600, sources={"reindex": "project"}, **base)
+        self.assertEqual((allowed.effective()["reindex_timeout_s"], allowed.effective()["phase_sum_s"]), (600, 4365))
+
+    def test_profile_and_cli_and_the_launcher_see_it(self):
+        from harness77.config77 import load_stand, resolve_deadlines
+        with tempfile.TemporaryDirectory(prefix="harness77-reindex-") as temp:
+            root = Path(temp)
+            deadlines = {"open_timeout_s": 120, "reindex_timeout_s": 600, "calculation_timeout_s": 60,
+                         "cancel_timeout_s": 15, "shutdown_timeout_s": 30, "total_timeout_s": 900}
+            project = load_project(write_project(root, deadlines=deadlines))
+            stand_path = root / "stand.toml"
+            stand_path.write_text(chr(10).join([
+                "schema_version = 1", "[stand]", 'name = "s"', 'backend = "native"', 'launcher = "x.py"',
+                "[stand.paths]", 'exe = "x.exe"', "[stand.base]", 'path = "base"', 'user = "u"']) + chr(10),
+                encoding="utf-8")
+            stand = load_stand(stand_path)
+            resolved = resolve_deadlines(project, stand)
+            self.assertEqual((resolved.reindex_s, resolved.sources["reindex"]), (600, "project"))
+            override = resolve_deadlines(project, stand, {"reindex_timeout_s": 300})
+            self.assertEqual((override.reindex_s, override.sources["reindex"]), (300, "cli"))
+            self.assertEqual(json.loads(json.dumps(override.effective()))["reindex_timeout_s"], 300)
+
+
 if __name__ == "__main__":
     unittest.main()
