@@ -73,10 +73,13 @@ class ProjectProfile:
     deadlines_raw: dict
     # Application parameters for the stand launcher, e.g. a report window.
     parameters: dict = field(default_factory=dict)
+    # Form description (task 008); None keeps the template's form.
+    form: Path | None = None
 
     def public(self):
         return {"project_id": self.project_id, "profile": path_tag(self.path),
                 "template": path_tag(self.template), "source": path_tag(self.source),
+                "form": path_tag(self.form) if self.form is not None else None,
                 "encoding": self.encoding, "legacy_normalize": self.legacy_normalize,
                 "analysis": {"globals": [path_tag(p) for p in self.globals],
                              "allow": list(self.allow), "strict": self.strict},
@@ -156,7 +159,8 @@ def load_project(path) -> ProjectProfile:
         globals=tuple(_resolve(base_dir, g, "analysis.globals") for g in analysis.get("globals", [])),
         allow=tuple(str(a) for a in analysis.get("allow", [])),
         strict=bool(analysis.get("strict", False)),
-        tests=tuple(tests), deadlines_raw=dict(data.get("deadlines", {})), parameters=dict(parameters))
+        tests=tuple(tests), deadlines_raw=dict(data.get("deadlines", {})), parameters=dict(parameters),
+        form=_resolve(base_dir, build["form"], "build.form") if "form" in build else None)
 
 
 def load_stand(path) -> StandProfile:

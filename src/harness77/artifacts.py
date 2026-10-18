@@ -9,7 +9,7 @@ import struct
 import sys
 import tempfile
 
-from .ert_module import (CompoundFile, ErtError, MODULE_STREAM, compress_module,
+from .ert_module import (CompoundFile, ErtError, MODULE_STREAM, compress_module, decode_dialog,
                          decompress_module, normalize_newlines, sanitize_for_cp1251)
 from .lint77 import cfb_paths
 
@@ -102,7 +102,8 @@ def _decode(raw, encoding):
     return text, encoding
 
 
-def _verify_build(original, module_id, source_bytes, rebuilt):
+def _verify_build(original, module_id, source_bytes, rebuilt, dialog=None):
+    """dialog: (entry id, expected Dialog Stream bytes) when the form was rebuilt too."""
     check, module, _ = _container(rebuilt)
     if module.entry_id != module_id or len(check.directory_entries) != len(original.directory_entries):
         raise ErtError("Изменился состав каталога ERT")
@@ -117,13 +118,21 @@ def _verify_build(original, module_id, source_bytes, rebuilt):
             if old.entry_id == module_id:
                 if decompress_module(content) != source_bytes:
                     raise ErtError("Текст после обратного чтения отличается")
+            elif dialog and old.entry_id == dialog[0]:
+                if content != dialog[1]:
+                    raise ErtError("Диалог формы после обратного чтения отличается")
             elif content != original.read_stream(old):
                 raise ErtError(f"Изменился посторонний поток: {old.name}")
 
 
-def build(template, source, output, *, encoding="auto", legacy_normalize=False):
+def build(template, source, output, *, encoding="auto", legacy_normalize=False, form=None):
+    """form: a description (task 008) that also rebuilds the template's dialog."""
     template, template_data = _input(template)
     source, source_data = _input(source)
+    inputs = [(template, template_data), (source, source_data)]
+    if form is not None:
+        form, form_data = _input(form)
+        inputs.append((form, form_data))
     output = _destination(output)
     compound, module, paths = _container(template_data)
     # Validate the old module too, so a broken compressed template is not silently repaired.
@@ -134,11 +143,16 @@ def build(template, source, output, *, encoding="auto", legacy_normalize=False):
     if legacy_normalize:
         text, notes = sanitize_for_cp1251(text)
     source_bytes = text.encode("cp1251", errors="strict")
-    rebuilt = compound.rebuild({module.entry_id: compress_module(source_bytes)})
-    verify = lambda data: _verify_build(compound, module.entry_id, source_bytes, data)
+    replacements = {module.entry_id: compress_module(source_bytes)}
+    dialog = form_report = None
+    if form is not None:
+        dialog, form_report = _form(compound, form, form_data, text)
+        replacements[dialog[0]] = dialog[1]
+    rebuilt = compound.rebuild(replacements)
+    verify = lambda data: _verify_build(compound, module.entry_id, source_bytes, data, dialog)
     verify(rebuilt)
-    result = _publish(output, rebuilt, verify, [(template, template_data), (source, source_data)])
-    return {"schema_version": 1, "tool": "harness77", "operation": "build", "status": "passed",
+    result = _publish(output, rebuilt, verify, inputs)
+    report = {"schema_version": 1, "tool": "harness77", "operation": "build", "status": "passed",
             "scope": "ert_container_build", "template": {"path": str(template), "sha256": sha256(template_data)},
             "source": {"path": str(source), "sha256": sha256(source_data), "encoding": selected_encoding},
             "output": result, "module_encoding": "cp1251", "newlines": "CRLF",
@@ -146,10 +160,30 @@ def build(template, source, output, *, encoding="auto", legacy_normalize=False):
             "normalizations": [{"from": old, "to": new, "count": count} for old, new, count in notes],
             "preserved_streams": [{"path": paths[e.entry_id], "sha256": sha256(compound.read_stream(e)),
                                    "size_bytes": e.size} for e in compound.directory_entries
-                                  if e.object_type == 2 and e.entry_id != module.entry_id],
+                                  if e.object_type == 2 and e.entry_id not in replacements],
             "verification": {"disk_readback": True, "module": True, "other_streams": True,
                              "directory_metadata": True, "inputs_unchanged": True},
             "platform_checked": False}
+    if form_report is not None:
+        report["form"] = {"path": str(form), **form_report}
+        report["verification"]["dialog"] = True
+    return report
+
+
+def _form(compound, form, form_data, module_text):
+    """(dialog entry id, new Dialog Stream bytes) and the form part of the report."""
+    from .form77 import apply, dialog_entry, dialog_payload, loads
+    entry = dialog_entry(compound)
+    old_payload = compound.read_stream(entry)
+    old_text = decode_dialog(old_payload)
+    new_text, changes = apply(old_text, loads(form_data), module_text)
+    payload = dialog_payload(new_text, old_payload)
+    if decode_dialog(payload) != new_text:
+        raise ErtError("Диалог формы не читается обратно")
+    return (entry.entry_id, payload), {
+        "sha256": sha256(form_data), "template_dialog_sha256": sha256(old_text.encode("cp1251")),
+        "dialog_sha256": sha256(new_text.encode("cp1251")), "dialog_unchanged": new_text == old_text,
+        "changes": changes}
 
 
 def extract(input_path, output):
@@ -171,6 +205,8 @@ def main(command, argv):
         parser.add_argument("--encoding", choices=("auto", "utf-8", "cp1251", "utf-16"), default="auto")
         parser.add_argument("--legacy-normalize", action="store_true",
                             help="Разрешить прежние замены символов с перечислением в JSON")
+        parser.add_argument("--form", type=Path,
+                            help="Описание формы (JSON harness77-form): собрать и диалог")
     else:
         parser.add_argument("input", type=Path)
     parser.add_argument("--output", required=True, type=Path, help="Новый файл в существующем каталоге")
@@ -178,7 +214,7 @@ def main(command, argv):
     try:
         if command == "build":
             report = build(args.template, args.source, args.output, encoding=args.encoding,
-                           legacy_normalize=args.legacy_normalize)
+                           legacy_normalize=args.legacy_normalize, form=args.form)
         else:
             report = extract(args.input, args.output)
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

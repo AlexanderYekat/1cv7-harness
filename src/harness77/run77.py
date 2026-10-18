@@ -62,11 +62,16 @@ def _static_stage(project):
     stage = Stage("static", required=True, scope=STAGE_SCOPES["static"])
     try:
         sources = [s for path in collect_paths([str(project.source)]) for s in load_sources(path)]
-        # The module is built into the template: its dialog is the form context (L7711).
+        # The module is built into the template: its dialog, or the form description
+        # built with it, is the form context (L7711).
         try:
-            dialog = ert_dialog(CompoundFile(Path(project.template).read_bytes()))
+            if project.form is not None:
+                from .form77 import dialog_identifiers, loads
+                dialog = dialog_identifiers(loads(Path(project.form).read_bytes()))
+            else:
+                dialog = ert_dialog(CompoundFile(Path(project.template).read_bytes()))
         except (OSError, ErtError):
-            dialog = None  # the build stage reports an unreadable template
+            dialog = None  # the build stage reports an unreadable template or description
         for source in sources:
             if source.dialog is None:
                 source.dialog = dialog
@@ -86,8 +91,8 @@ def _build_stage(project, run_dir):
     output = run_dir / "build" / (project.project_id + ".ert")
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
-        report = build(project.template, project.source, output,
-                       encoding=project.encoding, legacy_normalize=project.legacy_normalize)
+        report = build(project.template, project.source, output, encoding=project.encoding,
+                       legacy_normalize=project.legacy_normalize, form=project.form)
     except (OSError, ValueError, ErtError) as error:
         return stage.finish(BLOCKED, reason=f"build_error: {type(error).__name__}: {error}",
                             output_path=str(output)), None
@@ -99,7 +104,10 @@ def _build_stage(project, run_dir):
                  module_sha256=report["module_sha256"],
                  ert_sha256=report["output"]["sha256"], encoding=report["source"]["encoding"],
                  normalizations=report["normalizations"],
-                 preserved_streams=len(report["preserved_streams"]))
+                 preserved_streams=len(report["preserved_streams"]),
+                 **({"form": {key: report["form"][key] for key in
+                              ("sha256", "template_dialog_sha256", "dialog_sha256", "changes")}}
+                    if "form" in report else {}))
     return stage, {"path": output, "sha256": report["output"]["sha256"], "build": report}
 
 

@@ -26,6 +26,7 @@ the response and result files. ``Harness77Adapter`` is the stage-4 contract.
 """
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -170,6 +171,14 @@ class Harness77Adapter:
     def result_files(self, run_dir, operations):
         return []
 
+    def client(self, text):
+        """The VBScript client; an adapter may add steps between commands (task 008)."""
+        return text
+
+    def watch(self, out, lifecycle, desktop):
+        """A context around the session for an adapter's own observer; none by default."""
+        return contextlib.nullcontext()
+
 
 def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters=None):
     """Reconstruct the controller/client/shutdown scaffolding for an external ERT."""
@@ -195,6 +204,7 @@ def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters
                        "SHUTDOWN": shutdown}.items():
         client = client.replace("__" + key + "__", value)
     client = client.replace("__PROTOCOL_ROOT__", probe.vb_literal(str(protocol_root)))
+    client = adapter.client(client)
     (out / "client.vbs").write_text(client, encoding="utf-16")
     shutdown_manifest["sources"]["client.vbs"] = sha256(out / "client.vbs")
     manifest = {"schema_version": 1, "run_id": run_id, "identity": IDENTITY, "ert_path": str(target),
@@ -306,7 +316,7 @@ def main(argv=None, adapter=None):
                      "ert_protocol_paths": manifest["protocol_paths"]}
         from session77 import run_session
         from desktop77 import PrivateDesktop
-        with PrivateDesktop() as desktop:
+        with PrivateDesktop() as desktop, adapter.watch(drive, lifecycle, desktop.name):
             lifecycle = run_session(base, exe, cdb, helper, args.user, drive, lifecycle,
                                     desktop=desktop.name, identity_dll=identity_dll)
         lifecycle["desktop_closed"] = True

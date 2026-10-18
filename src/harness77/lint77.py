@@ -544,9 +544,15 @@ def ert_dialog(compound: CompoundFile) -> frozenset[str] | None:
 
 
 def dialog_context(path: Path) -> frozenset[str]:
-    """Form context for text modules: the dialog of an explicit ERT, or an error."""
+    """Form context for text modules: an explicit ERT's dialog or form description, or an error."""
+    if path.suffix.casefold() == '.json':
+        from .form77 import dialog_identifiers, loads
+        try:
+            return dialog_identifiers(loads(path.read_bytes()))
+        except ErtError as error:
+            raise ValueError(f'{path.name}: {error}') from None
     if path.suffix.casefold() != '.ert':
-        raise ValueError(f'Контекст формы задаётся файлом ERT: {path}')
+        raise ValueError(f'Контекст формы задаётся файлом ERT или описанием формы JSON: {path}')
     dialog = ert_dialog(CompoundFile(path.read_bytes()))
     if dialog is None:
         raise ValueError(f'В {path.name} нет читаемого диалога формы.')
@@ -674,7 +680,7 @@ def main(argv=None) -> int:
     parser.add_argument('--allow', action='append', default=[], metavar='NAME',
                         help='Явно разрешить функцию внешнего контекста; можно повторять.')
     parser.add_argument('--dialog', type=Path, metavar='FORM.ert',
-                        help='ERT, чей диалог — контекст формы текстовых модулей (для L7711).')
+                        help='ERT или описание формы JSON: контекст формы текстовых модулей (для L7711).')
     parser.add_argument('--strict', action='store_true', help='Неизвестные вызовы считать ошибками')
     parser.add_argument('--format', choices=('text', 'json'), default='text')
     parser.add_argument('--output', type=Path, help='Записать отчёт в файл')
