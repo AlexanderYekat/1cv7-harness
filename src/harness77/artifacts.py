@@ -102,8 +102,9 @@ def _decode(raw, encoding):
     return text, encoding
 
 
-def _verify_build(original, module_id, source_bytes, rebuilt, dialog=None):
-    """dialog: (entry id, expected Dialog Stream bytes) when the form was rebuilt too."""
+def _verify_build(original, module_id, source_bytes, rebuilt, streams=None):
+    """streams: {entry id: expected bytes} of the form's streams when it was rebuilt too
+    (the dialog, and in task 012 the ERT's copy of the metadata)."""
     check, module, _ = _container(rebuilt)
     if module.entry_id != module_id or len(check.directory_entries) != len(original.directory_entries):
         raise ErtError("Изменился состав каталога ERT")
@@ -118,21 +119,29 @@ def _verify_build(original, module_id, source_bytes, rebuilt, dialog=None):
             if old.entry_id == module_id:
                 if decompress_module(content) != source_bytes:
                     raise ErtError("Текст после обратного чтения отличается")
-            elif dialog and old.entry_id == dialog[0]:
-                if content != dialog[1]:
-                    raise ErtError("Диалог формы после обратного чтения отличается")
+            elif streams and old.entry_id in streams:
+                if content != streams[old.entry_id]:
+                    raise ErtError(f"Поток формы {old.name} после обратного чтения отличается")
             elif content != original.read_stream(old):
                 raise ErtError(f"Изменился посторонний поток: {old.name}")
 
 
-def build(template, source, output, *, encoding="auto", legacy_normalize=False, form=None):
-    """form: a description (task 008) that also rebuilds the template's dialog."""
+def build(template, source, output, *, encoding="auto", legacy_normalize=False, form=None, metadata=None):
+    """form: a description (task 008) that also rebuilds the template's dialog;
+    metadata: the target base's 1Cv7.MD, which numbers the named kinds of reference fields (task 012)."""
     template, template_data = _input(template)
     source, source_data = _input(source)
     inputs = [(template, template_data), (source, source_data)]
     if form is not None:
         form, form_data = _input(form)
         inputs.append((form, form_data))
+    if metadata is not None:
+        from .metadata77 import Metadata
+        if form is None:
+            raise ErtError("Метаданные нужны только сборке формы: --metadata задаётся вместе с --form")
+        metadata_path, metadata_data = _input(metadata)
+        inputs.append((metadata_path, metadata_data))
+        metadata = Metadata(metadata_data, metadata_path)
     output = _destination(output)
     compound, module, paths = _container(template_data)
     # Validate the old module too, so a broken compressed template is not silently repaired.
@@ -144,12 +153,12 @@ def build(template, source, output, *, encoding="auto", legacy_normalize=False, 
         text, notes = sanitize_for_cp1251(text)
     source_bytes = text.encode("cp1251", errors="strict")
     replacements = {module.entry_id: compress_module(source_bytes)}
-    dialog = form_report = None
+    streams = form_report = None
     if form is not None:
-        dialog, form_report = _form(compound, form, form_data, text)
-        replacements[dialog[0]] = dialog[1]
+        streams, form_report = _form(compound, form, form_data, text, metadata)
+        replacements.update(streams)
     rebuilt = compound.rebuild(replacements)
-    verify = lambda data: _verify_build(compound, module.entry_id, source_bytes, data, dialog)
+    verify = lambda data: _verify_build(compound, module.entry_id, source_bytes, data, streams)
     verify(rebuilt)
     result = _publish(output, rebuilt, verify, inputs)
     report = {"schema_version": 1, "tool": "harness77", "operation": "build", "status": "passed",
@@ -170,20 +179,35 @@ def build(template, source, output, *, encoding="auto", legacy_normalize=False, 
     return report
 
 
-def _form(compound, form, form_data, module_text):
-    """(dialog entry id, new Dialog Stream bytes) and the form part of the report."""
-    from .form77 import apply, dialog_entry, dialog_payload, loads
+def _form(compound, form, form_data, module_text, metadata=None):
+    """{entry id: new bytes} of the form's streams and the form part of the report."""
+    from .form77 import apply, dialog_entry, dialog_payload, ert_metadata_action, loads
+    from .metadata77 import STREAM, Metadata
     entry = dialog_entry(compound)
     old_payload = compound.read_stream(entry)
     old_text = decode_dialog(old_payload)
-    new_text, changes = apply(old_text, loads(form_data), module_text)
+    template = Metadata.of_ert(compound)
+    new_text, changes = apply(old_text, loads(form_data), module_text, metadata, template)
     payload = dialog_payload(new_text, old_payload)
     if decode_dialog(payload) != new_text:
         raise ErtError("Диалог формы не читается обратно")
-    return (entry.entry_id, payload), {
-        "sha256": sha256(form_data), "template_dialog_sha256": sha256(old_text.encode("cp1251")),
-        "dialog_sha256": sha256(new_text.encode("cp1251")), "dialog_unchanged": new_text == old_text,
-        "changes": changes}
+    streams = {entry.entry_id: payload}
+    report = {"sha256": sha256(form_data), "template_dialog_sha256": sha256(old_text.encode("cp1251")),
+              "dialog_sha256": sha256(new_text.encode("cp1251")), "dialog_unchanged": new_text == old_text,
+              "changes": changes}
+    if metadata is not None:
+        # The ERT is built for these metadata: the numbers of the named kinds are theirs.
+        report["metadata"] = metadata.public()
+    action = ert_metadata_action(old_text, new_text, metadata, template)
+    if template is not None:
+        report["ert_metadata"] = {"action": action, "template_sha256": template.sha256,
+                                  "template_configuration": template.configuration}
+    if action == "replaced":
+        # 1C finds the kind of a field in the ERT's own copy (task 012): it becomes the target's.
+        copy = next(e for e in compound.directory_entries if e.object_type == 2 and e.name == STREAM)
+        streams[copy.entry_id] = metadata.ert_stream()
+        report["ert_metadata"].update(sha256=sha256(streams[copy.entry_id]), configuration=metadata.configuration)
+    return streams, report
 
 
 def extract(input_path, output):
@@ -207,6 +231,8 @@ def main(command, argv):
                             help="Разрешить прежние замены символов с перечислением в JSON")
         parser.add_argument("--form", type=Path,
                             help="Описание формы (JSON harness77-form): собрать и диалог")
+        parser.add_argument("--metadata", type=Path,
+                            help="1Cv7.MD целевой базы: номера видов ссылочных полей формы")
     else:
         parser.add_argument("input", type=Path)
     parser.add_argument("--output", required=True, type=Path, help="Новый файл в существующем каталоге")
@@ -214,7 +240,7 @@ def main(command, argv):
     try:
         if command == "build":
             report = build(args.template, args.source, args.output, encoding=args.encoding,
-                           legacy_normalize=args.legacy_normalize, form=args.form)
+                           legacy_normalize=args.legacy_normalize, form=args.form, metadata=args.metadata)
         else:
             report = extract(args.input, args.output)
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

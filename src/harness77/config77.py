@@ -77,11 +77,14 @@ class ProjectProfile:
     form: Path | None = None
     # Visual checks of the form against approved baselines (task 010).
     visual: object | None = None
+    # 1Cv7.MD numbering the named kinds of reference fields (task 012); None: the stand base's.
+    metadata: Path | None = None
 
     def public(self):
         return {"project_id": self.project_id, "profile": path_tag(self.path),
                 "template": path_tag(self.template), "source": path_tag(self.source),
                 "form": path_tag(self.form) if self.form is not None else None,
+                "metadata": path_tag(self.metadata) if self.metadata is not None else None,
                 "encoding": self.encoding, "legacy_normalize": self.legacy_normalize,
                 "analysis": {"globals": [path_tag(p) for p in self.globals],
                              "allow": list(self.allow), "strict": self.strict},
@@ -170,7 +173,8 @@ def load_project(path) -> ProjectProfile:
         allow=tuple(str(a) for a in analysis.get("allow", [])),
         strict=bool(analysis.get("strict", False)),
         tests=tuple(tests), deadlines_raw=dict(data.get("deadlines", {})), parameters=dict(parameters),
-        form=_resolve(base_dir, build["form"], "build.form") if "form" in build else None, visual=visual)
+        form=_resolve(base_dir, build["form"], "build.form") if "form" in build else None, visual=visual,
+        metadata=_resolve(base_dir, build["metadata"], "build.metadata") if "metadata" in build else None)
 
 
 def load_stand(path) -> StandProfile:

@@ -1,8 +1,9 @@
-"""Form description of an ERT dialog: lossless extract and verified changes (tasks 008, 011).
+"""Form description of an ERT dialog: lossless extract and verified changes (tasks 008, 011, 012).
 
 The description is versioned JSON with the supported properties only: the form
 caption, size and layers; per control its numeric ID, class, caption, position,
-size, formula, identifier, layer and (version 2) data type. It is bound to its
+size, formula, identifier, layer and (version 2) data type; version 3 names the
+configuration object of a reference type (task 012). It is bound to its
 template by the SHA-256 of the template's dialog text; every other field and
 section stays the template's. An unchanged description therefore rebuilds the
 dialog byte for byte, and anything outside the supported changes is refused
@@ -11,7 +12,7 @@ explicitly.
 The dialog layout rule (CRLF before every nested list, two spaces after the
 root) and the field numbers come from the static survey of 416 forms in
 task 008, the data type fields and the default records of new classes from the
-survey of task 011. Whether the dialog works in 1C is the native acceptance,
+surveys of tasks 011 and 012. Whether the dialog works in 1C is the native acceptance,
 not here.
 """
 
@@ -25,23 +26,26 @@ import sys
 
 from .ert_module import (DIALOG_STREAM, ErtError, decode_dialog, encode_dialog,
                          parse_dialog)
+from .metadata77 import TYPES, parse_name, type_name
 
 SCHEMA = "harness77-form"
-SCHEMA_VERSION = 2
-SCHEMA_VERSIONS = (1, 2)
+SCHEMA_VERSION = 3
+SCHEMA_VERSIONS = (1, 2, 3)
 
 # Field numbers (from zero) of a Controls record and of the Frame record.
 CAPTION, CLASS, X, Y, WIDTH, HEIGHT, ID, FORMULA, IDENTIFIER, LAYER = 0, 1, 3, 4, 5, 6, 9, 11, 12, 41
-TYPE, LENGTH, PRECISION = 14, 15, 16
+TYPE, LENGTH, PRECISION, OBJECT = 14, 15, 16, 17
 FRAME_WIDTH, FRAME_HEIGHT, FRAME_CAPTION, FRAME_LAYERS = 14, 15, 16, 28
 GEOMETRY = (("x", X), ("y", Y), ("width", WIDTH), ("height", HEIGHT))
 CONTROL_KEYS = ("id", "class", "caption", "x", "y", "width", "height", "formula", "identifier", "layer", "type")
 CONTROL_KEYS_V1 = CONTROL_KEYS[:-1]
 FORM_KEYS = ("caption", "width", "height", "layers")
 TOP_KEYS = ("schema", "schema_version", "template_dialog_sha256", "form", "controls")
-TYPE_KEYS = ("kind", "length", "precision", "code")
-# Field 14 holds the type code (task 011 survey): S, N, D, U; B, E, O, K, T are references.
+TYPE_KEYS = ("kind", "length", "precision", "code", "object", "object_id")
+# Field 14 holds the type code (task 011 survey): S, N, D, U; B, E, O, K, T are references
+# (metadata77.TYPES), with the number of the metadata object in field 17 (task 012).
 KINDS = {"S": "string", "N": "number", "D": "date", "U": "undefined"}
+REFERENCE = "reference"
 FIRST_ID = 4152
 GROUP = "1CGROUPBOX"
 # The client area of a form in form units, measured natively in task 008 (F0):
@@ -73,6 +77,10 @@ DEFAULTS = {
     ("BMASKED", "date"): _default("BMASKED", "1350565888", "D", flags="32"),
     ("CHECKBOX", "number"): _default("CHECKBOX", "1342177283", "N"),
 }
+# The most frequent BMASKED record of each reference code differs from the number
+# field in the flags only (task 012): B 45 of 114, O 9 of 20, E 1 of 1, T 4 of 6,
+# K 4 of 6. The corpus forms have no field of the chart-of-accounts type P.
+REFERENCE_FLAGS = {"B": "0", "O": "16777248", "E": "0", "T": "0", "K": "32"}
 # What a new control of each class needs: its own properties, the type kinds it
 # takes and whether its formula must be a call (True), may be one (False) or is
 # not supported (None). Data controls are form attributes, so they need a name.
@@ -81,7 +89,7 @@ NEW_CLASSES = {
     "STATIC": {"required": ("caption",), "kinds": (), "formula": None},
     GROUP: {"required": ("caption",), "kinds": (), "formula": None},
     "1CEDIT": {"required": ("identifier", "type"), "kinds": ("string",), "formula": False},
-    "BMASKED": {"required": ("identifier", "type"), "kinds": ("number", "date"), "formula": False},
+    "BMASKED": {"required": ("identifier", "type"), "kinds": ("number", "date", REFERENCE), "formula": False},
     "CHECKBOX": {"required": ("caption", "identifier"), "kinds": ("number",), "formula": False},
 }
 FORMULAS = {kind: rules["formula"] for kind, rules in NEW_CLASSES.items() if rules["formula"] is not None}
@@ -137,11 +145,20 @@ def _int(text, where):
     return int(text)
 
 
-def _type(record, where):
-    """Data type of a record; None for the undefined type without length and precision."""
+def _type(record, where, version=SCHEMA_VERSION, metadata=None):
+    """Data type of a record; None for the undefined type without length and precision.
+
+    Version 3 names a reference type: any object of the type by the type alone, a
+    kind by the name the metadata give its number, else by code and number.
+    """
     code, length, precision = record[TYPE], _int(record[LENGTH], where), _int(record[PRECISION], where)
     if (code, length, precision) == ("U", 0, 0):
         return None
+    if version >= 3 and code in TYPES and (length, precision) == (0, 0):
+        number = _int(record[OBJECT], where)
+        name = type_name(code, number, metadata)
+        return ({"kind": REFERENCE, "object": name} if name else
+                {"kind": REFERENCE, "code": code, "object_id": number})
     kind = KINDS.get(code, "other")
     value = {"kind": kind}
     if kind == "other":
@@ -153,27 +170,43 @@ def _type(record, where):
     return value
 
 
-def _control(record):
+def _control(record, version=SCHEMA_VERSION, metadata=None):
     where = f"Элемент {record[ID]!r}"
     item = {"id": _int(record[ID], where), "class": record[CLASS], "caption": record[CAPTION]}
     for key, index in GEOMETRY:
         item[key] = _int(record[index], where)
     item.update(formula=record[FORMULA], identifier=record[IDENTIFIER], layer=record[LAYER])
-    data_type = _type(record, where)
+    data_type = _type(record, where, version, metadata)
     if data_type:
         item["type"] = data_type
     return item
 
 
-def describe(text):
-    """Description of a dialog text; refuses layouts that would not rebuild losslessly."""
+def describe(text, metadata=None, version=SCHEMA_VERSION):
+    """Description of a dialog text; refuses layouts that would not rebuild losslessly.
+
+    metadata (metadata77.Metadata) names the kinds of reference fields (task 012).
+    """
     _, frame, section = _structure(text)
-    return {"schema": SCHEMA, "schema_version": SCHEMA_VERSION,
+    return {"schema": SCHEMA, "schema_version": version,
             "template_dialog_sha256": sha256(text.encode("cp1251")),
             "form": {"caption": frame[FRAME_CAPTION], "width": _int(frame[FRAME_WIDTH], "Форма"),
                      "height": _int(frame[FRAME_HEIGHT], "Форма"),
                      "layers": [layer[0] for layer in frame[FRAME_LAYERS][1:]]},
-            "controls": [_control(record) for record in section[1:]]}
+            "controls": [_control(record, version, metadata) for record in section[1:]]}
+
+
+def by_number(description):
+    """Reference fields whose kind the description gives by number, not by name."""
+    return [{"control": item["id"], "code": item["type"]["code"], "object_id": item["type"]["object_id"]}
+            for item in description["controls"]
+            if item.get("type", {}).get("kind") == REFERENCE and "object_id" in item["type"]]
+
+
+def needs_metadata(description):
+    """Whether a description names a kind of a configuration object (Справочник.Контрагенты)."""
+    return any(item.get("type", {}).get("kind") == REFERENCE and "." in item["type"].get("object", "")
+               for item in description["controls"])
 
 
 def dumps(description):
@@ -203,18 +236,35 @@ def loads(data):
         raise ErtError("controls: нужен список")
     for number, item in enumerate(description["controls"], start=1):
         where = f"controls[{number}]"
-        _keys(item, CONTROL_KEYS if version == 2 else CONTROL_KEYS_V1, ("class",), where)
+        _keys(item, CONTROL_KEYS if version >= 2 else CONTROL_KEYS_V1, ("class",), where)
         _typed(item, where, id=int, x=int, y=int, width=int, height=int, type=dict,
                **{key: str for key in ("class", "caption", "formula", "identifier", "layer")})
         if "type" in item:
-            data_type, where = item["type"], where + ".type"
-            _keys(data_type, TYPE_KEYS, ("kind",), where)
-            _typed(data_type, where, kind=str, length=int, precision=int, code=str)
-            if data_type["kind"] not in (*KINDS.values(), "other"):
-                raise ErtError(f"{where}.kind: неизвестный вид типа {data_type['kind']!r}")
-            if ("code" in data_type) != (data_type["kind"] == "other"):
-                raise ErtError(f"{where}: code задаётся только у вида other и обязателен у него")
+            _loads_type(item["type"], where + ".type", version)
     return description
+
+
+def _loads_type(data_type, where, version):
+    _keys(data_type, TYPE_KEYS if version >= 3 else TYPE_KEYS[:4], ("kind",), where)
+    _typed(data_type, where, kind=str, length=int, precision=int, code=str, object=str, object_id=int)
+    kinds = (*KINDS.values(), "other") + ((REFERENCE,) if version >= 3 else ())
+    if data_type["kind"] not in kinds:
+        raise ErtError(f"{where}.kind: неизвестный вид типа {data_type['kind']!r}")
+    if data_type["kind"] != REFERENCE:
+        if ("code" in data_type) != (data_type["kind"] == "other"):
+            raise ErtError(f"{where}: code задаётся только у вида other и обязателен у него")
+        if "object" in data_type or "object_id" in data_type:
+            raise ErtError(f"{where}: object и object_id задаются только у вида reference")
+        return
+    keys = set(data_type) - {"kind"}
+    if keys == {"object"}:
+        parse_name(data_type["object"])
+    elif keys == {"code", "object_id"}:
+        if data_type["code"] not in TYPES or data_type["object_id"] < 0:
+            raise ErtError(f"{where}: code — один из {', '.join(TYPES)}, object_id — номер ≥ 0")
+    else:
+        raise ErtError(f"{where}: у вида reference задаётся object (имя, например Справочник.Контрагенты) "
+                       "или code и object_id (номер в метаданных), без длины и точности")
 
 
 def _keys(item, allowed, required, where):
@@ -254,10 +304,39 @@ def _reserved():
 
 
 class _Changes:
-    def __init__(self, module_text):
+    def __init__(self, module_text, metadata=None, template=None):
         self.items = []
         self.module_text = module_text
+        self.metadata = metadata
+        self.template = template
         self._names = None
+
+    def resolve(self, name, where, new=False):
+        """(code, number, canonical name) of a reference type name.
+
+        A kind is numbered by the target base's metadata; an existing field without
+        them by the template's own copy, which the template was saved with.
+        """
+        code, kind = parse_name(name)
+        if kind is None:
+            return code, 0, TYPES[code]
+        if self.metadata is not None:
+            return self.metadata.resolve(name)
+        if self.template is not None and not new:
+            return self.template.resolve(name)
+        raise ErtError(f"{where}: тип {name} — вид объекта конфигурации; его номер берётся из метаданных "
+                       "целевой базы: build --metadata <база>/1Cv7.MD или [build] metadata в профиле "
+                       "(run берёт 1Cv7.MD базы стенда)")
+
+    def names(self):
+        return self.metadata or self.template
+
+    def reference(self, data_type, where):
+        """A reference type as code and number: {"kind": "reference", "code", "object_id"}."""
+        if data_type is None or data_type.get("kind") != REFERENCE or "object_id" in data_type:
+            return data_type
+        code, number, _ = self.resolve(data_type["object"], where)
+        return {"kind": REFERENCE, "code": code, "object_id": number}
 
     def module(self, what):
         if self._names is None:
@@ -301,8 +380,8 @@ def _geometry(item, width, height, where):
                        f"[{CLIENT_LEFT}, {right}]×[{CLIENT_TOP}, {bottom}] (форма {width}×{height})")
 
 
-def _new_type(item, kind, where):
-    """The checked data type of a new control: {kind, length, precision} or None."""
+def _new_type(item, kind, where, changes):
+    """The checked data type of a new control: {kind, length, precision[, code, object_id, object]} or None."""
     kinds = NEW_CLASSES[kind]["kinds"]
     value = item.get("type", CHECKBOX_TYPE if kind == "CHECKBOX" else None)
     if value is None:
@@ -311,6 +390,15 @@ def _new_type(item, kind, where):
         raise ErtError(f"{where}: у элемента {kind} нет типа данных")
     if value["kind"] not in kinds:
         raise ErtError(f"{where}: тип {value['kind']} не подходит элементу {kind} (допустимо: {', '.join(kinds)})")
+    if value["kind"] == REFERENCE:
+        if "object" not in value:
+            raise ErtError(f"{where}: тип нового поля задаётся именем объекта (object), не номером: "
+                           "номер принадлежит конфигурации и без метаданных не проверяется")
+        code, number, name = changes.resolve(value["object"], where, new=True)
+        if code not in REFERENCE_FLAGS:
+            raise ErtError(f"{where}: новое поле типа {TYPES[code]} не поддерживается (в формах корпуса нет "
+                           "такого поля, образца записи нет)")
+        return {"kind": REFERENCE, "length": 0, "precision": 0, "code": code, "object_id": number, "object": name}
     length, precision = value.get("length", 0), value.get("precision", 0)
     rules = {"string": (length >= 0 and precision == 0, "длина ≥ 0, без точности"),
              "number": (length >= 1 and 0 <= precision < length, "длина ≥ 1, 0 ≤ точность < длина"),
@@ -365,14 +453,39 @@ def _placement(before, after, placed):
                            "целиком содержит элемент")
 
 
-def apply(text, description, module_text=None):
-    """New dialog text from the template text and a description; returns (text, changes)."""
+def _shown(data_type, where, changes):
+    """A type for a message; a reference also by code/number and its name in the build metadata."""
+    if not data_type or data_type.get("kind") != REFERENCE:
+        return str(data_type)
+    try:
+        number = changes.reference(data_type, where)
+    except ErtError:
+        return data_type["object"]
+    name = type_name(number["code"], number["object_id"], changes.names())
+    shown = f"{number['code']}/{number['object_id']}" + (f" = {name}" if name else "")
+    return f"{data_type['object']} ({shown})" if "object" in data_type else shown
+
+
+def _same_type(new, old, where, changes):
+    """Types of an existing control are equal; a named kind is compared by its number in the metadata."""
+    kind = (new or {}).get("kind")
+    if kind != (old or {}).get("kind") or kind != REFERENCE:
+        return new == old
+    return changes.reference(new, where) == changes.reference(old, where)
+
+
+def apply(text, description, module_text=None, metadata=None, template=None):
+    """New dialog text from the template text and a description; returns (text, changes).
+
+    metadata (metadata77.Metadata of the target base) gives the numbers of named
+    kinds; template (the ERT's own copy) those of existing fields without it (task 012).
+    """
     tree, frame, section = _structure(text)
-    current = describe(text)
+    current = describe(text, version=description["schema_version"])
     if description["template_dialog_sha256"] != current["template_dialog_sha256"]:
         raise ErtError("Описание сделано для другого шаблона: хеш диалога не совпадает")
     typed = description["schema_version"] >= 2
-    changes = _Changes(module_text)
+    changes = _Changes(module_text, metadata, template)
     form, old_form = description["form"], current["form"]
     if form["layers"] != old_form["layers"]:
         raise ErtError("Изменение слоёв формы не поддерживается")
@@ -397,9 +510,11 @@ def apply(text, description, module_text=None):
         missing = [key for key in CONTROL_KEYS_V1 if key not in item]
         if missing:
             raise ErtError(f"{where}: нет свойств {', '.join(missing)}")
-        if typed and item.get("type") != old.get("type"):
+        if typed and not _same_type(item.get("type"), old.get("type"), where, changes):
+            # A named kind whose number differs: the template or the description is of another configuration.
             raise ErtError(f"{where}: изменение типа данных существующего элемента не поддерживается "
-                           f"(в шаблоне {old.get('type')}, в описании {item.get('type')})")
+                           f"(в шаблоне {_shown(old.get('type'), where, changes)}, "
+                           f"в описании {_shown(item.get('type'), where, changes)})")
         moved = False
         for key in CONTROL_KEYS_V1[2:]:
             if item[key] == old[key]:
@@ -443,8 +558,12 @@ def apply(text, description, module_text=None):
         if missing:
             raise ErtError(f"{where}: нет свойств {', '.join(missing)}")
         _geometry(item, width, height, where)
-        data_type = _new_type(item, kind, where)
-        record = list(DEFAULTS[kind, data_type and data_type["kind"]])
+        data_type = _new_type(item, kind, where, changes)
+        if data_type and data_type["kind"] == REFERENCE:
+            record = _default(kind, "1350565888", data_type["code"], flags=REFERENCE_FLAGS[data_type["code"]])
+            record[OBJECT] = str(data_type["object_id"])
+        else:
+            record = list(DEFAULTS[kind, data_type and data_type["kind"]])
         record[CAPTION] = _caption(item.get("caption", ""), where)
         for key, index in GEOMETRY:
             record[index] = str(item[key])
@@ -457,7 +576,10 @@ def apply(text, description, module_text=None):
         record[LAYER] = item.get("layer", form["layers"][0] if form["layers"] else "")
         section.append(record)
         placed.add(control_id)
-        changes.items.append({"control": control_id, "added": kind})
+        change = {"control": control_id, "added": kind}
+        if data_type and data_type["kind"] == REFERENCE:
+            change["type"] = {key: data_type[key] for key in ("object", "code", "object_id")}
+        changes.items.append(change)
     # Only what the description sets is validated: the template's own identifiers
     # and layers were accepted by 1C (a corpus form has the identifier "Дата").
     touched = {(str(c["control"]), c.get("property", "added")) for c in changes.items if c["control"]}
@@ -490,6 +612,41 @@ def apply(text, description, module_text=None):
     return serialize_dialog(tree), changes.items
 
 
+def ert_metadata_action(old_text, new_text, metadata, template):
+    """What the ERT's own copy of the metadata needs for the new kind fields: "kept" or "replaced".
+
+    1C finds the kind of a form field in the copy the ERT carries (task 012: R1,
+    R1a–R1c). The copy stays when it has every new kind with the number and the
+    name of the target base; otherwise the target's metadata replace it, and only
+    if every kind field the template had means the same object there.
+    """
+    old, new = _structure(old_text)[2][1:], _structure(new_text)[2][1:]
+
+    def kind(record):
+        if record[TYPE] not in TYPES or (record[LENGTH], record[PRECISION]) != ("0", "0"):
+            return None
+        number = _int(record[OBJECT], f"Элемент {record[ID]}")
+        return (record[TYPE], number) if number else None
+
+    kinds = {kind(record) for record in new[len(old):]} - {None}
+    if not kinds:
+        return "kept"
+    if template is not None and all(template.names.get(key) == metadata.names.get(key) for key in kinds):
+        return "kept"
+    if template is None:
+        raise ErtError("В шаблоне нет своей копии метаданных (потока Main MetaData Stream), а 1С ищет вид поля "
+                       "в ней: поле вида в такой шаблон не встроить")
+    for record in old:
+        key = kind(record)
+        if key and (metadata.names.get(key) is None or template.names.get(key, metadata.names[key])
+                    != metadata.names[key]):
+            raise ErtError(f"Элемент {record[ID]}: шаблон ссылается на {key[0]}/{key[1]} "
+                           f"({type_name(*key, template) or 'нет в копии шаблона'}), а в метаданных целевой базы "
+                           f"это {type_name(*key, metadata) or 'ничего'}; копию метаданных шаблона нельзя заменить "
+                           "метаданными базы, а без замены 1С не найдёт вид нового поля")
+    return "replaced"
+
+
 def dialog_payload(text, old_payload):
     """Dialog Stream bytes for a new text; the length prefix keeps its form."""
     from .ert_module import _PREFIX_KINDS, _dialog_length
@@ -514,21 +671,39 @@ def dialog_identifiers(description):
                      if item.get("identifier"))
 
 
-def extract(input_path, output):
+def extract(input_path, output, metadata=None):
+    """metadata: a 1Cv7.MD path whose names replace the numbers of reference kinds (task 012);
+    without it the names come from the copy of the metadata the ERT carries."""
     from .artifacts import _container, _destination, _input, _publish
+    from .metadata77 import Metadata
     input_path, raw = _input(input_path)
+    inputs = [(input_path, raw)]
+    if metadata is not None:
+        metadata_path, metadata_data = _input(metadata)
+        inputs.append((metadata_path, metadata_data))
+        metadata = Metadata(metadata_data, metadata_path)
     output = _destination(output)
     compound, _, _ = _container(raw)
     text = decode_dialog(compound.read_stream(dialog_entry(compound)))
-    description = describe(text)
+    own = Metadata.of_ert(compound)
+    names = metadata or own
+    description = describe(text, names)
     payload = dumps(description).encode("utf-8")
-    result = _publish(output, payload, lambda data: describe(text) == loads(data) or _mismatch(),
-                      [(input_path, raw)])
-    return {"schema_version": 1, "tool": "harness77", "operation": "form-extract", "status": "passed",
-            "scope": "ert_form_extract", "input": {"path": str(input_path), "sha256": sha256(raw)},
-            "output": {**result, "encoding": "utf-8"},
-            "template_dialog_sha256": description["template_dialog_sha256"],
-            "controls": len(description["controls"]), "inputs_unchanged": True, "platform_checked": False}
+    result = _publish(output, payload, lambda data: describe(text, names) == loads(data) or _mismatch(),
+                      inputs)
+    report = {"schema_version": 1, "tool": "harness77", "operation": "form-extract", "status": "passed",
+              "scope": "ert_form_extract", "input": {"path": str(input_path), "sha256": sha256(raw)},
+              "output": {**result, "encoding": "utf-8"},
+              "template_dialog_sha256": description["template_dialog_sha256"],
+              "controls": len(description["controls"]),
+              "names_from": "metadata" if metadata else "ert" if own else None,
+              "references_by_number": by_number(description),
+              "inputs_unchanged": True, "platform_checked": False}
+    if own is not None:
+        report["ert_metadata"] = {"sha256": own.sha256, "configuration": own.configuration}
+    if metadata is not None:
+        report["metadata"] = metadata.public()
+    return report
 
 
 def _mismatch():
@@ -537,12 +712,14 @@ def _mismatch():
 
 def main(argv):
     parser = argparse.ArgumentParser(prog="harness77 form-extract", allow_abbrev=False,
-                                     description="Описание формы ERT в JSON (схема harness77-form 1)")
+                                     description=f"Описание формы ERT в JSON (схема {SCHEMA} {SCHEMA_VERSION})")
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", required=True, type=Path, help="Новый файл в существующем каталоге")
+    parser.add_argument("--metadata", type=Path,
+                        help="1Cv7.MD базы: виды ссылочных полей именами, а не номерами")
     args = parser.parse_args(argv)
     try:
-        report = extract(args.input, args.output)
+        report = extract(args.input, args.output, args.metadata)
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         return 0
     except (OSError, ValueError, ErtError, struct.error, RuntimeError) as exc:

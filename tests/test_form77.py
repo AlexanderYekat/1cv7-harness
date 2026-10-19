@@ -78,7 +78,7 @@ class DescribeTests(unittest.TestCase):
         good = described()
         cases = {
             "schema": dict(good, schema="other"),
-            "schema_version": dict(good, schema_version=3),
+            "schema_version": dict(good, schema_version=4),
             "неизвестные свойства": dict(good, extra=1),
             "form": dict(good, form=dict(good["form"], color="red")),
             "нужен тип int": dict(good, controls=[dict(good["controls"][0], x=True)]),
@@ -247,7 +247,9 @@ class TypeTests(unittest.TestCase):
     def test_type_is_described_without_zeros(self):
         cases = {("N", "10", "2"): {"kind": "number", "length": 10, "precision": 2},
                  ("S", "0", "0"): {"kind": "string"}, ("S", "60", "0"): {"kind": "string", "length": 60},
-                 ("D", "0", "0"): {"kind": "date"}, ("B", "0", "0"): {"kind": "other", "code": "B"},
+                 ("D", "0", "0"): {"kind": "date"}, ("X", "0", "0"): {"kind": "other", "code": "X"},
+                 ("B", "0", "0"): {"kind": "reference", "object": "Справочник"},
+                 ("B", "3", "0"): {"kind": "other", "code": "B", "length": 3},
                  ("U", "0", "1"): {"kind": "undefined", "precision": 1}, ("U", "0", "0"): None}
         for fields, expected in cases.items():
             with self.subTest(fields):

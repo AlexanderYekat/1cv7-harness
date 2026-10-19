@@ -229,6 +229,18 @@ class AdapterTests(unittest.TestCase):
         item, _ = self.judge(self.adapter(parameters, self.inspection(actions=[])), "result", lines)
         self.assertEqual(item["form_issues"][0], "field 4167 not found")
 
+    def test_representations_are_kept_apart_from_the_value(self):
+        parameters = {"actions": "click:4161"}
+        lines = ["selected:x", "loaded:harness77-form", "clicked:1", "value:Пол77=Перечисление|Пол|same:1|empty:0",
+                 "repr:Пол77=Женский", "repr:Контрагент77=ООО \"Ромашка\" = 1", "closed:1"]
+        button = {"action": "click", "record_id": 4161, "found": True, "returned": True, "message": "BM_CLICK",
+                  "button": {"inside_client": True}}
+        item, _ = self.judge(self.adapter(parameters, self.inspection(actions=[button], click=button)),
+                             "result", lines)
+        self.assertEqual((item["status"], item["value"]),
+                         ("passed", "clicked:1;value:Пол77=Перечисление|Пол|same:1|empty:0"))
+        self.assertEqual(item["representations"], {"Пол77": "Женский", "Контрагент77": 'ООО "Ромашка" = 1'})
+
     def test_judge_captions(self):
         ids = window.window_ids(DESCRIPTION)
         controls = [{"id": ids[i], "text": f"Надпись {i}"} for i in EXPECTED]

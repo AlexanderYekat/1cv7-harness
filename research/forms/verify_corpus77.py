@@ -1,13 +1,15 @@
-"""Lossless form round trip over a local ERT corpus (task 008, static acceptance).
+"""Lossless form round trip over a local ERT corpus (tasks 008, 011, 012; static acceptance).
 
 For every unique ERT: ``form-extract`` to a description, then ``build --form``
 with that unchanged description and a fixed small module, and compare the
 built Dialog Stream with the original byte for byte. ``build`` itself verifies
 the other streams and the directory metadata. Refusals are recorded with their
-reason; nothing in the corpus is written.
+reason; nothing in the corpus is written. With ``--metadata`` (task 012) both
+steps take that 1Cv7.MD: kinds of reference fields are named, and the build
+translates the names back to the numbers.
 
     python -B research/forms/verify_corpus77.py .local/bases/base-for-test/ExtForms \
-        --output .artifacts/forms/corpus-YYYYMMDD
+        [--metadata .local/bases/base-for-test/1Cv7.MD] --output .artifacts/forms/corpus-YYYYMMDD
 """
 
 import argparse
@@ -32,25 +34,28 @@ def dialog_bytes(path):
     return compound.read_stream(form77.dialog_entry(compound))
 
 
-def check(path, work):
-    """One ERT: ("exact" | "refused" | "different", detail)."""
+def check(path, work, metadata=None):
+    """One ERT: ("exact" | "refused" | "different", detail, reference counts)."""
     description = work / "form.json"
     try:
-        form77.extract(path, description)
+        report = form77.extract(path, description, metadata)
     except (OSError, ValueError, ert.ErtError) as error:
-        return "refused", "form-extract: " + str(error)
+        return "refused", "form-extract: " + str(error), None
+    types = [c.get("type", {}) for c in form77.loads(description.read_bytes())["controls"]]
+    references = {"named": sum(1 for t in types if "object" in t), "by_number": report["references_by_number"]}
     try:
-        build(path, work / "module.1s", work / "built.ert", form=description)
+        build(path, work / "module.1s", work / "built.ert", form=description, metadata=metadata)
     except (OSError, ValueError, ert.ErtError) as error:
-        return "refused", "build: " + str(error)
+        return "refused", "build: " + str(error), references
     same = dialog_bytes(path) == dialog_bytes(work / "built.ert")
-    return ("exact", None) if same else ("different", "dialog bytes differ")
+    return ("exact", None, references) if same else ("different", "dialog bytes differ", references)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("corpus", type=Path)
     parser.add_argument("--output", type=Path, required=True, help="new directory for result.json")
+    parser.add_argument("--metadata", type=Path, help="1Cv7.MD naming the kinds of reference fields")
     args = parser.parse_args(argv)
     args.output.mkdir(parents=True, exist_ok=False)
     files = sorted(p for p in args.corpus.rglob("*") if p.suffix.lower() == ".ert")
@@ -66,17 +71,25 @@ def main(argv=None):
         with tempfile.TemporaryDirectory(prefix="harness77-corpus-") as temp:
             work = Path(temp)
             (work / "module.1s").write_text(MODULE, encoding="utf-8")
-            outcome, detail = check(path, work)
-        rows.append({"path": name, "sha256": digest, "outcome": outcome, "detail": detail})
+            outcome, detail, references = check(path, work, args.metadata)
+        rows.append({"path": name, "sha256": digest, "outcome": outcome, "detail": detail,
+                     "references": references})
     after = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
     counts = collections.Counter(row["outcome"] for row in rows)
-    result = {"schema_version": 1, "scope": "tasks 008, 011: lossless form round trip",
+    references = [row["references"] for row in rows if row.get("references")]
+    result = {"schema_version": 1, "scope": "tasks 008, 011, 012: lossless form round trip",
               "description_schema_version": form77.SCHEMA_VERSION, "files": len(files),
               "counts": dict(counts), "corpus_unchanged": before == after,
+              "metadata": ({"path": str(args.metadata.resolve()),
+                            "sha256": hashlib.sha256(args.metadata.read_bytes()).hexdigest()}
+                           if args.metadata else None),
+              "references": {"named": sum(r["named"] for r in references),
+                             "by_number": sum(len(r["by_number"]) for r in references)},
               "module": MODULE, "rows": rows}
     (args.output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n",
                                              encoding="utf-8")
-    print(json.dumps({k: result[k] for k in ("files", "counts", "corpus_unchanged")}, ensure_ascii=False))
+    print(json.dumps({k: result[k] for k in ("files", "counts", "corpus_unchanged", "references")},
+                     ensure_ascii=False))
     for row in rows:
         if row["outcome"] in ("refused", "different"):
             print(row["outcome"], row["path"], row["detail"])

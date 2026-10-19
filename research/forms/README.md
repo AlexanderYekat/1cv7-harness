@@ -1,4 +1,4 @@
-# Формы ERT в настоящей 1С 7.7 (задачи 008, 010 и 011)
+# Формы ERT в настоящей 1С 7.7 (задачи 008, 010–012)
 
 Исследовательская часть [задачи 008](../../docs/tasks/008-form-description.md):
 открыть форму собранной ERT видимой в своём сеансе 1С, сверить окна элементов
@@ -55,6 +55,22 @@
   `conflict_value_module77.1s` — `Перем Фамилия` при поле «Фамилия» (E4, E4b).
 - `prepare_elements77.py` — описания и профили E1–E4b; `verify_elements77.py` — приёмка.
 
+Задача 012 ([ссылочные поля](../../docs/tasks/012-reference-fields.md)):
+
+- `form_launcher77.py`: строки обработчиков `repr:<имя>=<текст>` (представление
+  значения зависит от данных базы) не входят в значение `result`, а пишутся
+  в `representations` операции; приёмка сверяет их с текстом окон полей.
+- `references_module77.1s` — модуль проб R1–R3: значения базы в шести ссылочных
+  полях, «Проверка» сообщает тип, вид, совпадение с исходным и пустоту.
+- `references_foreign77.1s` — модуль ручной проверки в любой базе: данных не читает,
+  «Проверка» выводит `Сообщить` тип, вид и значение шести полей. Сборка —
+  `harness77 build` с ERT прогона R1 как шаблоном (форма и копия метаданных те же).
+- `prepare_references77.py` — описания (вид по имени), FIO.ERT с копией метаданных
+  ERT корпуса (R5) и профили R1–R5;
+  `verify_references77.py` — приёмка.
+- `verify_corpus77.py --metadata 1Cv7.MD` — обратное преобразование корпуса
+  с именами видов вместо номеров.
+
 ## Что установлено (стенд 7.70.027, Windows 11, 96 DPI)
 
 - **ID окон не равны полю 9 записи.** Окно записи с индексом i из N получает
@@ -89,6 +105,13 @@
   ограничивает само поле при вводе. Флажок отражает реквизит (`BM_GETCHECK`),
   `BM_CLICK` переключает его и вызывает формулу. 1С компилирует модуль с `Перем`,
   совпадающим с реквизитом формы, и переменная перекрывает реквизит (E4, E4b).
+- **Задача 012:** ERT несёт свою копию метаданных — поток `Main MetaData Stream`
+  (текст и байт NUL), и вид поля формы 1С ищет в ней: с пустой копией FIO.ERT
+  («Задача») поле вида даёт «Ошибка создания внешнего отчета», поле «любой» —
+  нет (R1, R1a, по одному полю); копия ERT корпуса или полные метаданные базы
+  в FIO.ERT снимают ошибку (R1b, R1c). Поля показывают представление значения
+  (счёт — код по маске плана счетов «51 .  . », без кнопки «…»); поле вида
+  превращает значение другого вида в пустое значение своего (R3).
 - В 7.7 сравнения вокруг `ИЛИ` нужно брать в скобки: без них контроллер
   не компилируется («Неправильное использование арифметической или строковой
   операции»). Переменные модуля (`Перем`) в `ВыполняемыйМодуль` допустимы.
@@ -112,6 +135,17 @@ python -B research/forms/prepare_visual77.py --stand .local/stage8-native/r2/sta
 python -m harness77 run --project .local/stage10-native/NEW/v-button.toml --stand .local/stage10-native/NEW/stand.toml --output-root .artifacts/runs
 python -m harness77 visual approve --project .local/stage10-native/NEW/v-button.toml --run .artifacts/runs/<run_id> --by "<кто>"
 python -B research/forms/verify_visual77.py --runs .artifacts/runs --series .local/stage10-native/series --output .artifacts/forms/visual-acceptance-NEW.json
+```
+
+Ссылочные поля (задача 012):
+
+```powershell
+python -B research/forms/verify_corpus77.py .local/bases/base-for-test/ExtForms --metadata .local/bases/base-for-test/1Cv7.MD --output .artifacts/forms/corpus-NEW
+python -B research/forms/prepare_references77.py --stand .local/stage11-native/series/stand.toml --output .local/stage12-native/NEW
+python -m harness77 run --project .local/stage12-native/NEW/r-references.toml --stand .local/stage12-native/NEW/stand.toml --output-root .artifacts/runs
+python -B research/forms/verify_references77.py --runs .artifacts/runs --series .local/stage12-native/series `
+  --corpus .artifacts/forms/corpus-20261019-v3 --corpus-md .artifacts/forms/corpus-20261019-v3-md `
+  --output .artifacts/forms/references-acceptance-NEW.json
 ```
 
 Новые элементы (задача 011):

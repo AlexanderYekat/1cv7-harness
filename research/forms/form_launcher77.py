@@ -1,4 +1,4 @@
-"""Stand launcher for the visible-form probe (tasks 008, 010, 011): the stage-4 launcher with a form adapter.
+"""Stand launcher for the visible-form probe (tasks 008, 010–012): the stage-4 launcher with a form adapter.
 
 A stand profile points ``launcher`` here; ``harness77 run`` then opens the form of
 the run's ERT *visibly* in the owned 1C session and checks it as a window:
@@ -20,7 +20,9 @@ the run's ERT *visibly* in the owned 1C session and checks it as a window:
   the controller returns the form's parameter list (the handlers add
   ``clicked:<n>`` and, in task 011, ``flag:``, ``value:`` and ``label:`` lines)
   and closes the form. The value of ``result`` is every handler line, joined
-  by ``;``.
+  by ``;``, except ``repr:<name>=<text>`` (task 012): the representation of a
+  value depends on the base's data, so these lines go to ``representations``
+  and the acceptance compares them with the text of the field windows.
 
 With ``--captures-json`` (the product's visual checks, task 010) the watcher
 also shows the hidden main 1C window on the private desktop without activating
@@ -57,6 +59,8 @@ COMMANDS = ("check", "open", "result")
 DONE = "form-click-done"
 # Lines of the controller itself; every other line of ``result`` comes from a handler.
 CONTROL_LINES = ("selected:", "open-return:", "open-error:", "loaded:", "closed:", "close-error:", "no-open-form")
+# Handler lines with data-dependent text, kept apart from the value (task 012).
+REPRESENTATION = "repr:"
 CLICK_WAIT_S = 60
 # Visual captures (task 010): states around the click, windows of the form.
 STATES = ("open", "clicked")
@@ -549,7 +553,10 @@ class FormAdapter(launcher.Harness77Adapter):
             return None
         handlers = [line for line in lines if not line.startswith(CONTROL_LINES)]
         clicks = [line for line in handlers if line.startswith("clicked:")]
-        row["value"] = ";".join(handlers) or None
+        shown = [line for line in handlers if line.startswith(REPRESENTATION)]
+        if shown:
+            row["representations"] = dict(line[len(REPRESENTATION):].partition("=")[::2] for line in shown)
+        row["value"] = ";".join(line for line in handlers if not line.startswith(REPRESENTATION)) or None
         issues = [] if "closed:1" in lines else ["the form was not closed"]
         requested = actions(self.parameters)
         if requested:

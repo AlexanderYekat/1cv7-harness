@@ -1,0 +1,178 @@
+"""Names of the configuration objects in a 1Cv7.MD, for reference-typed form fields (task 012).
+
+A form field of a reference type stores a type code and the number of a
+metadata object (fields 14 and 17 of the dialog record, as attributes do in
+1Cv7.MD). The number belongs to the configuration, so a description names the
+object and the build translates the name with the metadata of the target base.
+
+The ``Main MetaData Stream`` of 1Cv7.MD is the brace text of the dialog with the
+same length prefix (static survey of base-for-test, task 012): catalogs in
+``SbCnts``, documents in ``Documents``, enumerations in ``EnumList``, charts of
+accounts in ``Buh`` -> ``Plans``; an object record starts {"<number>", "<name>", …}.
+
+An ERT carries its own copy in a stream of the same name, followed by a NUL
+byte (all 416 corpus forms), and 1C finds the kind of a form field there: with
+the empty copy of FIO.ERT a field of a kind is refused, one of any object is
+not (task 012, R1 and its diagnosis).
+"""
+
+import hashlib
+from pathlib import Path
+import re
+import struct
+
+from .ert_module import CompoundFile, ErtError, _dialog_length, parse_dialog
+
+STREAM = "Main MetaData Stream"
+# Type codes of reference types and their names in the 1C 7.7 language.
+TYPES = {"B": "Справочник", "O": "Документ", "E": "Перечисление", "T": "Счет", "K": "ВидСубконто",
+         "P": "ПланСчетов"}
+CODES = {name.casefold(): code for code, name in TYPES.items()}
+# Codes whose fields may take any object of the type (number 0): every code but the
+# enumeration, which neither the corpus nor the metadata has without a kind.
+ANY = ("B", "O", "T", "K", "P")
+# Codes with kinds and where their names are: the top-level section or Buh -> Plans.
+SECTIONS = {"B": "SbCnts", "O": "Documents", "E": "EnumList", "T": "Plans"}
+NUMBER = re.compile(r"[1-9][0-9]*\Z")
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def type_name(code, object_id, metadata=None):
+    """The name of a reference type, or None when the number has no name here."""
+    if code not in TYPES:
+        return None
+    if object_id == 0:
+        return TYPES[code] if code in ANY else None
+    if metadata is None or code not in SECTIONS:
+        return None
+    name = metadata.names.get((code, object_id))
+    return f"{TYPES[code]}.{name}" if name else None
+
+
+def parse_name(value):
+    """(code, kind or None) of a type name such as "Справочник.Контрагенты"; refuses unknown forms."""
+    head, dot, kind = value.partition(".")
+    code = CODES.get(head.casefold())
+    if code is None:
+        raise ErtError(f"Тип {value!r}: неизвестный ссылочный тип {head!r} "
+                       f"(допустимо: {', '.join(TYPES.values())})")
+    if not dot:
+        if code not in ANY:
+            raise ErtError(f"Тип {value!r}: {TYPES[code]} без вида не поддерживается — укажите вид, "
+                           f"например {TYPES[code]}.<Имя>")
+        return code, None
+    if code not in SECTIONS:
+        raise ErtError(f"Тип {value!r}: у типа {TYPES[code]} нет видов")
+    if not kind:
+        raise ErtError(f"Тип {value!r}: после точки нужно имя вида")
+    return code, kind
+
+
+class Metadata:
+    """Object names of one 1Cv7.MD or of an ERT's copy: (code, number) -> name and back."""
+
+    def __init__(self, data, path=None):
+        """A 1Cv7.MD file from its bytes; sha256 is the file's."""
+        try:
+            compound = CompoundFile(data)
+        except (ErtError, ValueError, IndexError, struct.error) as error:
+            raise ErtError(f"Метаданные не читаются как 1Cv7.MD: {error}") from error
+        payload = _payload(compound)
+        if payload is None:
+            raise ErtError(f"Метаданные: нужен ровно один поток {STREAM!r} (это не 1Cv7.MD?)")
+        self._read(payload, sha256(data), path)
+
+    @classmethod
+    def of_ert(cls, compound):
+        """The copy an ERT carries, or None without one; sha256 is the stream's."""
+        payload = _payload(compound)
+        if payload is None:
+            return None
+        metadata = cls.__new__(cls)
+        metadata._read(payload, sha256(payload), None)
+        return metadata
+
+    def ert_stream(self):
+        """The stream as an ERT carries it: the length prefix, the text and a NUL byte."""
+        return self.stream if self.stream.endswith(b"\0") else self.stream + b"\0"
+
+    def _read(self, payload, digest, path):
+        self.path, self.sha256, self.stream = path, digest, payload
+        tree = _tree(payload)
+        task = _section(tree, "TaskItem")
+        self.configuration = task[1][1] if task and len(task) > 1 and isinstance(task[1], list) \
+            and len(task[1]) > 1 and isinstance(task[1][1], str) else None
+        self.names, self.numbers = {}, {}
+        buh = _section(tree, "Buh")
+        plans = None
+        if buh is not None:
+            for item in buh[1:]:
+                if isinstance(item, list):
+                    plans = _section(item, "Plans") if plans is None else plans
+        for code, key in SECTIONS.items():
+            section = plans if key == "Plans" else _section(tree, key)
+            for record in (section or [None])[1:]:
+                if not isinstance(record, list) or len(record) < 2 or not all(
+                        isinstance(x, str) for x in record[:2]) or not NUMBER.match(record[0]):
+                    raise ErtError(f"Метаданные: неизвестная запись в разделе {key}: {str(record)[:80]}")
+                number, name = int(record[0]), record[1]
+                if not name or (code, name.casefold()) in self.numbers:
+                    raise ErtError(f"Метаданные: имя {name!r} в разделе {key} пусто или повторяется")
+                self.names[code, number] = name
+                self.numbers[code, name.casefold()] = number
+
+    def resolve(self, value):
+        """(code, number, canonical name) of a type name; refuses a kind these metadata lack."""
+        code, kind = parse_name(value)
+        if kind is None:
+            return code, 0, TYPES[code]
+        number = self.numbers.get((code, kind.casefold()))
+        if number is None:
+            raise ErtError(f"Тип {value!r}: в метаданных {self.describe()} нет объекта "
+                           f"{TYPES[code]}.{kind}")
+        return code, number, f"{TYPES[code]}.{self.names[code, number]}"
+
+    def describe(self):
+        name = Path(self.path).name if self.path else "копии метаданных шаблона ERT"
+        return f"{name} ({self.configuration or 'без имени конфигурации'}, {self.sha256[:8]}…)"
+
+    def public(self):
+        return {"path": str(self.path) if self.path else None, "sha256": self.sha256,
+                "configuration": self.configuration}
+
+
+def _payload(compound):
+    entries = [e for e in compound.directory_entries if e.object_type == 2 and e.name == STREAM]
+    if len(entries) > 1:
+        raise ErtError(f"Метаданные: поток {STREAM!r} повторяется")
+    return compound.read_stream(entries[0]) if entries else None
+
+
+def _tree(payload):
+    length, offset = _dialog_length(payload)
+    if payload[offset + length:] not in (b"", b"\0") or len(payload) < offset + length:
+        raise ErtError(f"Метаданные: длина потока {STREAM!r} в заголовке не совпадает с данными")
+    try:
+        tree = parse_dialog(payload[offset:offset + length].decode("cp1251"))
+    except UnicodeDecodeError as error:
+        raise ErtError("Метаданные не декодируются как Windows-1251") from error
+    if _section(tree, "MainDataContDef") is None:
+        raise ErtError("Метаданные: нет раздела MainDataContDef (это не 1Cv7.MD?)")
+    return tree
+
+
+def _section(tree, name):
+    found = [item for item in tree if isinstance(item, list) and item[:1] == [name]]
+    if len(found) > 1:
+        raise ErtError(f"Метаданные: раздел {name} повторяется")
+    return found[0] if found else None
+
+
+def load(path):
+    path = Path(path).resolve(strict=True)
+    if not path.is_file():
+        raise ErtError(f"Метаданные должны быть файлом: {path}")
+    return Metadata(path.read_bytes(), path)

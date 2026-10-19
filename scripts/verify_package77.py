@@ -29,7 +29,8 @@ def verify(args):
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
     env.update(TEMP=str(temporary), TMP=str(temporary), PYTHONIOENCODING="utf-8",
                PYTHONNOUSERSITE="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
-    summary = {"schema_version": 1, "status": "running", "commands": []}
+    summary = {"schema_version": 1, "status": "running", "command_timeout_s": args.command_timeout_s,
+               "commands": []}
     summary_file = evidence / "summary.json"
 
     def save():
@@ -37,7 +38,7 @@ def verify(args):
 
     def run(name, command, cwd, expected=0):
         command = list(map(str, command))
-        result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, timeout=300)
+        result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, timeout=args.command_timeout_s)
         (evidence / f"{name}.log").write_bytes(result.stdout + result.stderr)
         summary["commands"].append({"name": name, "command": command, "exit_code": result.returncode,
                                     "expected_exit_code": expected})
@@ -128,4 +129,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, default=ROOT / ".artifacts/package77" / str(uuid.uuid4()))
     parser.add_argument("--build-python", default=sys.executable)
     parser.add_argument("--runtime-python", default=sys.executable)
+    # Each command's limit; a loaded machine starts processes slowly and the installed tests spawn many.
+    parser.add_argument("--command-timeout-s", type=int, default=300)
     verify(parser.parse_args())

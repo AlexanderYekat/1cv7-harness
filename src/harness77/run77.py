@@ -84,15 +84,35 @@ def _static_stage(project):
                         errors=report["errors"], warnings=report["warnings"])
 
 
-def _build_stage(project, run_dir):
+def _metadata(project, stand):
+    """(1Cv7.MD path, source) numbering the named kinds of the form (task 012), or (None, None).
+
+    The project's own [build] metadata wins; otherwise the stand base's 1Cv7.MD is
+    taken only when the description names a kind (Справочник.Контрагенты).
+    """
+    from .ert_module import ErtError
+    from .form77 import loads, needs_metadata
+    if project.form is None:
+        return None, None
+    if project.metadata is not None:
+        return project.metadata, "project"
+    try:
+        needed = needs_metadata(loads(Path(project.form).read_bytes()))
+    except (OSError, ErtError):
+        return None, None  # the build stage reports an unreadable description
+    return (Path(stand.base) / "1Cv7.MD", "stand") if needed and stand is not None else (None, None)
+
+
+def _build_stage(project, run_dir, stand=None):
     from .artifacts import build
     from .ert_module import ErtError
     stage = Stage("build", required=True, scope=STAGE_SCOPES["build"])
     output = run_dir / "build" / (project.project_id + ".ert")
     output.parent.mkdir(parents=True, exist_ok=True)
+    metadata, source = _metadata(project, stand)
     try:
         report = build(project.template, project.source, output, encoding=project.encoding,
-                       legacy_normalize=project.legacy_normalize, form=project.form)
+                       legacy_normalize=project.legacy_normalize, form=project.form, metadata=metadata)
     except (OSError, ValueError, ErtError) as error:
         return stage.finish(BLOCKED, reason=f"build_error: {type(error).__name__}: {error}",
                             output_path=str(output)), None
@@ -108,6 +128,12 @@ def _build_stage(project, run_dir):
                  **({"form": {key: report["form"][key] for key in
                               ("sha256", "template_dialog_sha256", "dialog_sha256", "changes")}}
                     if "form" in report else {}))
+    if "metadata" in report.get("form", {}):
+        stage.details["form"]["metadata"] = {"sha256": report["form"]["metadata"]["sha256"],
+                                             "configuration": report["form"]["metadata"]["configuration"],
+                                             "source": source}
+    if "ert_metadata" in report.get("form", {}):
+        stage.details["form"]["ert_metadata"] = report["form"]["ert_metadata"]
     return stage, {"path": output, "sha256": report["output"]["sha256"], "build": report}
 
 
@@ -154,9 +180,25 @@ def _triage(diagnostics, ert_path):
     return result
 
 
+def _metadata_mismatch(stand, built):
+    """Why this run's ERT must not be checked on the stand: it was built for other metadata (task 012)."""
+    used = ((built.get("build") or {}).get("form") or {}).get("metadata")
+    target = Path(stand.base) / "1Cv7.MD"
+    if not used or not target.is_file():
+        return None
+    actual = sha256_file(target)
+    if actual == used["sha256"]:
+        return None
+    return (f"metadata_mismatch: the ERT was built for 1Cv7.MD {used['sha256'][:12]}…, "
+            f"the stand base has {actual[:12]}…; reference kinds would mean other objects")
+
+
 def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project=None):
     from .backends77 import load_backend
     stage = Stage("platform_check", required=True, scope=STAGE_SCOPES["platform_check"])
+    mismatch = _metadata_mismatch(stand, built)
+    if mismatch:
+        return stage.finish(BLOCKED, reason=mismatch, platform_checked=False), {"status": BLOCKED}, None
     backend = load_backend(stand, ert_path=built["path"], ert_sha256=built["sha256"],
                            run_id=run_id, run_dir=run_dir, clock=clock,
                            parameters=project.parameters if project else None,
@@ -230,7 +272,7 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
     platform_result = None
     try:
         static = _static_stage(project)
-        build_stage, built = _build_stage(project, run_dir)
+        build_stage, built = _build_stage(project, run_dir, stand)
         _build = build_stage
         if built is None:
             platform = Stage("platform_check", required=True, scope=STAGE_SCOPES["platform_check"]).finish(
