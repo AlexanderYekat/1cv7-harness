@@ -513,9 +513,9 @@ def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict
         walk(tail, len(tokens), set())
 
 
-def exported_variables(parsed: Parsed) -> set[str]:
-    """Module variables declared "Перем Имя Экспорт" before the first procedure."""
-    tokens, names = parsed.tokens, set()
+def module_variables(parsed: Parsed) -> dict[str, bool]:
+    """Module variables declared "Перем Имя [Экспорт]" before the first procedure: name → exported."""
+    tokens, names = parsed.tokens, {}
     first = min(parsed.declarations, default=len(tokens))
     i = 0
     while i < first:
@@ -526,12 +526,19 @@ def exported_variables(parsed: Parsed) -> set[str]:
                 depth += {'[': 1, ']': -1}.get(token.text, 0)
                 if token.kind == 'id' and not depth:
                     if token.key in ('экспорт', 'export'):
-                        names.update([current] if current else [])
+                        if current:
+                            names[current] = True
                     else:
                         current = token.key
+                        names.setdefault(current, False)
                 i += 1
         i += 1
     return names
+
+
+def exported_variables(parsed: Parsed) -> set[str]:
+    """Module variables declared "Перем Имя Экспорт" before the first procedure."""
+    return {name for name, exported in module_variables(parsed).items() if exported}
 
 
 def ert_dialog(compound: CompoundFile) -> frozenset[str] | None:

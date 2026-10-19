@@ -1,10 +1,11 @@
-"""The open ERT form among the owned windows, its geometry and one button click (task 008).
+"""The open ERT form among the owned windows, its geometry, clicks and typing (tasks 008, 011).
 
 Only windows of the verified server thread on the run's own private desktop are
-read; the identity of the process is rechecked immediately before the click
-(the ``OwnedModal`` rules of stage 2). The click is a ``BM_CLICK`` message to
-the button window: no input injection, no foreground activation, no desktop
-switch. ``fit_units`` and ``judge_layout`` are portable and tested.
+read; the identity of the process is rechecked immediately before every message
+(the ``OwnedModal`` rules of stage 2). A click is a ``BM_CLICK`` message to the
+button window, typing is ``WM_CHAR`` messages to the field window: no input
+injection, no foreground activation, no desktop switch. ``fit_units``,
+``judge_layout`` and ``judge_captions`` are portable and tested.
 """
 
 import ctypes as C
@@ -17,8 +18,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "platform77"))
 
-BM_CLICK = 0x00F5
+BM_CLICK, BM_GETCHECK, WM_CHAR, WM_GETTEXT = 0x00F5, 0x00F0, 0x0102, 0x000D
 FIRST_WINDOW_ID = 4152
+# Classes whose window text is the caption of the description (task 011); a
+# field's window text is its value instead.
+CAPTIONED = ("BUTTON", "STATIC", "CHECKBOX", "1CGROUPBOX")
 SMTO_ABORTIFHUNG = 0x0002
 TOLERANCE_PX = 2
 SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
@@ -98,6 +102,30 @@ def judge_layout(description, inspection):
         issues.append("positions do not follow one mapping: max residual "
                       + str(fit.get("max_residual_px", fit.get("reason"))))
     return issues
+
+
+def judge_captions(description, inspection):
+    """Issues where the window text of a captioned control differs from its caption."""
+    if not inspection or not inspection.get("found"):
+        return []
+    texts = {c["id"]: c["text"] for c in inspection["controls"] if "text" in c}
+    ids, issues = window_ids(description), []
+    for item in description["controls"]:
+        window = ids[item["id"]]
+        if item.get("class") in CAPTIONED and window in texts and texts[window] != item["caption"]:
+            issues.append(f"control {item['id']} ({item['class']}) shows {texts[window]!r}, "
+                          f"described {item['caption']!r}")
+    return issues
+
+
+def editor(control):
+    """The window that holds a field's text: its single inner window, else the control itself.
+
+    ``1CEDIT`` is a wrapper; at open the focus and caret are in an inner window
+    with ID 0, and ``WM_CHAR`` to the wrapper changes nothing (E1a, task 011).
+    """
+    inner = control.get("children") or []
+    return inner[0] if len(inner) == 1 else control
 
 
 def expected_geometry(description):
@@ -340,29 +368,76 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         controls = []
         for window in children[parent]:
             rect = self.rect_in_parent(window["hwnd"], parent)
+            # A 1CEDIT field is a wrapper: its text lives in one inner window (E1a, task 011).
+            inner = [{k: w[k] for k in ("hwnd", "class", "id", "text")} for w in children.get(window["hwnd"], [])]
             controls.append({"id": window["id"], "hwnd": window["hwnd"], "class": window["class"],
                              "text": window["text"], "visible": window["visible"], "enabled": window["enabled"],
-                             "rect": rect, "inside_client": inside(rect, chain[0]["client_size"])})
+                             "rect": rect, "inside_client": inside(rect, chain[0]["client_size"]),
+                             "children": inner})
         return dict(summary, found=True, parent=chain[0], chain=chain, controls=controls)
+
+    def send(self, hwnd, message, wparam=0, lparam=0, timeout_ms=10000):
+        """``SendMessageTimeoutW`` to an owned window after rechecking the server identity."""
+        self.modal.verify()
+        if self.modal.owner(hwnd) != (self.modal.server["pid"], self.modal.tid):
+            raise RuntimeError("window is not on the verified server thread")
+        result = C.c_size_t()
+        C.set_last_error(0)
+        returned = self.user.SendMessageTimeoutW(hwnd, message, wparam, lparam, SMTO_ABORTIFHUNG,
+                                                 timeout_ms, C.byref(result))
+        return bool(returned), result.value, C.get_last_error() if not returned else 0
+
+    def text(self, hwnd):
+        """Current window text (``WM_GETTEXT``): a field's value, a label's caption."""
+        buffer = C.create_unicode_buffer(2048)
+        returned, _, error = self.send(hwnd, WM_GETTEXT, len(buffer), C.addressof(buffer), 1000)
+        if not returned:
+            raise RuntimeError(f"WM_GETTEXT did not return, last error {error}")
+        return buffer.value
+
+    def checked(self, hwnd):
+        """``BM_GETCHECK`` of a check box: 0 cleared, 1 checked, 2 indeterminate."""
+        returned, value, error = self.send(hwnd, BM_GETCHECK, timeout_ms=1000)
+        if not returned:
+            raise RuntimeError(f"BM_GETCHECK did not return, last error {error}")
+        return value
 
     def click(self, inspection, control_id, timeout_ms=10000):
         """BM_CLICK to the button with ``control_id``, after rechecking the server identity."""
         button = next((c for c in inspection.get("controls", []) if c["id"] == control_id), None)
         if button is None:
             return {"control_id": control_id, "found": False, "requested": False}
-        self.modal.verify()
-        if self.modal.owner(button["hwnd"]) != (self.modal.server["pid"], self.modal.tid):
-            raise RuntimeError("button is not on the verified server thread")
-        result = C.c_size_t()
         started = time.monotonic()
-        C.set_last_error(0)
-        returned = self.user.SendMessageTimeoutW(button["hwnd"], BM_CLICK, 0, 0, SMTO_ABORTIFHUNG,
-                                                 timeout_ms, C.byref(result))
+        returned, _, error = self.send(button["hwnd"], BM_CLICK, timeout_ms=timeout_ms)
         return {"control_id": control_id, "found": True, "requested": True, "message": "BM_CLICK",
-                "returned": bool(returned), "last_error": C.get_last_error() if not returned else 0,
+                "returned": returned, "last_error": error,
                 "elapsed_s": round(time.monotonic() - started, 3), "identity_rechecked": True,
                 "button": {k: button[k] for k in ("hwnd", "class", "text", "visible", "enabled", "rect",
                                                   "inside_client")}}
+
+    def type_text(self, inspection, control_id, text, timeout_ms=10000):
+        """``WM_CHAR`` per character to the field with ``control_id``, then its text read back.
+
+        Messages to the window, not keyboard input: no accelerators, no focus
+        change. The text before and after shows what the field accepted (task 011).
+        """
+        field = next((c for c in inspection.get("controls", []) if c["id"] == control_id), None)
+        if field is None:
+            return {"control_id": control_id, "found": False, "requested": False}
+        target = editor(field)
+        started = time.monotonic()
+        before, sent, error = self.text(target["hwnd"]), 0, 0
+        for character in text:
+            returned, _, error = self.send(target["hwnd"], WM_CHAR, ord(character), 1, timeout_ms)
+            if not returned:
+                break
+            sent += 1
+        return {"control_id": control_id, "found": True, "requested": True, "message": "WM_CHAR",
+                "returned": sent == len(text), "characters_sent": sent, "last_error": error, "text": text,
+                "text_before": before, "text_after": self.text(target["hwnd"]),
+                "target": {k: target.get(k) for k in ("hwnd", "class", "id")},
+                "elapsed_s": round(time.monotonic() - started, 3), "identity_rechecked": True,
+                "field": {k: field[k] for k in ("hwnd", "class", "visible", "enabled", "rect", "inside_client")}}
 
 
 class BITMAPINFOHEADER(C.Structure):

@@ -78,7 +78,7 @@ class DescribeTests(unittest.TestCase):
         good = described()
         cases = {
             "schema": dict(good, schema="other"),
-            "schema_version": dict(good, schema_version=2),
+            "schema_version": dict(good, schema_version=3),
             "неизвестные свойства": dict(good, extra=1),
             "form": dict(good, form=dict(good["form"], color="red")),
             "нужен тип int": dict(good, controls=[dict(good["controls"][0], x=True)]),
@@ -153,7 +153,7 @@ class ChangeTests(unittest.TestCase):
             "перестановка": change(lambda d: d["controls"].reverse()),
             "смена ID": change(control(0, id=4999)),
             "ID/класса": change(control(2, **{"class": "1CEDIT"})),
-            "класса STATIC не поддерживается": change(new(**{"class": "STATIC"})),
+            "класса COMBOBOX не поддерживается": change(new(**{"class": "COMBOBOX"})),
             "только следующий по порядку 4155, получено 4152": change(new(id=4152)),
             "получено 5000": change(new(id=5000)),
             "не идут подряд": change(new(), text=DIALOG.replace('"4153"', '"4999"', 1)),
@@ -163,7 +163,7 @@ class ChangeTests(unittest.TestCase):
             "за клиентскую": change(new(x=3)),
             "вызовом Имя": change(new(formula="#Закрыть")),
             "НетТакой": change(new(formula="НетТакой()")),
-            "элемента BMASKED не поддерживается": change(control(2, formula="ВыгрузкаЭ02()")),
+            "элемента BMASKED должна быть вызовом": change(control(2, formula="#Закрыть")),
             "вне Windows-1251": change(new(caption="✓")),
             "слоя 'Нет'": change(new(layer="Нет")),
             "уже есть": change(new(identifier="ВыбДатаНач")),
@@ -212,6 +212,196 @@ class ChangeTests(unittest.TestCase):
         text, _ = form77.apply(SMALL, description, MODULE)
         with self.assertRaisesRegex(ert.ErtError, "сменил бы вид"):
             form77.dialog_payload(text, ert.encode_dialog(SMALL))
+
+
+def retyped(code, length="0", precision="0", text=DIALOG):
+    """The test dialog with the data type of its BMASKED record (fields 14–16) replaced."""
+    tree = ert.parse_dialog(text)
+    record = [s for s in tree[1:] if s[:1] == ["Controls"]][0][3]
+    record[14:17] = [code, length, precision]
+    return form77.serialize_dialog(tree)
+
+
+# Task 011: a taller form with room for new controls below the template's three.
+TALL = {"caption": " ", "width": 320, "height": 260, "layers": ["Основной"]}
+LABEL = {"class": "STATIC", "caption": "Надпись", "x": 14, "y": 170, "width": 60, "height": 8}
+GROUP = {"class": "1CGROUPBOX", "caption": "Группа", "x": 7, "y": 160, "width": 300, "height": 90}
+STRING = {"class": "1CEDIT", "identifier": "Строка77", "x": 14, "y": 182, "width": 120, "height": 13,
+          "type": {"kind": "string", "length": 20}}
+NUMBER = {"class": "BMASKED", "identifier": "Число77", "x": 14, "y": 200, "width": 60, "height": 13,
+          "type": {"kind": "number", "length": 10, "precision": 2}}
+DATE = {"class": "BMASKED", "identifier": "Дата77", "x": 80, "y": 200, "width": 60, "height": 13,
+        "type": {"kind": "date"}}
+FLAG = {"class": "CHECKBOX", "caption": "Флажок", "identifier": "Флажок77", "x": 14, "y": 220, "width": 80,
+        "height": 10, "formula": "ВыгрузкаЭ02()"}
+
+
+def tall(*controls):
+    description = described()
+    description["form"] = dict(TALL)
+    description["controls"] += [copy.deepcopy(c) for c in controls]
+    return description
+
+
+class TypeTests(unittest.TestCase):
+    def test_type_is_described_without_zeros(self):
+        cases = {("N", "10", "2"): {"kind": "number", "length": 10, "precision": 2},
+                 ("S", "0", "0"): {"kind": "string"}, ("S", "60", "0"): {"kind": "string", "length": 60},
+                 ("D", "0", "0"): {"kind": "date"}, ("B", "0", "0"): {"kind": "other", "code": "B"},
+                 ("U", "0", "1"): {"kind": "undefined", "precision": 1}, ("U", "0", "0"): None}
+        for fields, expected in cases.items():
+            with self.subTest(fields):
+                text = retyped(*fields)
+                description = form77.loads(form77.dumps(described(text)).encode("utf-8"))
+                self.assertEqual(description["controls"][2].get("type"), expected)
+                self.assertNotIn("type", description["controls"][0])
+                self.assertEqual(form77.apply(text, description, MODULE), (text, []))
+
+    def test_version_1_description_builds_the_same(self):
+        description = described(retyped("N", "10", "2"))
+        old = dict(description, schema_version=1, controls=[
+            {k: v for k, v in c.items() if k != "type"} for c in description["controls"]])
+        old = form77.loads(json.dumps(old).encode("utf-8"))
+        old["controls"].append(dict(BUTTON))
+        description["controls"].append(dict(BUTTON))
+        self.assertEqual(form77.apply(retyped("N", "10", "2"), old, MODULE),
+                         form77.apply(retyped("N", "10", "2"), description, MODULE))
+        with self.assertRaisesRegex(ert.ErtError, "неизвестные свойства type"):
+            form77.loads(json.dumps(dict(old, controls=[dict(old["controls"][0], type={"kind": "date"})]))
+                         .encode("utf-8"))
+
+    def test_type_change_of_existing_control_refused(self):
+        text = retyped("N", "10", "2")
+        for value in ({"kind": "number", "length": 12, "precision": 2}, None, {"kind": "date"}):
+            description = described(text)
+            if value is None:
+                del description["controls"][2]["type"]
+            else:
+                description["controls"][2]["type"] = value
+            with self.subTest(value), self.assertRaisesRegex(ert.ErtError, "изменение типа данных"):
+                form77.apply(text, description, MODULE)
+
+    def test_loads_refuses_bad_types(self):
+        good = described(retyped("N", "10", "2"))
+        cases = {"неизвестный вид": {"kind": "money"}, "code задаётся": {"kind": "date", "code": "D"},
+                 "обязателен": {"kind": "other"}, "length: нужен тип int": {"kind": "number", "length": True},
+                 "неизвестные свойства scale": {"kind": "number", "scale": 2}, "нет свойств kind": {},
+                 "type: нужен тип dict": "number"}
+        for message, value in cases.items():
+            description = copy.deepcopy(good)
+            description["controls"][2]["type"] = value
+            with self.subTest(message), self.assertRaisesRegex(ert.ErtError, message):
+                form77.loads(json.dumps(description).encode("utf-8"))
+
+
+class ElementTests(unittest.TestCase):
+    def test_new_controls_use_the_default_record_of_their_class_and_type(self):
+        text, changes = apply(tall(GROUP, LABEL, STRING, NUMBER, DATE, FLAG))
+        self.assertEqual([c.get("added") for c in changes[1:]],
+                         ["1CGROUPBOX", "STATIC", "1CEDIT", "BMASKED", "BMASKED", "CHECKBOX"])
+        new = records(text)[3:]
+        for record, (kind, type_kind, length, precision) in zip(new, (
+                ("1CGROUPBOX", None, "0", "0"), ("STATIC", None, "0", "0"), ("1CEDIT", "string", "20", "0"),
+                ("BMASKED", "number", "10", "2"), ("BMASKED", "date", "0", "0"), ("CHECKBOX", "number", "1", "0"))):
+            with self.subTest(kind=kind, type=type_kind):
+                expected = list(form77.DEFAULTS[kind, type_kind])
+                for index in (0, 3, 4, 5, 6, 9, 11, 12, 15, 16, 41):
+                    expected[index] = record[index]
+                self.assertEqual(record, expected)
+                self.assertEqual((record[15], record[16], record[41]), (length, precision, "Основной"))
+        self.assertEqual([r[9] for r in new], [str(i) for i in range(4155, 4161)])
+        self.assertEqual((new[5][11], new[5][12], new[2][11]), ("ВыгрузкаЭ02()", "Флажок77", ""))
+        controls = form77.describe(text)["controls"]
+        self.assertEqual([c.get("type") for c in controls[5:]], [
+            {"kind": "string", "length": 20}, {"kind": "number", "length": 10, "precision": 2},
+            {"kind": "date"}, {"kind": "number", "length": 1}])
+        self.assertEqual(form77.dialog_identifiers(form77.describe(text)),
+                         frozenset({"выбдатанач", "строка77", "число77", "дата77", "флажок77"}))
+
+    def test_default_records_have_the_corpus_layout(self):
+        for (kind, _), record in form77.DEFAULTS.items():
+            with self.subTest(kind):
+                self.assertEqual(len(record), 43)
+                self.assertEqual(record[1], kind)
+                self.assertEqual([i for i, v in enumerate(record) if v is None], [0, 3, 4, 5, 6, 9, 11, 12, 41])
+
+    def test_refusals(self):
+        def new(base, **values):
+            return lambda: apply(tall(dict(base, **values)))
+
+        def without(base, key):
+            return lambda: apply(tall({k: v for k, v in base.items() if k != key}))
+
+        cases = {
+            "нет свойств identifier": without(STRING, "identifier"),
+            "нет свойств type": without(NUMBER, "type"),
+            r"4155 \(STATIC\): нет свойств caption": new(LABEL, caption=""),
+            "тип number не подходит элементу 1CEDIT": new(STRING, type={"kind": "number", "length": 5}),
+            "тип string не подходит элементу BMASKED": new(NUMBER, type={"kind": "string"}),
+            "точности 10 не поддерживается": new(NUMBER, type={"kind": "number", "length": 10, "precision": 10}),
+            "длины 0 и точности 0": new(NUMBER, type={"kind": "number"}),
+            "тип date длины 8": new(DATE, type={"kind": "date", "length": 8}),
+            "флажок — число длины 1": new(FLAG, type={"kind": "number", "length": 2}),
+            "у элемента STATIC нет типа": new(LABEL, type={"kind": "string"}),
+            "формула элемента STATIC не поддерживается": new(LABEL, formula="ВыгрузкаЭ02()"),
+            "формула элемента 1CGROUPBOX не поддерживается": new(GROUP, formula="ВыгрузкаЭ02()"),
+            "элемента 1CEDIT должна быть вызовом": new(STRING, formula="Строка77 + 1"),
+            "совпадает с процедурой или функцией модуля: имя неоднозначно": new(STRING, identifier="ВЫГРУЗКАЭ02"),
+            "уже есть у элемента 4154": new(NUMBER, identifier="выбДатаНач"),
+            "вне Windows-1251": new(FLAG, caption="✓"),
+            "выходит за клиентскую область": new(GROUP, height=100),
+        }
+        for message, call in cases.items():
+            with self.subTest(message), self.assertRaisesRegex(ert.ErtError, message):
+                call()
+
+    def test_identifier_must_not_be_a_module_variable(self):
+        module = "Перем Строка77;\r\nПерем Счет Экспорт;\r\n" + MODULE
+        with self.assertRaisesRegex(ert.ErtError, "совпадает с переменной Перем модуля: 1С такой модуль примет"):
+            form77.apply(DIALOG, tall(STRING), module)
+        description = described()
+        description["controls"][2]["identifier"] = "счет"
+        with self.assertRaisesRegex(ert.ErtError, "'счет' совпадает с переменной Перем"):
+            form77.apply(DIALOG, description, module)
+        with self.assertRaisesRegex(ert.ErtError, "Связь идентификатора с модулем"):
+            form77.apply(DIALOG, tall(STRING), None)
+
+    def test_placement(self):
+        overlapping = dict(NUMBER, x=50, y=185)
+        with self.assertRaisesRegex(ert.ErtError, r"Элемент 4155 \(14, 182, 120×13\) накладывается на элемент 4156 \(50, 185, 60×13\)"):
+            apply(tall(STRING, overlapping))
+        with self.assertRaisesRegex(ert.ErtError, "накладывается на элемент 4152"):
+            apply(tall(dict(LABEL, x=60, y=140)))
+        # A group box may contain controls, but not cut through one.
+        apply(tall(GROUP, LABEL, STRING, NUMBER, DATE, FLAG))
+        with self.assertRaisesRegex(ert.ErtError, "Элемент 4155 .* накладывается на элемент 4156"):
+            apply(tall(STRING, dict(GROUP, x=100, y=170, width=100, height=40)))
+        # Touching edges do not overlap.
+        apply(tall(STRING, dict(NUMBER, x=134, y=182)))
+
+    def test_template_overlaps_are_not_rechecked(self):
+        # The three template controls share one rectangle; moving one keeps that overlap.
+        description = described()
+        description["controls"][1]["x"] = 71
+        self.assertEqual(len(apply(description)[1]), 1)
+        description["controls"][1].update(x=200, y=100)
+        apply(description)
+        description = described()
+        description["form"] = dict(TALL)
+        description["controls"].append(dict(LABEL))
+        description["controls"][1].update(x=14, y=170)
+        with self.assertRaisesRegex(ert.ErtError, "накладывается"):
+            apply(description)
+
+    def test_other_layers_may_overlap(self):
+        text = DIALOG.replace('{"0",\r\n{"Основной","1"}}', '{"0",\r\n{"Основной","1"},\r\n{"Второй","0"}}')
+        description = described(text)
+        description["form"]["height"] = 260
+        description["controls"] += [dict(STRING), dict(NUMBER, x=50, y=185, layer="Второй")]
+        form77.apply(text, description, MODULE)
+        description["controls"][-1]["layer"] = "Основной"
+        with self.assertRaisesRegex(ert.ErtError, "накладывается"):
+            form77.apply(text, description, MODULE)
 
 
 class BuildTests(unittest.TestCase):

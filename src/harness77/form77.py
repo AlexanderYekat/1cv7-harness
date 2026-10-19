@@ -1,15 +1,18 @@
-"""Form description of an ERT dialog: lossless extract and verified changes (task 008).
+"""Form description of an ERT dialog: lossless extract and verified changes (tasks 008, 011).
 
 The description is versioned JSON with the supported properties only: the form
 caption, size and layers; per control its numeric ID, class, caption, position,
-size, formula, identifier and layer. It is bound to its template by the SHA-256
-of the template's dialog text; every other field and section stays the
-template's. An unchanged description therefore rebuilds the dialog byte for
-byte, and anything outside the supported changes is refused explicitly.
+size, formula, identifier, layer and (version 2) data type. It is bound to its
+template by the SHA-256 of the template's dialog text; every other field and
+section stays the template's. An unchanged description therefore rebuilds the
+dialog byte for byte, and anything outside the supported changes is refused
+explicitly.
 
 The dialog layout rule (CRLF before every nested list, two spaces after the
 root) and the field numbers come from the static survey of 416 forms in
-task 008. Whether the dialog works in 1C is the native acceptance, not here.
+task 008, the data type fields and the default records of new classes from the
+survey of task 011. Whether the dialog works in 1C is the native acceptance,
+not here.
 """
 
 import argparse
@@ -24,27 +27,65 @@ from .ert_module import (DIALOG_STREAM, ErtError, decode_dialog, encode_dialog,
                          parse_dialog)
 
 SCHEMA = "harness77-form"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SCHEMA_VERSIONS = (1, 2)
 
 # Field numbers (from zero) of a Controls record and of the Frame record.
 CAPTION, CLASS, X, Y, WIDTH, HEIGHT, ID, FORMULA, IDENTIFIER, LAYER = 0, 1, 3, 4, 5, 6, 9, 11, 12, 41
+TYPE, LENGTH, PRECISION = 14, 15, 16
 FRAME_WIDTH, FRAME_HEIGHT, FRAME_CAPTION, FRAME_LAYERS = 14, 15, 16, 28
 GEOMETRY = (("x", X), ("y", Y), ("width", WIDTH), ("height", HEIGHT))
-CONTROL_KEYS = ("id", "class", "caption", "x", "y", "width", "height", "formula", "identifier", "layer")
+CONTROL_KEYS = ("id", "class", "caption", "x", "y", "width", "height", "formula", "identifier", "layer", "type")
+CONTROL_KEYS_V1 = CONTROL_KEYS[:-1]
 FORM_KEYS = ("caption", "width", "height", "layers")
 TOP_KEYS = ("schema", "schema_version", "template_dialog_sha256", "form", "controls")
-NEW_CLASSES = ("BUTTON",)
+TYPE_KEYS = ("kind", "length", "precision", "code")
+# Field 14 holds the type code (task 011 survey): S, N, D, U; B, E, O, K, T are references.
+KINDS = {"S": "string", "N": "number", "D": "date", "U": "undefined"}
 FIRST_ID = 4152
+GROUP = "1CGROUPBOX"
 # The client area of a form in form units, measured natively in task 008 (F0):
 # the window caption takes the top 15 units, the borders 4 at the left and 3 at
 # the right and bottom; 8730 of 8741 corpus controls start at y >= 15.
 CLIENT_LEFT, CLIENT_TOP, CLIENT_MARGIN = 4, 15, 3
 
-# The most frequent button record of the corpus (347 of 2936 buttons, the same
-# as "Закрыть" in FIO.ERT); None marks the fields the description sets.
-DEFAULT_BUTTON = ([None, "BUTTON", "1342177291", None, None, None, None, "0", "0", None, "", None,
-                   None, "-1", "U"] + ["0"] * 5 + ["", "", "", "0", "-11"] + ["0"] * 12
-                  + ["MS Sans Serif", "-1", "-1", "0", None, '{"0","0"}'])
+
+def _default(kind, style, code="U", flags="0", font=("0",) * 12):
+    """A record of the corpus layout; None marks the fields the description sets."""
+    return ([None, kind, style, None, None, None, None, "0", "0", None, "", None, None, "-1", code,
+             "0", "0", "0", "0", flags, "", "", "", "0", "-11", *font, "MS Sans Serif", "-1", "-1", "0",
+             None, '{"0","0"}'])
+
+
+# The most frequent record of each new class and type in the corpus (tasks 008, 011):
+# the button as "Закрыть" in FIO.ERT (347 of 2936), the label 425 of 2641 (left
+# aligned, explicit MS Sans Serif 8), the group box 455 of 612, the string field
+# 115 of 283, the number field 239 of 425, the date field 193 of 334, the check
+# box 130 of 502 (BS_AUTOCHECKBOX).
+DEFAULT_BUTTON = _default("BUTTON", "1342177291")
+DEFAULTS = {
+    ("BUTTON", None): DEFAULT_BUTTON,
+    ("STATIC", None): _default("STATIC", "1342177280", flags="192",
+                               font=("0", "0", "0", "400", "0", "0", "0", "204", "1", "2", "1", "34")),
+    (GROUP, None): _default(GROUP, "1342177287"),
+    ("1CEDIT", "string"): _default("1CEDIT", "1350565888", "S"),
+    ("BMASKED", "number"): _default("BMASKED", "1350565888", "N", flags="67108896"),
+    ("BMASKED", "date"): _default("BMASKED", "1350565888", "D", flags="32"),
+    ("CHECKBOX", "number"): _default("CHECKBOX", "1342177283", "N"),
+}
+# What a new control of each class needs: its own properties, the type kinds it
+# takes and whether its formula must be a call (True), may be one (False) or is
+# not supported (None). Data controls are form attributes, so they need a name.
+NEW_CLASSES = {
+    "BUTTON": {"required": ("caption", "formula"), "kinds": (), "formula": True},
+    "STATIC": {"required": ("caption",), "kinds": (), "formula": None},
+    GROUP: {"required": ("caption",), "kinds": (), "formula": None},
+    "1CEDIT": {"required": ("identifier", "type"), "kinds": ("string",), "formula": False},
+    "BMASKED": {"required": ("identifier", "type"), "kinds": ("number", "date"), "formula": False},
+    "CHECKBOX": {"required": ("caption", "identifier"), "kinds": ("number",), "formula": False},
+}
+FORMULAS = {kind: rules["formula"] for kind, rules in NEW_CLASSES.items() if rules["formula"] is not None}
+CHECKBOX_TYPE = {"kind": "number", "length": 1}
 
 NAME = re.compile(r"[A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*\Z")
 CALL = re.compile(r"\s*([A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*)\s*\(.*\)\s*;?\s*\Z", re.DOTALL)
@@ -96,12 +137,31 @@ def _int(text, where):
     return int(text)
 
 
+def _type(record, where):
+    """Data type of a record; None for the undefined type without length and precision."""
+    code, length, precision = record[TYPE], _int(record[LENGTH], where), _int(record[PRECISION], where)
+    if (code, length, precision) == ("U", 0, 0):
+        return None
+    kind = KINDS.get(code, "other")
+    value = {"kind": kind}
+    if kind == "other":
+        value["code"] = code
+    if length:
+        value["length"] = length
+    if precision:
+        value["precision"] = precision
+    return value
+
+
 def _control(record):
     where = f"Элемент {record[ID]!r}"
     item = {"id": _int(record[ID], where), "class": record[CLASS], "caption": record[CAPTION]}
     for key, index in GEOMETRY:
         item[key] = _int(record[index], where)
     item.update(formula=record[FORMULA], identifier=record[IDENTIFIER], layer=record[LAYER])
+    data_type = _type(record, where)
+    if data_type:
+        item["type"] = data_type
     return item
 
 
@@ -121,15 +181,16 @@ def dumps(description):
 
 
 def loads(data):
-    """Description from UTF-8 JSON bytes, with the exact shape of schema version 1."""
+    """Description from UTF-8 JSON bytes, with the exact shape of schema version 1 or 2."""
     try:
         description = json.loads(data.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError) as error:
         raise ErtError(f"Описание формы не читается как JSON UTF-8: {error}") from error
     if not isinstance(description, dict) or description.get("schema") != SCHEMA:
         raise ErtError(f'Описание формы должно иметь "schema": "{SCHEMA}"')
-    if description.get("schema_version") != SCHEMA_VERSION:
-        raise ErtError(f"Поддерживается schema_version = {SCHEMA_VERSION}")
+    version = description.get("schema_version")
+    if isinstance(version, bool) or version not in SCHEMA_VERSIONS:
+        raise ErtError(f"Поддерживается schema_version = {' или '.join(map(str, SCHEMA_VERSIONS))}")
     _keys(description, TOP_KEYS, TOP_KEYS, "Описание")
     form = description["form"]
     _keys(form, FORM_KEYS, FORM_KEYS, "form")
@@ -142,9 +203,17 @@ def loads(data):
         raise ErtError("controls: нужен список")
     for number, item in enumerate(description["controls"], start=1):
         where = f"controls[{number}]"
-        _keys(item, CONTROL_KEYS, ("class",), where)
-        _typed(item, where, id=int, x=int, y=int, width=int, height=int,
+        _keys(item, CONTROL_KEYS if version == 2 else CONTROL_KEYS_V1, ("class",), where)
+        _typed(item, where, id=int, x=int, y=int, width=int, height=int, type=dict,
                **{key: str for key in ("class", "caption", "formula", "identifier", "layer")})
+        if "type" in item:
+            data_type, where = item["type"], where + ".type"
+            _keys(data_type, TYPE_KEYS, ("kind",), where)
+            _typed(data_type, where, kind=str, length=int, precision=int, code=str)
+            if data_type["kind"] not in (*KINDS.values(), "other"):
+                raise ErtError(f"{where}.kind: неизвестный вид типа {data_type['kind']!r}")
+            if ("code" in data_type) != (data_type["kind"] == "other"):
+                raise ErtError(f"{where}: code задаётся только у вида other и обязателен у него")
     return description
 
 
@@ -165,10 +234,11 @@ def _typed(item, where, **types):
             raise ErtError(f"{where}.{key}: нужен тип {kind.__name__}")
 
 
-def module_procedures(module_text):
-    """Casefolded names of the procedures and functions declared in a module."""
-    from .lint77 import Source, parse
-    return set(parse(Source("module", "module", module_text)).symbols)
+def module_names(module_text):
+    """Casefolded (procedure and function names, module Перем names) of a module."""
+    from .lint77 import Source, module_variables, parse
+    parsed = parse(Source("module", "module", module_text))
+    return set(parsed.symbols), set(module_variables(parsed))
 
 
 def platform_functions():
@@ -187,14 +257,17 @@ class _Changes:
     def __init__(self, module_text):
         self.items = []
         self.module_text = module_text
-        self._procedures = None
+        self._names = None
+
+    def module(self, what):
+        if self._names is None:
+            if self.module_text is None:
+                raise ErtError(f"Связь {what} с модулем проверяется только при сборке с модулем")
+            self._names = module_names(self.module_text)
+        return self._names
 
     def procedures(self):
-        if self._procedures is None:
-            if self.module_text is None:
-                raise ErtError("Связь формулы с модулем проверяется только при сборке с модулем")
-            self._procedures = module_procedures(self.module_text) | platform_functions()
-        return self._procedures
+        return self.module("формулы")[0] | platform_functions()
 
 
 def _caption(value, where):
@@ -206,11 +279,14 @@ def _caption(value, where):
 
 
 def _formula(value, kind, where, changes):
-    if kind != "BUTTON":
-        raise ErtError(f"{where}: изменение формулы элемента {kind} не поддерживается")
+    """A formula the class takes: a call Имя(…) of a module procedure or a platform function."""
+    if kind not in FORMULAS:
+        raise ErtError(f"{where}: формула элемента {kind} не поддерживается")
+    if not value and not FORMULAS[kind]:
+        return value
     match = CALL.match(value)
     if not match:
-        raise ErtError(f"{where}: формула кнопки должна быть вызовом Имя(…), получено {value!r}")
+        raise ErtError(f"{where}: формула элемента {kind} должна быть вызовом Имя(…), получено {value!r}")
     if match.group(1).casefold() not in changes.procedures():
         raise ErtError(f"{where}: формула вызывает {match.group(1)}, которого нет ни в модуле, "
                        "ни среди глобальных функций платформы")
@@ -225,12 +301,77 @@ def _geometry(item, width, height, where):
                        f"[{CLIENT_LEFT}, {right}]×[{CLIENT_TOP}, {bottom}] (форма {width}×{height})")
 
 
+def _new_type(item, kind, where):
+    """The checked data type of a new control: {kind, length, precision} or None."""
+    kinds = NEW_CLASSES[kind]["kinds"]
+    value = item.get("type", CHECKBOX_TYPE if kind == "CHECKBOX" else None)
+    if value is None:
+        return None
+    if not kinds:
+        raise ErtError(f"{where}: у элемента {kind} нет типа данных")
+    if value["kind"] not in kinds:
+        raise ErtError(f"{where}: тип {value['kind']} не подходит элементу {kind} (допустимо: {', '.join(kinds)})")
+    length, precision = value.get("length", 0), value.get("precision", 0)
+    rules = {"string": (length >= 0 and precision == 0, "длина ≥ 0, без точности"),
+             "number": (length >= 1 and 0 <= precision < length, "длина ≥ 1, 0 ≤ точность < длина"),
+             "date": (length == 0 and precision == 0, "без длины и точности")}
+    valid, rule = rules[value["kind"]]
+    if kind == "CHECKBOX":
+        valid, rule = (length, precision) == (1, 0), "флажок — число длины 1 без точности"
+    if not valid:
+        raise ErtError(f"{where}: тип {value['kind']} длины {length} и точности {precision} не поддерживается "
+                       f"({rule})")
+    return {"kind": value["kind"], "length": length, "precision": precision}
+
+
+def _box(item):
+    return item["x"], item["y"], item["x"] + item["width"], item["y"] + item["height"]
+
+
+def _overlap(a, b):
+    """Rectangles (x0, y0, x1, y1) share area; touching edges do not overlap."""
+    return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
+
+
+def _grouped(a, b):
+    """One of two controls is a group box that wholly contains the other."""
+    def contains(outer, inner):
+        (x0, y0, x1, y1), (u0, v0, u1, v1) = _box(outer), _box(inner)
+        return outer["class"] == GROUP and x0 <= u0 and y0 <= v0 and x1 >= u1 and y1 >= v1
+    return contains(a, b) or contains(b, a)
+
+
+def _placement(before, after, placed):
+    """Refuse a new overlap of a new, moved or relayered control with a control of its layer.
+
+    Real forms overlap (614 pairs in 135 corpus forms, mostly drop-down lists), so
+    only overlaps the change creates are refused; a group box may contain a control.
+    """
+    old = {item["id"]: item for item in before}
+    for item in after:
+        if item["id"] not in placed:
+            continue
+        for other in after:
+            if other["id"] == item["id"] or other["layer"] != item["layer"] \
+                    or not _overlap(_box(item), _box(other)) or _grouped(item, other):
+                continue
+            was = old.get(item["id"]), old.get(other["id"])
+            if all(was) and was[0]["layer"] == was[1]["layer"] and _overlap(_box(was[0]), _box(was[1])):
+                continue  # the template already overlapped them
+            x0, y0, x1, y1 = _box(other)
+            raise ErtError(f"Элемент {item['id']} ({item['x']}, {item['y']}, {item['width']}×{item['height']}) "
+                           f"накладывается на элемент {other['id']} ({x0}, {y0}, {x1 - x0}×{y1 - y0}) "
+                           f"слоя {item['layer']!r}; наложение допускается, только если рамка группы "
+                           "целиком содержит элемент")
+
+
 def apply(text, description, module_text=None):
     """New dialog text from the template text and a description; returns (text, changes)."""
     tree, frame, section = _structure(text)
     current = describe(text)
     if description["template_dialog_sha256"] != current["template_dialog_sha256"]:
         raise ErtError("Описание сделано для другого шаблона: хеш диалога не совпадает")
+    typed = description["schema_version"] >= 2
     changes = _Changes(module_text)
     form, old_form = description["form"], current["form"]
     if form["layers"] != old_form["layers"]:
@@ -247,16 +388,20 @@ def apply(text, description, module_text=None):
     records, items = section[1:], description["controls"]
     if len(items) < len(records):
         raise ErtError("Удаление элементов формы не поддерживается")
+    placed = set()
     for record, item, old in zip(records, items, current["controls"]):
         where = f"Элемент {old['id']}"
         if item.get("id") != old["id"] or item["class"] != old["class"]:
             raise ErtError(f"{where}: перестановка, удаление или смена ID/класса не поддерживаются "
                            f"(в описании id={item.get('id')!r}, класс {item['class']})")
-        missing = [key for key in CONTROL_KEYS if key not in item]
+        missing = [key for key in CONTROL_KEYS_V1 if key not in item]
         if missing:
             raise ErtError(f"{where}: нет свойств {', '.join(missing)}")
+        if typed and item.get("type") != old.get("type"):
+            raise ErtError(f"{where}: изменение типа данных существующего элемента не поддерживается "
+                           f"(в шаблоне {old.get('type')}, в описании {item.get('type')})")
         moved = False
-        for key in CONTROL_KEYS[2:]:
+        for key in CONTROL_KEYS_V1[2:]:
             if item[key] == old[key]:
                 continue
             if key == "caption":
@@ -267,16 +412,20 @@ def apply(text, description, module_text=None):
                 record[IDENTIFIER] = item[key]
             elif key == "layer":
                 record[LAYER] = item[key]
+                placed.add(old["id"])
             else:
                 record[dict(GEOMETRY)[key]] = str(item[key])
                 moved = True
             changes.items.append({"control": old["id"], "property": key, "from": old[key], "to": item[key]})
         if moved:
             _geometry(item, width, height, where)
+            placed.add(old["id"])
     stored = [old["id"] for old in current["controls"]]
     for number, item in enumerate(items[len(records):], start=len(records) + 1):
-        if item["class"] not in NEW_CLASSES:
-            raise ErtError(f"controls[{number}]: новый элемент класса {item['class']} не поддерживается")
+        kind = item["class"]
+        if kind not in NEW_CLASSES:
+            raise ErtError(f"controls[{number}]: новый элемент класса {kind} не поддерживается "
+                           f"(поддерживаются {', '.join(NEW_CLASSES)})")
         if any(len(record) != len(DEFAULT_BUTTON) for record in records):
             raise ErtError("Новый элемент в форме прежнего формата (не 43 поля) не поддерживается")
         # 1C numbers records 4152, 4153, … in order (all 416 corpus forms) and gives
@@ -288,21 +437,27 @@ def apply(text, description, module_text=None):
             raise ErtError(f"controls[{number}]: ID нового элемента — только следующий по порядку {control_id}, "
                            f"получено {item['id']}")
         stored.append(control_id)
-        where = f"Новый элемент {control_id}"
-        missing = [key for key in ("caption", "x", "y", "width", "height", "formula") if key not in item]
+        where = f"Новый элемент {control_id} ({kind})"
+        required = ("x", "y", "width", "height") + NEW_CLASSES[kind]["required"]
+        missing = [key for key in required if key not in item or item[key] == ""]
         if missing:
             raise ErtError(f"{where}: нет свойств {', '.join(missing)}")
         _geometry(item, width, height, where)
-        record = list(DEFAULT_BUTTON)
-        record[CAPTION] = _caption(item["caption"], where)
+        data_type = _new_type(item, kind, where)
+        record = list(DEFAULTS[kind, data_type and data_type["kind"]])
+        record[CAPTION] = _caption(item.get("caption", ""), where)
         for key, index in GEOMETRY:
             record[index] = str(item[key])
         record[ID] = str(control_id)
-        record[FORMULA] = _formula(item["formula"], item["class"], where, changes)
+        if data_type:
+            record[LENGTH], record[PRECISION] = str(data_type["length"]), str(data_type["precision"])
+        formula = item.get("formula", "")
+        record[FORMULA] = _formula(formula, kind, where, changes) if formula or FORMULAS.get(kind) else ""
         record[IDENTIFIER] = item.get("identifier", "")
         record[LAYER] = item.get("layer", form["layers"][0] if form["layers"] else "")
         section.append(record)
-        changes.items.append({"control": control_id, "added": item["class"]})
+        placed.add(control_id)
+        changes.items.append({"control": control_id, "added": kind})
     # Only what the description sets is validated: the template's own identifiers
     # and layers were accepted by 1C (a corpus form has the identifier "Дата").
     touched = {(str(c["control"]), c.get("property", "added")) for c in changes.items if c["control"]}
@@ -322,6 +477,16 @@ def apply(text, description, module_text=None):
             others = [other for other in owners[name.casefold()] if other != record[ID]]
             if others:
                 raise ErtError(f"{where}: идентификатор {name!r} уже есть у элемента {others[0]}")
+            procedures, variables = changes.module("идентификатора")
+            if name.casefold() in procedures | variables:
+                # 1C compiles such a module, but a Перем shadows the form attribute: the
+                # module's assignments never reach the field (task 011, E4 and E4b).
+                if name.casefold() in procedures:
+                    raise ErtError(f"{where}: идентификатор {name!r} совпадает с процедурой или функцией "
+                                   "модуля: имя неоднозначно")
+                raise ErtError(f"{where}: идентификатор {name!r} совпадает с переменной Перем модуля: 1С такой "
+                               "модуль примет, но переменная перекроет реквизит формы, и модуль не увидит поле")
+    _placement(current["controls"], [_control(record) for record in section[1:]], placed)
     return serialize_dialog(tree), changes.items
 
 

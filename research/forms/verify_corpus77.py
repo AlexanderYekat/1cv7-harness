@@ -70,7 +70,8 @@ def main(argv=None):
         rows.append({"path": name, "sha256": digest, "outcome": outcome, "detail": detail})
     after = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
     counts = collections.Counter(row["outcome"] for row in rows)
-    result = {"schema_version": 1, "scope": "task 008 lossless form round trip", "files": len(files),
+    result = {"schema_version": 1, "scope": "tasks 008, 011: lossless form round trip",
+              "description_schema_version": form77.SCHEMA_VERSION, "files": len(files),
               "counts": dict(counts), "corpus_unchanged": before == after,
               "module": MODULE, "rows": rows}
     (args.output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n",

@@ -1,4 +1,4 @@
-# Формы ERT в настоящей 1С 7.7 (задачи 008 и 010)
+# Формы ERT в настоящей 1С 7.7 (задачи 008, 010 и 011)
 
 Исследовательская часть [задачи 008](../../docs/tasks/008-form-description.md):
 открыть форму собранной ERT видимой в своём сеансе 1С, сверить окна элементов
@@ -42,6 +42,19 @@
 - `prepare_visual77.py` — локальные профили V1–V6 и эталоны с чужой средой для V6.
 - `verify_visual77.py` — приёмка по свидетельствам V0–V6.
 
+Задача 011 ([новые элементы](../../docs/tasks/011-form-elements.md)):
+
+- `form_launcher77.py`: `[platform.parameters] actions` — `click:<ID>` и
+  `type:<ID>=<текст>` через запятую (`click_id` — сокращение для одного нажатия);
+  текст полей и состояние флажков до и после действий (`fields_open`,
+  `fields_after`), сверка подписей окон; значение `result` — все строки обработчиков.
+- `form_window77.py`: `type_text` (`WM_CHAR` во вложенное окно поля, `editor`),
+  `text` (`WM_GETTEXT`), `checked` (`BM_GETCHECK`), `judge_captions`; осмотр
+  записывает дочерние окна элементов.
+- `elements_module77.1s` — модуль проб E1–E3; `conflict_module77.1s` и
+  `conflict_value_module77.1s` — `Перем Фамилия` при поле «Фамилия» (E4, E4b).
+- `prepare_elements77.py` — описания и профили E1–E4b; `verify_elements77.py` — приёмка.
+
 ## Что установлено (стенд 7.70.027, Windows 11, 96 DPI)
 
 - **ID окон не равны полю 9 записи.** Окно записи с индексом i из N получает
@@ -67,6 +80,15 @@
   на кнопку, курсор исчезает.
 - `BM_CLICK` невидимой кнопке своего процесса на своём desktop вызывает
   обработчик формулы ровно один раз; сообщение возвращается за ~0,02 с.
+- **Задача 011:** окна новых элементов — рамка и флажок `Button`, надпись
+  `Static`, число и дата `BMASKED`, строка `1CEDIT`. `1CEDIT` — обёртка: текст,
+  фокус и курсор — во вложенном окне `1CEDITSPR` (ID 0); `WM_CHAR` обёртке ничего
+  не меняет (E1a), вложенному окну — вводит текст, и после `BM_CLICK` другому
+  элементу значение доходит до модуля. Начальный фокус — у последней записи.
+  Строка фиксированной длины возвращается с пробелами до длины, длину
+  ограничивает само поле при вводе. Флажок отражает реквизит (`BM_GETCHECK`),
+  `BM_CLICK` переключает его и вызывает формулу. 1С компилирует модуль с `Перем`,
+  совпадающим с реквизитом формы, и переменная перекрывает реквизит (E4, E4b).
 - В 7.7 сравнения вокруг `ИЛИ` нужно брать в скобки: без них контроллер
   не компилируется («Неправильное использование арифметической или строковой
   операции»). Переменные модуля (`Перем`) в `ВыполняемыйМодуль` допустимы.
@@ -90,4 +112,12 @@ python -B research/forms/prepare_visual77.py --stand .local/stage8-native/r2/sta
 python -m harness77 run --project .local/stage10-native/NEW/v-button.toml --stand .local/stage10-native/NEW/stand.toml --output-root .artifacts/runs
 python -m harness77 visual approve --project .local/stage10-native/NEW/v-button.toml --run .artifacts/runs/<run_id> --by "<кто>"
 python -B research/forms/verify_visual77.py --runs .artifacts/runs --series .local/stage10-native/series --output .artifacts/forms/visual-acceptance-NEW.json
+```
+
+Новые элементы (задача 011):
+
+```powershell
+python -B research/forms/prepare_elements77.py --stand .local/stage10-native/series/stand.toml --output .local/stage11-native/NEW
+python -m harness77 run --project .local/stage11-native/NEW/e-elements.toml --stand .local/stage11-native/NEW/stand.toml --output-root .artifacts/runs
+python -B research/forms/verify_elements77.py --runs .artifacts/runs --series .local/stage11-native/series --output .artifacts/forms/elements-acceptance-NEW.json
 ```

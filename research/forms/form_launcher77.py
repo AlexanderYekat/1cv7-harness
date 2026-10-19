@@ -1,4 +1,4 @@
-"""Stand launcher for the visible-form probe (task 008): the stage-4 launcher with a form adapter.
+"""Stand launcher for the visible-form probe (tasks 008, 010, 011): the stage-4 launcher with a form adapter.
 
 A stand profile points ``launcher`` here; ``harness77 run`` then opens the form of
 the run's ERT *visibly* in the owned 1C session and checks it as a window:
@@ -11,11 +11,16 @@ the run's ERT *visibly* in the owned 1C session and checks it as a window:
   control ID of the built ERT's dialog. It records each control's rectangle in
   the parent's client area, the DPI, one linear mapping of the form numbers to
   pixels and a screenshot (evidence only). With ``[platform.parameters]
-  click_id`` it then sends ``BM_CLICK`` to that button.
+  click_id`` it then sends ``BM_CLICK`` to that button; with ``actions``
+  (task 011) it runs a sequence of ``click:<ID>`` and ``type:<ID>=<text>``
+  (``WM_CHAR`` to a field) and records the text of every field and the state of
+  every check box before and after.
 - ``result``: the client first waits for the watcher's ``form-click-done``
   marker, so 1C is idle in its message loop while the click is handled; then
-  the controller returns the form's parameter list (the handler adds
-  ``clicked:<n>``) and closes the form.
+  the controller returns the form's parameter list (the handlers add
+  ``clicked:<n>`` and, in task 011, ``flag:``, ``value:`` and ``label:`` lines)
+  and closes the form. The value of ``result`` is every handler line, joined
+  by ``;``.
 
 With ``--captures-json`` (the product's visual checks, task 010) the watcher
 also shows the hidden main 1C window on the private desktop without activating
@@ -26,10 +31,12 @@ caret, with the caret rectangle and the capture environment. The captures are
 compared by the product, not here.
 
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
-the form opened, loaded and matched its description;
-``result`` with a click passes when the button was found, the message returned
-and the handler ran exactly once (value ``clicked:1``); without a click it
-passes when the form closed. Evidence: ``<run>/form/``.
+the form opened, loaded and matched its description (layout and the captions
+of buttons, labels, check boxes and group boxes); ``result`` with actions passes
+when every target was found inside the client area, every message returned and
+a clicked handler ran exactly once (``clicked:1``); without actions it passes
+when the form closed. What the module received is the test's ``expect_value``.
+Evidence: ``<run>/form/``.
 """
 
 import contextlib
@@ -48,6 +55,8 @@ from shutdown77 import atomic_json, sha256  # noqa: E402
 IDENTITY = "harness77-form"
 COMMANDS = ("check", "open", "result")
 DONE = "form-click-done"
+# Lines of the controller itself; every other line of ``result`` comes from a handler.
+CONTROL_LINES = ("selected:", "open-return:", "open-error:", "loaded:", "closed:", "close-error:", "no-open-form")
 CLICK_WAIT_S = 60
 # Visual captures (task 010): states around the click, windows of the form.
 STATES = ("open", "clicked")
@@ -135,6 +144,43 @@ def click_id(parameters):
     return value
 
 
+def _record_id(text, where):
+    if not text.isdigit() or not 1 <= int(text) <= 0xFFFF:
+        raise ValueError(f"{where}: a control ID 1…65535, got {text!r}")
+    return int(text)
+
+
+def actions(parameters):
+    """The actions after the inspection: ``click_id`` or ``actions`` of ``[platform.parameters]``.
+
+    ``actions = "type:4167=Тест77,click:4164,click:4161"``: a click is ``BM_CLICK``
+    to the record's window, typing is ``WM_CHAR`` per character (task 011). The
+    text has no commas and must fit Windows-1251, like everything a 7.7 form shows.
+    """
+    single, value = click_id(parameters), parameters.get("actions")
+    if value is None:
+        return [] if single is None else [{"action": "click", "id": single}]
+    if single is not None:
+        raise ValueError("[platform.parameters] sets either click_id or actions, not both")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("[platform.parameters] actions must be a non-empty string")
+    result = []
+    for part in value.split(","):
+        kind, _, rest = part.strip().partition(":")
+        where = f"[platform.parameters] actions {part.strip()!r}"
+        if kind == "click":
+            result.append({"action": "click", "id": _record_id(rest, where)})
+        elif kind == "type":
+            target, equals, text = rest.partition("=")
+            if not equals or not text:
+                raise ValueError(f"{where}: type:<ID>=<text> with a non-empty text")
+            text.encode("cp1251")
+            result.append({"action": "type", "id": _record_id(target, where), "text": text})
+        else:
+            raise ValueError(f"{where}: click:<ID> or type:<ID>=<text>")
+    return result
+
+
 def capture_requests(requests):
     """Validated ``--captures-json``: a list of {state, window} the visual checks need."""
     if not isinstance(requests, list):
@@ -166,19 +212,21 @@ def load_json(path):
 
 
 class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on the stand
-    """After ``open`` returns: inspect the owned form, click once, then release the client."""
+    """After ``open`` returns: inspect the owned form, run the actions, then release the client."""
 
-    def __init__(self, out, lifecycle, desktop, description, control_id, evidence_dir, visual_probe=False,
+    def __init__(self, out, lifecycle, desktop, description, actions, evidence_dir, visual_probe=False,
                  captures=(), configuration=None):
         super().__init__(name="harness77-form-watcher", daemon=True)
         self.out, self.lifecycle, self.desktop = out, lifecycle, desktop
-        self.description, self.control_id, self.evidence_dir = description, control_id, evidence_dir
+        self.description, self.actions, self.evidence_dir = description, list(actions), evidence_dir
         self.visual_probe = visual_probe
         self.captures, self.configuration = list(captures), configuration
         self.stopped = threading.Event()
 
     def run(self):
-        record = {"run_id": self.lifecycle["run_id"], "click_requested": self.control_id}
+        clicks = [a["id"] for a in self.actions if a["action"] == "click"]
+        record = {"run_id": self.lifecycle["run_id"], "click_requested": clicks[-1] if clicks else None,
+                  "actions_requested": self.actions}
         opened = self.out / "ert-open-finished"
         try:
             while not opened.exists():
@@ -234,20 +282,19 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             try:
                 if shown is not None:
                     captures += self.shoot(form, inspection, "open", shown)
-                if self.control_id is not None:
-                    from form_window77 import window_ids
-                    window_id = window_ids(self.description).get(self.control_id)
-                    if window_id is None or not inspection["found"]:
-                        click = {"control_id": window_id, "found": False, "requested": False,
-                                 "reason": "no such record in the description" if window_id is None
-                                 else "form not found"}
-                    else:
-                        click = form.click(inspection, window_id)
-                    inspection["click"] = dict(click, record_id=self.control_id)
+                if inspection["found"]:
+                    inspection["fields_open"] = self.fields(form, inspection)
+                if self.actions:
+                    done = self.act(form, inspection)
+                    if inspection["found"]:
+                        inspection["fields_after"] = self.fields(form, inspection)
                     if shown is not None:
-                        clicked = (None if click.get("returned") else
-                                   "the click did not happen: " + str(click.get("reason") or "BM_CLICK did not return"))
-                        captures += self.shoot(form, inspection, "clicked", shown, refused=clicked)
+                        failed = next((a for a in done if not a.get("returned")), None)
+                        refused = None
+                        if failed is not None or len(done) != len(self.actions):
+                            refused = (f"the {(failed or {}).get('action', 'action')} did not happen: "
+                                       + str((failed or {}).get("reason") or "the message did not return"))
+                        captures += self.shoot(form, inspection, "clicked", shown, refused=refused)
             finally:
                 if shown is not None:
                     inspection["visual"] = dict(shown, hide=self.hide_main(form, shown))
@@ -256,6 +303,45 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             return inspection
         finally:
             kernel.CloseHandle(handle)
+
+    def act(self, form, inspection):
+        """Every action in order; the sequence stops at the first one that did not happen."""
+        from form_window77 import window_ids
+        ids, done = window_ids(self.description), []
+        for action in self.actions:
+            window_id = ids.get(action["id"])
+            if window_id is None or not inspection["found"]:
+                outcome = {"control_id": window_id, "found": False, "requested": False,
+                           "reason": "no such record in the description" if window_id is None else "form not found"}
+            elif action["action"] == "click":
+                outcome = form.click(inspection, window_id)
+            else:
+                outcome = form.type_text(inspection, window_id, action["text"])
+            done.append(dict(outcome, action=action["action"], record_id=action["id"]))
+            if not outcome.get("returned"):
+                break
+        inspection["actions"] = done
+        clicks = [a for a in done if a["action"] == "click"]
+        if clicks:
+            inspection["click"] = clicks[-1]
+        return done
+
+    def fields(self, form, inspection):
+        """Text of the field windows and the state of the check boxes, by record ID."""
+        from form_window77 import editor, window_ids
+        ids = window_ids(self.description)
+        windows = {c["id"]: c for c in inspection["controls"]}
+        record = {}
+        for item in self.description["controls"]:
+            control = windows.get(ids[item["id"]])
+            if control is None or item["class"] not in ("1CEDIT", "BMASKED", "CHECKBOX"):
+                continue
+            try:
+                record[str(item["id"])] = ({"checked": form.checked(control["hwnd"])} if item["class"] == "CHECKBOX"
+                                           else {"text": form.text(editor(control)["hwnd"])})
+            except (OSError, RuntimeError) as error:
+                record[str(item["id"])] = {"error": f"{type(error).__name__}: {error}"}
+        return record
 
     def show_main(self, form, inspection):
         """Show the owned main 1C window without activation, so the form paints (V0)."""
@@ -384,7 +470,7 @@ class FormAdapter(launcher.Harness77Adapter):
         self.configuration = sha256(base / "1Cv7.MD")
 
     def commands(self, parameters, requested):
-        click_id(parameters)
+        actions(parameters)
         unknown = [command for command in requested if command not in COMMANDS]
         if unknown:
             raise ValueError("unknown form command: " + ", ".join(unknown))
@@ -400,8 +486,8 @@ class FormAdapter(launcher.Harness77Adapter):
         return text + AWAIT.replace("__DONE__", DONE).replace("__WAIT_MS__", str(CLICK_WAIT_S * 1000))
 
     def prepare(self, run_dir, parameters):
-        if any(r["state"] == "clicked" for r in self.requests) and click_id(parameters) is None:
-            raise ValueError("the clicked state needs [platform.parameters] click_id")
+        if any(r["state"] == "clicked" for r in self.requests) and not actions(parameters):
+            raise ValueError("the clicked state needs [platform.parameters] click_id or actions")
         self.run_dir, self.parameters = run_dir, dict(parameters)
         (run_dir / "form").mkdir(exist_ok=False)
         return {}
@@ -419,7 +505,7 @@ class FormAdapter(launcher.Harness77Adapter):
 
         @contextlib.contextmanager
         def watching():
-            watcher = FormWatcher(out, lifecycle, desktop, description, click_id(self.parameters),
+            watcher = FormWatcher(out, lifecycle, desktop, description, actions(self.parameters),
                                   self.run_dir / "form", visual_probe=self.parameters.get("visual_probe") is True,
                                   captures=self.requests, configuration=self.configuration)
             watcher.start()
@@ -435,7 +521,7 @@ class FormAdapter(launcher.Harness77Adapter):
                 load_json(self.run_dir / "form" / "description.json") if self.run_dir else None)
 
     def operation(self, command, lines, actual, row):
-        from form_window77 import judge_layout
+        from form_window77 import judge_captions, judge_layout
         if "open-error:" in actual or not any(line == "loaded:" + IDENTITY for line in lines):
             if row["diagnostics"]:
                 row["status"] = "failed"
@@ -455,25 +541,37 @@ class FormAdapter(launcher.Harness77Adapter):
             else:
                 if inspection.get("error"):
                     issues.append("inspection error: " + inspection["error"])
-                issues += judge_layout(description, inspection)
-                row["form"] = {key: inspection.get(key) for key in ("found", "parent", "units", "screenshots")}
+                issues += judge_layout(description, inspection) + judge_captions(description, inspection)
+                row["form"] = {key: inspection.get(key) for key in ("found", "parent", "units", "screenshots",
+                                                                     "fields_open")}
             row["form_issues"] = issues
             row["status"] = "failed" if issues else "passed"
             return None
-        clicks = [line for line in lines if line.startswith("clicked:")]
-        row["value"] = ";".join(clicks) or None
+        handlers = [line for line in lines if not line.startswith(CONTROL_LINES)]
+        clicks = [line for line in handlers if line.startswith("clicked:")]
+        row["value"] = ";".join(handlers) or None
         issues = [] if "closed:1" in lines else ["the form was not closed"]
-        requested = click_id(self.parameters)
-        if requested is not None:
-            click = (inspection or {}).get("click") or {}
-            row["click"] = click
-            if not click.get("found"):
-                issues.append(f"button {requested} not found")
-            elif not click.get("returned"):
-                issues.append("BM_CLICK did not return")
-            if click.get("found") and not (click.get("button") or {}).get("inside_client"):
-                issues.append(f"button {requested} is not wholly inside the form's client area")
-            if clicks != ["clicked:1"]:
+        requested = actions(self.parameters)
+        if requested:
+            inspection = inspection or {}
+            done = {a.get("record_id"): a for a in inspection.get("actions") or []}
+            if not done and inspection.get("click"):  # evidence written before task 011
+                done = {inspection["click"].get("record_id"): dict(inspection["click"], action="click")}
+            row["actions"] = [done.get(a["id"], {"record_id": a["id"]}) for a in requested]
+            if any(a["action"] == "click" for a in requested):
+                row["click"] = inspection.get("click") or {}
+            for action, outcome in zip(requested, row["actions"]):
+                target = ("button " if action["action"] == "click" else "field ") + str(action["id"])
+                window = outcome.get("button" if action["action"] == "click" else "field") or {}
+                if not outcome.get("found"):
+                    issues.append(f"{target} not found")
+                    break
+                if not outcome.get("returned"):
+                    issues.append(f"{outcome.get('message')} to {target} did not return")
+                    break
+                if not window.get("inside_client"):
+                    issues.append(f"{target} is not wholly inside the form's client area")
+            if any(a["action"] == "click" for a in requested) and clicks != ["clicked:1"]:
                 issues.append("the handler did not run exactly once: " + str(clicks))
         row["form_issues"] = issues
         row["status"] = "failed" if issues else "passed"

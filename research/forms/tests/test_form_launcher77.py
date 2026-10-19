@@ -1,4 +1,4 @@
-"""Form adapter of the stage-4 launcher (task 008): portable, no 1C is started."""
+"""Form adapter of the stage-4 launcher (tasks 008, 010, 011): portable, no 1C is started."""
 
 import json
 from pathlib import Path
@@ -12,8 +12,8 @@ import form_window77 as window  # noqa: E402
 
 launcher = form.launcher
 EXPECTED = {4152: (120, 106, 54, 13), 4153: (64, 106, 54, 13), 4160: (10, 20, 54, 8)}
-DESCRIPTION = {"controls": [{"id": i, "x": x, "y": y, "width": w, "height": h}
-                            for i, (x, y, w, h) in EXPECTED.items()]}
+DESCRIPTION = {"controls": [{"id": i, "class": "STATIC", "caption": f"Надпись {i}", "x": x, "y": y, "width": w,
+                             "height": h} for i, (x, y, w, h) in EXPECTED.items()]}
 # FIO.ERT records (ID, x, y, width, height) and the windows measured natively in F0
 # (run 4633a2d0): window ID → (left, top, width, height) in the dialog's client area.
 FIO = [(4152, 120, 106, 54, 13), (4153, 64, 106, 54, 13), (4154, 7, 106, 54, 13), (4155, 7, 85, 208, 13),
@@ -80,6 +80,13 @@ class UnitsTests(unittest.TestCase):
         self.assertTrue(window.inside([222, 2, 99, 21], [329, 174]))
         self.assertFalse(window.inside([222, -17, 99, 21], [329, 174]))
         self.assertFalse(window.inside([240, 2, 99, 21], [329, 174]))
+
+    def test_editor_is_the_single_inner_window(self):
+        wrapper = {"hwnd": 1, "class": "1CEDIT", "children": [{"hwnd": 2, "class": "Edit", "id": 0, "text": ""}]}
+        self.assertEqual(window.editor(wrapper)["hwnd"], 2)
+        self.assertEqual(window.editor({"hwnd": 3, "class": "BMASKED", "children": []})["hwnd"], 3)
+        self.assertEqual(window.editor({"hwnd": 4, "class": "BMASKED"})["hwnd"], 4)
+        self.assertEqual(window.editor(dict(wrapper, children=wrapper["children"] * 2))["hwnd"], 1)
 
     def test_judge_layout(self):
         ids = window.window_ids(DESCRIPTION)
@@ -161,7 +168,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_click_outcomes(self):
         lines = ["loaded:harness77-form", "clicked:1", "closed:1"]
-        clicked = self.inspection(click={"control_id": 4152, "found": True, "returned": True,
+        clicked = self.inspection(click={"control_id": 4152, "record_id": 4161, "found": True, "returned": True,
                                          "button": {"inside_client": True}})
         item, _ = self.judge(self.adapter({"click_id": 4161}, clicked), "result", lines)
         self.assertEqual((item["status"], item["value"]), ("passed", "clicked:1"))
@@ -173,14 +180,70 @@ class AdapterTests(unittest.TestCase):
         item, _ = self.judge(self.adapter({"click_id": 4161}, clicked), "result", lines[:2] + ["clicked:2"] + lines[2:])
         self.assertEqual(item["status"], "failed")
         # F2 (y 4): under the caption, the click alone is not enough.
-        hidden = self.inspection(click={"control_id": 4152, "found": True, "returned": True,
+        hidden = self.inspection(click={"control_id": 4152, "record_id": 4161, "found": True, "returned": True,
                                         "button": {"inside_client": False}})
         item, _ = self.judge(self.adapter({"click_id": 4161}, hidden), "result", lines)
         self.assertEqual(item["form_issues"], ["button 4161 is not wholly inside the form's client area"])
         # F4: no such button, nothing was sent.
-        missing = self.inspection(click={"control_id": 4161, "found": False, "requested": False})
+        missing = self.inspection(click={"control_id": 4161, "record_id": 4161, "found": False, "requested": False})
         item, _ = self.judge(self.adapter({"click_id": 4161}, missing), "result", lines[:1] + lines[2:])
         self.assertEqual(item["form_issues"][:1], ["button 4161 not found"])
+
+    def test_actions_parameter(self):
+        self.assertEqual(form.actions({}), [])
+        self.assertEqual(form.actions({"click_id": 4161}), [{"action": "click", "id": 4161}])
+        self.assertEqual(form.actions({"actions": "type:4167=Тест77, click:4164,click:4161"}), [
+            {"action": "type", "id": 4167, "text": "Тест77"}, {"action": "click", "id": 4164},
+            {"action": "click", "id": 4161}])
+        self.assertEqual(form.actions({"actions": "type:4167=a=b"})[0]["text"], "a=b")
+        for bad in ({"actions": ""}, {"actions": 5}, {"actions": "press:4161"}, {"actions": "click:0"},
+                    {"actions": "click:x"}, {"actions": "type:4167"}, {"actions": "type:4167="},
+                    {"actions": "type:4167=✓"}, {"actions": "click:4161", "click_id": 4161}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                form.FormAdapter().commands(bad, [])
+
+    def test_actions_outcomes(self):
+        parameters = {"actions": "type:4167=Тест77,click:4164,click:4161"}
+        lines = ["selected:x", "loaded:harness77-form", "flag:0", "clicked:1", "value:Строка77=Строка|Тест77",
+                 "label:Надпись 77", "closed:1"]
+        typed = {"action": "type", "record_id": 4167, "found": True, "returned": True, "message": "WM_CHAR",
+                 "field": {"inside_client": True}}
+        flag = {"action": "click", "record_id": 4164, "found": True, "returned": True, "message": "BM_CLICK",
+                "button": {"inside_client": True}}
+        button = dict(flag, record_id=4161)
+        item, _ = self.judge(self.adapter(parameters, self.inspection(actions=[typed, flag, button], click=button)),
+                             "result", lines)
+        self.assertEqual((item["status"], item["value"], item["form_issues"]), (
+            "passed", "flag:0;clicked:1;value:Строка77=Строка|Тест77;label:Надпись 77", []))
+        self.assertEqual([a["record_id"] for a in item["actions"]], [4167, 4164, 4161])
+        # The sequence stops at a message that did not return; the rest never happened.
+        stuck = dict(typed, returned=False)
+        item, _ = self.judge(self.adapter(parameters, self.inspection(actions=[stuck])), "result",
+                             lines[:2] + lines[-1:])
+        self.assertEqual(item["form_issues"][0], "WM_CHAR to field 4167 did not return")
+        self.assertIn("exactly once", item["form_issues"][-1])
+        outside = dict(flag, button={"inside_client": False})
+        item, _ = self.judge(self.adapter(parameters, self.inspection(actions=[typed, outside, button])),
+                             "result", lines)
+        self.assertEqual(item["form_issues"], ["button 4164 is not wholly inside the form's client area"])
+        item, _ = self.judge(self.adapter(parameters, self.inspection(actions=[])), "result", lines)
+        self.assertEqual(item["form_issues"][0], "field 4167 not found")
+
+    def test_judge_captions(self):
+        ids = window.window_ids(DESCRIPTION)
+        controls = [{"id": ids[i], "text": f"Надпись {i}"} for i in EXPECTED]
+        self.assertEqual(window.judge_captions(DESCRIPTION, {"found": True, "controls": controls}), [])
+        controls[0]["text"] = "Другое"
+        self.assertEqual(window.judge_captions(DESCRIPTION, {"found": True, "controls": controls}),
+                         ["control 4152 (STATIC) shows 'Другое', described 'Надпись 4152'"])
+        field = {"controls": [dict(DESCRIPTION["controls"][0], **{"class": "1CEDIT"})]}
+        self.assertEqual(window.judge_captions(field, {"found": True, "controls": [
+            {"id": window.window_ids(field)[4152], "text": "значение"}]}), [])
+        self.assertEqual(window.judge_captions(DESCRIPTION, {"found": False}), [])
+        item, _ = self.judge(self.adapter(inspection=self.inspection(controls=controls)), "open",
+                             ["open-return:1", "loaded:harness77-form"])
+        self.assertEqual(item["status"], "failed")
+        self.assertIn("shows 'Другое'", item["form_issues"][-1])
 
     def test_not_loaded(self):
         adapter = self.adapter(inspection=self.inspection())
@@ -204,7 +267,7 @@ class AdapterTests(unittest.TestCase):
         adapter = form.FormAdapter()
         adapter.request_captures([{"state": "clicked", "window": "form"}])
         (self.root / "noclick").mkdir()
-        with self.assertRaisesRegex(ValueError, "click_id"):
+        with self.assertRaisesRegex(ValueError, "click_id or actions"):
             adapter.prepare(self.root / "noclick", {})
         self.assertFalse((self.root / "noclick" / "form").exists())
 
