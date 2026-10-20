@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import threading
 import uuid
@@ -342,6 +343,14 @@ def _summary(report):
     return out
 
 
+def _watch_cancel_file(path, cancel, done, interval=0.2):
+    """Set ``cancel`` once ``path`` appears: cancellation without a console (task 014)."""
+    while not done.wait(interval):
+        if os.path.lexists(path):
+            cancel.set()
+            return
+
+
 def main(argv=None):
     import argparse
     import signal
@@ -364,11 +373,15 @@ def main(argv=None):
     parser.add_argument("--reindex-timeout-s", type=float, default=None,
                         help="Запас к сроку открытия, если прошлый сеанс 1С на базе был прерван")
     parser.add_argument("--run-id", default=None, help="Задать run_id (по умолчанию новый UUID)")
+    parser.add_argument("--cancel-file", type=Path, default=None,
+                        help="Отменить запуск, когда появится этот файл (как Ctrl+C, но без консоли)")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     try:
+        if args.cancel_file is not None and os.path.lexists(args.cancel_file):
+            raise FileExistsError(f"the cancel file already exists: {args.cancel_file}")
         project = load_project(args.project)
         stand = load_stand(args.stand)
         overrides = {"open_timeout_s": args.open_timeout_s, "calculation_timeout_s": args.calculation_timeout_s,
@@ -389,6 +402,9 @@ def main(argv=None):
             signal.signal(number, lambda *_: cancel.set())
     except ValueError:
         previous = {}  # Not the main thread; cancellation stays injectable only.
+    done = threading.Event()
+    if args.cancel_file is not None:
+        threading.Thread(target=_watch_cancel_file, args=(args.cancel_file, cancel, done), daemon=True).start()
     try:
         report = execute(project, stand, deadlines, output_root=args.output_root, run_id=args.run_id, cancel=cancel)
     except OSError as error:
@@ -397,6 +413,7 @@ def main(argv=None):
         print(json.dumps(blocked, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
     finally:
+        done.set()
         for number, handler in previous.items():
             signal.signal(number, handler)
     print(json.dumps(_summary(report), ensure_ascii=False, indent=2))

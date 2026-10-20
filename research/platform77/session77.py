@@ -173,7 +173,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             if sorted(current, key=lambda p: p["pid"]) != sorted(expected, key=lambda p: p["pid"]):
                 raise RuntimeError("process inventory changed before OLE activation")
             client = launch(
-                [os.path.join(os.environ["WINDIR"], "SysWOW64", "cscript.exe"),
+                # An MCP client may start the server with a reduced environment without WINDIR (task 014).
+                [os.path.join(os.environ.get("WINDIR") or os.environ["SYSTEMROOT"], "SysWOW64", "cscript.exe"),
                  # A long application report raises the client limit; the default stays 140 s.
                  "//B", "//NoLogo", "//T:" + str(int(report.get("client_timeout_seconds", 140))), str(out / "client.vbs"),
                  str(base), user, str(out / "client.log"), str(report["server"]["pid"]),

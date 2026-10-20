@@ -50,9 +50,11 @@ finish(operations=[{"name": "full", "status": "passed", "value": "COMPLETE"}])
 
 WAITS_FOR_CANCEL = ARGS + '''
 deadline = time.monotonic() + 30
-while not (run_dir / "cancel").exists() and time.monotonic() < deadline:
+seen = None
+# The file appears before its text is written; under load a reader can see it empty.
+while not seen and time.monotonic() < deadline:
+    seen = (run_dir / "cancel").read_text(encoding="ascii") if (run_dir / "cancel").exists() else None
     time.sleep(0.05)
-seen = (run_dir / "cancel").read_text(encoding="ascii") if (run_dir / "cancel").exists() else None
 finish(status="blocked", reason="cancelled", cancelled=seen == args.run_id)
 '''
 

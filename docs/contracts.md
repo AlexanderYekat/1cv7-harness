@@ -1,7 +1,7 @@
 # Контракты harness77 0.1
 
 Реализованы операции: `lint`, `compiler-protocol`, `extract`, `build`, `run`, `catalog`,
-`form-extract`, `triage`, `visual`.
+`form-extract`, `triage`, `visual`; `mcp` — сервер MCP над ними.
 `harness77 --version` и `python -m harness77 --version` выводят версию пакета.
 У каждой операции есть `--help`. Пути разрешаются относительно CWD вызывающего;
 пакет, словарь и зависимости от CWD не зависят. Stdout/stderr CLI — UTF-8.
@@ -359,3 +359,62 @@ harness77 visual compare BASELINE.png ACTUAL.png --output NEW_DIR [--mask x,y,w,
 главное окно своей 1С на своём desktop без активации, снимает `PrintWindow`
 (`PW_RENDERFULLCONTENT`) серией до двух совпадающих вне курсора (до 6 попыток),
 затем скрывает окно. Другой launcher на запрос снимков отвечает отказом.
+
+## MCP-сервер — команда `mcp` ([задача 014](tasks/014-mcp-server.md))
+
+`harness77 mcp` — сервер Model Context Protocol на stdio: JSON-RPC 2.0, одно
+сообщение на строку UTF-8. Рукопожатие `initialize`, версии `2025-11-25`,
+`2025-06-18`, `2025-03-26`, `2024-11-05`: сервер отвечает версией клиента, если
+знает её, иначе `2025-11-25`. Клиент ревизии `2026-07-28` (без рукопожатия)
+получает на `server/discover` ошибку `-32601` и переходит к `initialize`.
+Возможности — только `tools`. Методы: `initialize`, `ping`, `tools/list`,
+`tools/call`; уведомления `notifications/initialized`, `notifications/cancelled`.
+Пакет JSON-RPC (массив) — `-32600`, неразборчивая строка — `-32700`, неизвестный
+метод — `-32601`, неизвестный инструмент — `-32602`. В stdout — только сообщения
+протокола; журнал сервера — в stderr. Код выхода `0` после закрытия stdin.
+
+Инструменты — команды CLI с теми же ключами (`-` в имени ключа становится `_`):
+
+| Инструмент | Команда | Аргументы |
+|---|---|---|
+| `lint` | `lint --format=json` | `paths`*, `globals`, `allow`, `dialog`, `strict` |
+| `compiler-protocol` | `compiler-protocol` | `input`*, `encoding` |
+| `triage` | `triage` | `protocol`*, `source`, `ert`, `encoding` |
+| `extract` | `extract` | `input`*, `output`* |
+| `form-extract` | `form-extract` | `input`*, `output`*, `metadata` |
+| `build` | `build` | `template`*, `source`*, `output`*, `encoding`, `legacy_normalize`, `form`, `metadata` |
+| `run` | `run` | `project`*, `stand`*, `output_root`, `run_id`, `open_timeout_s`, `calculation_timeout_s`, `cancel_timeout_s`, `shutdown_timeout_s`, `total_timeout_s`, `reindex_timeout_s` |
+| `visual-compare` | `visual compare` | `baseline`*, `actual`*, `output`*, `masks`, `channel_tolerance`, `max_diff_pixels` |
+
+`*` — обязательный. Нет в MCP: `catalog`, `visual approve` (эталон утверждает
+человек в CLI), `--output` у `lint`, `compiler-protocol`, `triage` (отчёт — в ответе).
+Подсказки: `lint`, `compiler-protocol`, `triage` — `readOnlyHint`; `run` —
+`destructiveHint` (исполняет модуль на базе стенда); остальные пишут только новые файлы.
+
+Вызов — дочерний процесс `python -m harness77 <команда>` тем же интерпретатором,
+в рабочем каталоге сервера (относительные пути — от него) и с окружением сервера.
+Ключи передаются как `--ключ=значение`, позиционные — после `--` (пути, начинающиеся
+с `-`); `encoding` у `compiler-protocol`, `triage`, `build` всегда передаётся
+(по умолчанию `auto`). Неверные аргументы — лишний или пропущенный, не того типа,
+вне перечня, с NUL — результат `isError` с текстом без запуска процесса.
+
+Результат: `structuredContent` (схема — `outputSchema` каждого инструмента) —
+`tool`, `argv` (аргументы после `harness77`), `cwd`, `exit_code`, `stdout`,
+`stderr` (разобранный JSON, если операция вывела JSON, иначе текст, пустой — `null`),
+`duration_s`; тот же JSON — текстом в `content`. `isError` — при коде вне `0` и `1`:
+`1` — найденный дефект или провал теста, это результат проверки.
+
+Вызовы идут параллельно. С `_meta.progressToken` запроса сервер каждые 10 с шлёт
+`notifications/progress` (секунды от начала, растут). `notifications/cancelled`:
+`run` получает файл отмены (`--cancel-file`) и отменяется как по Ctrl+C;
+остальные операции доходят до конца (новые файлы не остаются недописанными); ответ
+на отменённый запрос не отправляется. Закрытый stdin отменяет активные `run` так же,
+остальные вызовы завершаются; ответы отправляются, пока клиент читает; затем сервер
+выходит. Клиент, снимающий дерево процессов сервера (официальный Python SDK на
+Windows — через 2 с после закрытия stdin), снимает и `run` со своей 1С (она дочерний
+процесс отладчика launcher); временная регистрация COM launcher тогда остаётся,
+и следующий запуск launcher отказывает до её удаления.
+
+`harness77 run --cancel-file PATH`: запуск отменяется, когда файл появится
+(проверка каждые 0,2 с), как по Ctrl+C; файл, существующий до старта, — `blocked`,
+код 2, ничего не запускается.
