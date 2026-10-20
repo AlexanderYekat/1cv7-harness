@@ -1,4 +1,4 @@
-"""Object names of a 1Cv7.MD for reference-typed form fields (task 012)."""
+"""Object names of a 1Cv7.MD for reference-typed form fields (tasks 012, 013)."""
 
 import struct
 import unittest
@@ -80,6 +80,12 @@ class MetadataTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(self.metadata.resolve(name), expected)
 
+    def test_number_by_name_ignores_case(self):
+        self.assertEqual(self.metadata.number("B", "контрагенты"), 133)
+        self.assertEqual(self.metadata.number("O", "Выписка"), 238)
+        self.assertIsNone(self.metadata.number("B", "Выписка"))
+        self.assertIsNone(self.metadata.number("B", "Номенклатура"))
+
     def test_refusals(self):
         cases = {"Склад.Основной": "неизвестный ссылочный тип", "Перечисление": "без вида",
                  "ВидСубконто.Контрагенты": "нет видов", "ПланСчетов.Основной": "нет видов",
@@ -104,7 +110,8 @@ class MetadataTests(unittest.TestCase):
         copy = metadata77.Metadata.of_ert(compound)
         self.assertEqual(copy.names, self.metadata.names)
         self.assertEqual(copy.sha256, metadata77.sha256(ert.encode_dialog(MD_TEXT) + b"\0"))
-        self.assertIn("копии метаданных шаблона ERT", copy.describe())
+        self.assertIn("копия метаданных ERT (Тестовая конфигурация", copy.describe())
+        self.assertIn("1Cv7.MD (Тестовая конфигурация", self.metadata.describe())
         self.assertIsNone(metadata77.Metadata.of_ert(ert.CompoundFile(make_md(name="Other Stream"))))
         empty = metadata77.Metadata.of_ert(ert.CompoundFile(make_ert_with_copy('{"Dialogs"}')))
         self.assertEqual((empty.configuration, empty.names), ("Задача", {}))

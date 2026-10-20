@@ -20,7 +20,7 @@ import uuid
 from . import __version__
 from .deadlines77 import Clock, RunClock
 from .report77 import (BLOCKED, FAILED, PASSED, SKIPPED, Stage, atomic_json,
-                       exit_code, file_evidence, sha256_file)
+                       exit_code, file_evidence, sha256_bytes)
 
 STAGE_SCOPES = {
     "static": "conservative static analysis of the module source; not the 1C compiler",
@@ -85,10 +85,10 @@ def _static_stage(project):
 
 
 def _metadata(project, stand):
-    """(1Cv7.MD path, source) numbering the named kinds of the form (task 012), or (None, None).
+    """(1Cv7.MD path, source) the build checks the kinds of the form against (tasks 012, 013), or (None, None).
 
     The project's own [build] metadata wins; otherwise the stand base's 1Cv7.MD is
-    taken only when the description names a kind (Справочник.Контрагенты).
+    taken only when the description has a field of a kind (Справочник.Контрагенты).
     """
     from .ert_module import ErtError
     from .form77 import loads, needs_metadata
@@ -126,7 +126,7 @@ def _build_stage(project, run_dir, stand=None):
                  normalizations=report["normalizations"],
                  preserved_streams=len(report["preserved_streams"]),
                  **({"form": {key: report["form"][key] for key in
-                              ("sha256", "template_dialog_sha256", "dialog_sha256", "changes")}}
+                              ("sha256", "template_dialog_sha256", "dialog_sha256", "changes", "kinds")}}
                     if "form" in report else {}))
     if "metadata" in report.get("form", {}):
         stage.details["form"]["metadata"] = {"sha256": report["form"]["metadata"]["sha256"],
@@ -180,25 +180,46 @@ def _triage(diagnostics, ert_path):
     return result
 
 
-def _metadata_mismatch(stand, built):
-    """Why this run's ERT must not be checked on the stand: it was built for other metadata (task 012)."""
-    used = ((built.get("build") or {}).get("form") or {}).get("metadata")
+def _stand_kinds(stand, built):
+    """(reason to block or None, check) of the stand base by the names of the form's kinds (task 013).
+
+    1C finds the kind of a field by the name the ERT's copy gives its number; a kind
+    the open base lacks silently costs the field its kind (any object of the type,
+    an enumeration a string). A base other than the build's metadata is checked
+    here; a different number is no matter.
+    """
+    from .ert_module import ErtError
+    from .metadata77 import Metadata
+    form = (built.get("build") or {}).get("form") or {}
     target = Path(stand.base) / "1Cv7.MD"
-    if not used or not target.is_file():
-        return None
-    actual = sha256_file(target)
-    if actual == used["sha256"]:
-        return None
-    return (f"metadata_mismatch: the ERT was built for 1Cv7.MD {used['sha256'][:12]}…, "
-            f"the stand base has {actual[:12]}…; reference kinds would mean other objects")
+    if not form.get("kinds") or not target.is_file():
+        return None, None
+    data = target.read_bytes()
+    if (form.get("metadata") or {}).get("sha256") == sha256_bytes(data):
+        return None, {"sha256": form["metadata"]["sha256"], "same_as_build": True, "missing": []}
+    try:
+        metadata = Metadata(data, target)
+    except ErtError as error:
+        return f"metadata_unreadable: the stand base 1Cv7.MD: {error}", None
+    missing = [{"control": row["control"], "object": row["object"]} for row in form["kinds"]
+               if metadata.number(row["code"], row["object"].partition(".")[2]) is None]
+    check = {"sha256": metadata.sha256, "configuration": metadata.configuration, "same_as_build": False,
+             "missing": missing}
+    if not missing:
+        return None, check
+    names = ", ".join(f"{row['object']} (control {row['control']})" for row in missing)
+    return (f"metadata_missing_kinds: the stand base 1Cv7.MD {metadata.sha256[:12]}… has no {names}; "
+            "1C would open the form with these fields of no kind (any object of the type, "
+            "an enumeration a string)"), check
 
 
 def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project=None):
     from .backends77 import load_backend
     stage = Stage("platform_check", required=True, scope=STAGE_SCOPES["platform_check"])
-    mismatch = _metadata_mismatch(stand, built)
-    if mismatch:
-        return stage.finish(BLOCKED, reason=mismatch, platform_checked=False), {"status": BLOCKED}, None
+    missing, check = _stand_kinds(stand, built)
+    if missing:
+        return (stage.finish(BLOCKED, reason=missing, platform_checked=False, metadata_check=check),
+                {"status": BLOCKED}, None)
     backend = load_backend(stand, ert_path=built["path"], ert_sha256=built["sha256"],
                            run_id=run_id, run_dir=run_dir, clock=clock,
                            parameters=project.parameters if project else None,
@@ -241,6 +262,7 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
                  open=result.get("open"),
                  screenshots=result.get("screenshots", []),
                  **({"captures": result["captures"]} if "captures" in result else {}),
+                 **({"metadata_check": check} if check else {}),
                  shutdown=result.get("shutdown"))
     return stage, result, backend
 

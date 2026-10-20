@@ -128,7 +128,8 @@ def _verify_build(original, module_id, source_bytes, rebuilt, streams=None):
 
 def build(template, source, output, *, encoding="auto", legacy_normalize=False, form=None, metadata=None):
     """form: a description (task 008) that also rebuilds the template's dialog;
-    metadata: the target base's 1Cv7.MD, which numbers the named kinds of reference fields (task 012)."""
+    metadata: the target base's 1Cv7.MD, where every kind of the form's reference fields must be
+    by name (tasks 012, 013)."""
     template, template_data = _input(template)
     source, source_data = _input(source)
     inputs = [(template, template_data), (source, source_data)]
@@ -181,24 +182,23 @@ def build(template, source, output, *, encoding="auto", legacy_normalize=False, 
 
 def _form(compound, form, form_data, module_text, metadata=None):
     """{entry id: new bytes} of the form's streams and the form part of the report."""
-    from .form77 import apply, dialog_entry, dialog_payload, ert_metadata_action, loads
+    from .form77 import dialog_entry, dialog_payload, loads, rebuild
     from .metadata77 import STREAM, Metadata
     entry = dialog_entry(compound)
     old_payload = compound.read_stream(entry)
     old_text = decode_dialog(old_payload)
     template = Metadata.of_ert(compound)
-    new_text, changes = apply(old_text, loads(form_data), module_text, metadata, template)
+    new_text, changes, action, kinds = rebuild(old_text, loads(form_data), module_text, metadata, template)
     payload = dialog_payload(new_text, old_payload)
     if decode_dialog(payload) != new_text:
         raise ErtError("Диалог формы не читается обратно")
     streams = {entry.entry_id: payload}
     report = {"sha256": sha256(form_data), "template_dialog_sha256": sha256(old_text.encode("cp1251")),
               "dialog_sha256": sha256(new_text.encode("cp1251")), "dialog_unchanged": new_text == old_text,
-              "changes": changes}
+              "changes": changes, "kinds": kinds}
     if metadata is not None:
-        # The ERT is built for these metadata: the numbers of the named kinds are theirs.
+        # The target base: every kind of the form is in it by name (task 013).
         report["metadata"] = metadata.public()
-    action = ert_metadata_action(old_text, new_text, metadata, template)
     if template is not None:
         report["ert_metadata"] = {"action": action, "template_sha256": template.sha256,
                                   "template_configuration": template.configuration}
@@ -232,7 +232,7 @@ def main(command, argv):
         parser.add_argument("--form", type=Path,
                             help="Описание формы (JSON harness77-form): собрать и диалог")
         parser.add_argument("--metadata", type=Path,
-                            help="1Cv7.MD целевой базы: номера видов ссылочных полей формы")
+                            help="1Cv7.MD целевой базы: сверка видов ссылочных полей формы по именам")
     else:
         parser.add_argument("input", type=Path)
     parser.add_argument("--output", required=True, type=Path, help="Новый файл в существующем каталоге")

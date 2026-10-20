@@ -1,13 +1,14 @@
-"""Form description of an ERT dialog: lossless extract and verified changes (tasks 008, 011, 012).
+"""Form description of an ERT dialog: lossless extract and verified changes (tasks 008, 011–013).
 
 The description is versioned JSON with the supported properties only: the form
 caption, size and layers; per control its numeric ID, class, caption, position,
 size, formula, identifier, layer and (version 2) data type; version 3 names the
-configuration object of a reference type (task 012). It is bound to its
-template by the SHA-256 of the template's dialog text; every other field and
-section stays the template's. An unchanged description therefore rebuilds the
-dialog byte for byte, and anything outside the supported changes is refused
-explicitly.
+configuration object of a reference type (task 012) by the copy of the metadata
+the ERT carries, and a target base is checked by these names (task 013). It is
+bound to its template by the SHA-256 of the template's dialog text; every other
+field and section stays the template's. An unchanged description therefore
+rebuilds the dialog byte for byte, and anything outside the supported changes
+is refused explicitly.
 
 The dialog layout rule (CRLF before every nested list, two spaces after the
 root) and the field numbers come from the static survey of 416 forms in
@@ -17,6 +18,7 @@ not here.
 """
 
 import argparse
+import collections
 import hashlib
 import json
 from pathlib import Path
@@ -26,7 +28,7 @@ import sys
 
 from .ert_module import (DIALOG_STREAM, ErtError, decode_dialog, encode_dialog,
                          parse_dialog)
-from .metadata77 import TYPES, parse_name, type_name
+from .metadata77 import SECTIONS, STREAM, TYPES, parse_name, type_name
 
 SCHEMA = "harness77-form"
 SCHEMA_VERSION = 3
@@ -185,7 +187,8 @@ def _control(record, version=SCHEMA_VERSION, metadata=None):
 def describe(text, metadata=None, version=SCHEMA_VERSION):
     """Description of a dialog text; refuses layouts that would not rebuild losslessly.
 
-    metadata (metadata77.Metadata) names the kinds of reference fields (task 012).
+    metadata (metadata77.Metadata, the ERT's own copy) names the kinds of reference
+    fields (task 012).
     """
     _, frame, section = _structure(text)
     return {"schema": SCHEMA, "schema_version": version,
@@ -204,9 +207,36 @@ def by_number(description):
 
 
 def needs_metadata(description):
-    """Whether a description names a kind of a configuration object (Справочник.Контрагенты)."""
-    return any(item.get("type", {}).get("kind") == REFERENCE and "." in item["type"].get("object", "")
+    """Whether a description has a field of a configuration kind, by name (Справочник.Контрагенты) or number."""
+    return any(item.get("type", {}).get("kind") == REFERENCE
+               and ("." in item["type"].get("object", "") or item["type"].get("object_id", 0) > 0)
                for item in description["controls"])
+
+
+def _kind(record):
+    """(code, number) of a field of a configuration kind, or None (another type, or any object)."""
+    if record[TYPE] not in SECTIONS or (record[LENGTH], record[PRECISION]) != ("0", "0"):
+        return None
+    number = _int(record[OBJECT], f"Элемент {record[ID]}")
+    return (record[TYPE], number) if number else None
+
+
+def kinds(text, names, target=None):
+    """Fields of a configuration kind as 1C reads them (task 013).
+
+    The name of each number comes from names (the ERT's own copy; None if the number
+    is not there), the number of that name from target (the base; None if it lacks it).
+    """
+    rows = []
+    for record in _structure(text)[2][1:]:
+        key = _kind(record)
+        if key is None:
+            continue
+        row = {"control": int(record[ID]), "object": type_name(*key, names), "code": key[0], "object_id": key[1]}
+        if target is not None:
+            row["target_object_id"] = target.number(key[0], names.names[key]) if row["object"] else None
+        rows.append(row)
+    return rows
 
 
 def dumps(description):
@@ -311,31 +341,16 @@ class _Changes:
         self.template = template
         self._names = None
 
-    def resolve(self, name, where, new=False):
-        """(code, number, canonical name) of a reference type name.
+    def existing(self, data_type):
+        """A reference type of an existing field as code and number: {"kind": "reference", "code", "object_id"}.
 
-        A kind is numbered by the target base's metadata; an existing field without
-        them by the template's own copy, which the template was saved with.
+        A named kind is numbered by the template's own copy, where 1C reads the
+        number of the field (task 013); object_id is None when the copy lacks it.
         """
-        code, kind = parse_name(name)
-        if kind is None:
-            return code, 0, TYPES[code]
-        if self.metadata is not None:
-            return self.metadata.resolve(name)
-        if self.template is not None and not new:
-            return self.template.resolve(name)
-        raise ErtError(f"{where}: тип {name} — вид объекта конфигурации; его номер берётся из метаданных "
-                       "целевой базы: build --metadata <база>/1Cv7.MD или [build] metadata в профиле "
-                       "(run берёт 1Cv7.MD базы стенда)")
-
-    def names(self):
-        return self.metadata or self.template
-
-    def reference(self, data_type, where):
-        """A reference type as code and number: {"kind": "reference", "code", "object_id"}."""
         if data_type is None or data_type.get("kind") != REFERENCE or "object_id" in data_type:
             return data_type
-        code, number, _ = self.resolve(data_type["object"], where)
+        code, kind = parse_name(data_type["object"])
+        number = 0 if kind is None else self.template.number(code, kind) if self.template else None
         return {"kind": REFERENCE, "code": code, "object_id": number}
 
     def module(self, what):
@@ -394,11 +409,16 @@ def _new_type(item, kind, where, changes):
         if "object" not in value:
             raise ErtError(f"{where}: тип нового поля задаётся именем объекта (object), не номером: "
                            "номер принадлежит конфигурации и без метаданных не проверяется")
-        code, number, name = changes.resolve(value["object"], where, new=True)
+        code, kind = parse_name(value["object"])
         if code not in REFERENCE_FLAGS:
             raise ErtError(f"{where}: новое поле типа {TYPES[code]} не поддерживается (в формах корпуса нет "
                            "такого поля, образца записи нет)")
-        return {"kind": REFERENCE, "length": 0, "precision": 0, "code": code, "object_id": number, "object": name}
+        if kind is not None and changes.metadata is None:
+            raise ErtError(f"{where}: тип {value['object']} — вид объекта конфигурации; он сверяется по именам "
+                           "с метаданными целевой базы: build --metadata <база>/1Cv7.MD или [build] metadata "
+                           "в профиле (run берёт 1Cv7.MD базы стенда)")
+        # The number of a kind is given by the copy the ERT will carry (_numbered).
+        return {"kind": REFERENCE, "length": 0, "precision": 0, "code": code, "name": kind}
     length, precision = value.get("length", 0), value.get("precision", 0)
     rules = {"string": (length >= 0 and precision == 0, "длина ≥ 0, без точности"),
              "number": (length >= 1 and 0 <= precision < length, "длина ≥ 1, 0 ≤ точность < длина"),
@@ -453,32 +473,98 @@ def _placement(before, after, placed):
                            "целиком содержит элемент")
 
 
-def _shown(data_type, where, changes):
-    """A type for a message; a reference also by code/number and its name in the build metadata."""
+def _shown(data_type, changes):
+    """A type for a message; a reference also by code/number and its name in the template's copy."""
     if not data_type or data_type.get("kind") != REFERENCE:
         return str(data_type)
-    try:
-        number = changes.reference(data_type, where)
-    except ErtError:
-        return data_type["object"]
-    name = type_name(number["code"], number["object_id"], changes.names())
+    number = changes.existing(data_type)
+    if number["object_id"] is None:
+        return f"{data_type['object']} (нет в копии метаданных шаблона)"
+    name = type_name(number["code"], number["object_id"], changes.template)
     shown = f"{number['code']}/{number['object_id']}" + (f" = {name}" if name else "")
     return f"{data_type['object']} ({shown})" if "object" in data_type else shown
 
 
-def _same_type(new, old, where, changes):
-    """Types of an existing control are equal; a named kind is compared by its number in the metadata."""
+def _same_type(new, old, changes):
+    """Types of an existing control are equal; a named kind is compared by its number in the template's copy."""
     kind = (new or {}).get("kind")
     if kind != (old or {}).get("kind") or kind != REFERENCE:
         return new == old
-    return changes.reference(new, where) == changes.reference(old, where)
+    return changes.existing(new) == changes.existing(old)
+
+
+def _numbered(records, pending, changes):
+    """Number the new kind fields by the copy the ERT will carry; returns "kept" or "replaced" (task 013).
+
+    1C turns the number of a field into a name by the ERT's own copy and looks the
+    name up in the open configuration, where a kind it lacks silently costs the
+    field its kind: a catalog or a document of no kind, an enumeration becomes a
+    string (the owner's checks in Торговля+Склад 9.2, tasks 012 and 013). A number
+    the copy lacks fails the ERT with an empty copy (task 012: R1) and silently makes
+    the field one of any object with another copy (task 013: K5, K5b). So every kind
+    number must be in the copy, every kind must be in the target base by name, and
+    a different number there is no matter. The copy stays when it has every new
+    kind; otherwise the target's metadata replace it, and the old kind fields are
+    renumbered by name.
+    """
+    template, target = changes.template, changes.metadata
+    old = []
+    for record in records:
+        key = _kind(record)
+        if key is None:
+            continue
+        name = template.names.get(key) if template else None
+        if name is None:
+            if template:
+                where = f"номера {key[0]}/{key[1]} нет в копии метаданных шаблона, {template.describe()}"
+            else:
+                where = f"поле вида {key[0]}/{key[1]}, а в шаблоне нет копии метаданных (потока {STREAM})"
+            raise ErtError(f"Элемент {record[ID]}: {where}; 1С ищет вид поля в ней, и без него поле теряет вид: "
+                           f"становится «любым» ({TYPES[key[0]]} без вида), а с пустой копией 1С не создаёт отчёт")
+        old.append((record, key, name))
+    if target is not None:
+        missing = [f"элемент {record[ID]} {TYPES[code]}.{name}" for record, (code, _), name in old
+                   if target.number(code, name) is None]
+        missing += [f"новый элемент {record[ID]} {TYPES[code]}.{kind}" for record, code, kind, _ in pending
+                    if target.number(code, kind) is None]
+        if missing:
+            raise ErtError(f"В метаданных целевой базы {target.describe()} нет видов полей формы: "
+                           f"{', '.join(missing)}; 1С откроет форму, но такие поля молча потеряют вид: "
+                           "справочник, документ или счёт станет «любым», перечисление — строкой")
+    keep = all(template is not None and template.number(code, kind) is not None for _, code, kind, _ in pending)
+    if not keep and template is None:
+        raise ErtError(f"В шаблоне нет своей копии метаданных (потока {STREAM}), а 1С ищет вид поля "
+                       "в ней: поле вида в такой шаблон не встроить")
+    copy = template if keep else target
+    for record, code, kind, change in pending:
+        number = copy.number(code, kind)
+        record[OBJECT] = str(number)
+        change["type"] = {"object": f"{TYPES[code]}.{copy.names[code, number]}", "code": code, "object_id": number}
+    if not keep:
+        for record, (code, number), name in old:
+            renumbered = target.number(code, name)
+            if renumbered != number:
+                record[OBJECT] = str(renumbered)
+                changes.items.append({"control": int(record[ID]), "property": "object_id", "from": number,
+                                      "to": renumbered, "object": f"{TYPES[code]}.{name}"})
+    return "kept" if keep else "replaced"
+
+
+# A rebuilt dialog: its text, the changes, what the ERT's copy of the metadata needs
+# ("kept" or "replaced" by the target's) and the kind fields (task 013).
+Rebuilt = collections.namedtuple("Rebuilt", "text changes ert_metadata kinds")
 
 
 def apply(text, description, module_text=None, metadata=None, template=None):
-    """New dialog text from the template text and a description; returns (text, changes).
+    """New dialog text from the template text and a description; returns (text, changes)."""
+    return tuple(rebuild(text, description, module_text, metadata, template)[:2])
 
-    metadata (metadata77.Metadata of the target base) gives the numbers of named
-    kinds; template (the ERT's own copy) those of existing fields without it (task 012).
+
+def rebuild(text, description, module_text=None, metadata=None, template=None):
+    """The dialog of a description over the template text, as Rebuilt.
+
+    metadata (metadata77.Metadata of the target base) is checked by the names of
+    the kinds; template (the ERT's own copy) names and numbers them (task 013).
     """
     tree, frame, section = _structure(text)
     current = describe(text, version=description["schema_version"])
@@ -510,11 +596,10 @@ def apply(text, description, module_text=None, metadata=None, template=None):
         missing = [key for key in CONTROL_KEYS_V1 if key not in item]
         if missing:
             raise ErtError(f"{where}: нет свойств {', '.join(missing)}")
-        if typed and not _same_type(item.get("type"), old.get("type"), where, changes):
-            # A named kind whose number differs: the template or the description is of another configuration.
+        if typed and not _same_type(item.get("type"), old.get("type"), changes):
             raise ErtError(f"{where}: изменение типа данных существующего элемента не поддерживается "
-                           f"(в шаблоне {_shown(old.get('type'), where, changes)}, "
-                           f"в описании {_shown(item.get('type'), where, changes)})")
+                           f"(в шаблоне {_shown(old.get('type'), changes)}, "
+                           f"в описании {_shown(item.get('type'), changes)})")
         moved = False
         for key in CONTROL_KEYS_V1[2:]:
             if item[key] == old[key]:
@@ -536,6 +621,7 @@ def apply(text, description, module_text=None, metadata=None, template=None):
             _geometry(item, width, height, where)
             placed.add(old["id"])
     stored = [old["id"] for old in current["controls"]]
+    pending = []
     for number, item in enumerate(items[len(records):], start=len(records) + 1):
         kind = item["class"]
         if kind not in NEW_CLASSES:
@@ -561,7 +647,6 @@ def apply(text, description, module_text=None, metadata=None, template=None):
         data_type = _new_type(item, kind, where, changes)
         if data_type and data_type["kind"] == REFERENCE:
             record = _default(kind, "1350565888", data_type["code"], flags=REFERENCE_FLAGS[data_type["code"]])
-            record[OBJECT] = str(data_type["object_id"])
         else:
             record = list(DEFAULTS[kind, data_type and data_type["kind"]])
         record[CAPTION] = _caption(item.get("caption", ""), where)
@@ -578,8 +663,12 @@ def apply(text, description, module_text=None, metadata=None, template=None):
         placed.add(control_id)
         change = {"control": control_id, "added": kind}
         if data_type and data_type["kind"] == REFERENCE:
-            change["type"] = {key: data_type[key] for key in ("object", "code", "object_id")}
+            if data_type["name"] is None:
+                change["type"] = {"object": TYPES[data_type["code"]], "code": data_type["code"], "object_id": 0}
+            else:
+                pending.append((record, data_type["code"], data_type["name"], change))
         changes.items.append(change)
+    ert_metadata = _numbered(records, pending, changes)
     # Only what the description sets is validated: the template's own identifiers
     # and layers were accepted by 1C (a corpus form has the identifier "Дата").
     touched = {(str(c["control"]), c.get("property", "added")) for c in changes.items if c["control"]}
@@ -609,42 +698,9 @@ def apply(text, description, module_text=None, metadata=None, template=None):
                 raise ErtError(f"{where}: идентификатор {name!r} совпадает с переменной Перем модуля: 1С такой "
                                "модуль примет, но переменная перекроет реквизит формы, и модуль не увидит поле")
     _placement(current["controls"], [_control(record) for record in section[1:]], placed)
-    return serialize_dialog(tree), changes.items
-
-
-def ert_metadata_action(old_text, new_text, metadata, template):
-    """What the ERT's own copy of the metadata needs for the new kind fields: "kept" or "replaced".
-
-    1C finds the kind of a form field in the copy the ERT carries (task 012: R1,
-    R1a–R1c). The copy stays when it has every new kind with the number and the
-    name of the target base; otherwise the target's metadata replace it, and only
-    if every kind field the template had means the same object there.
-    """
-    old, new = _structure(old_text)[2][1:], _structure(new_text)[2][1:]
-
-    def kind(record):
-        if record[TYPE] not in TYPES or (record[LENGTH], record[PRECISION]) != ("0", "0"):
-            return None
-        number = _int(record[OBJECT], f"Элемент {record[ID]}")
-        return (record[TYPE], number) if number else None
-
-    kinds = {kind(record) for record in new[len(old):]} - {None}
-    if not kinds:
-        return "kept"
-    if template is not None and all(template.names.get(key) == metadata.names.get(key) for key in kinds):
-        return "kept"
-    if template is None:
-        raise ErtError("В шаблоне нет своей копии метаданных (потока Main MetaData Stream), а 1С ищет вид поля "
-                       "в ней: поле вида в такой шаблон не встроить")
-    for record in old:
-        key = kind(record)
-        if key and (metadata.names.get(key) is None or template.names.get(key, metadata.names[key])
-                    != metadata.names[key]):
-            raise ErtError(f"Элемент {record[ID]}: шаблон ссылается на {key[0]}/{key[1]} "
-                           f"({type_name(*key, template) or 'нет в копии шаблона'}), а в метаданных целевой базы "
-                           f"это {type_name(*key, metadata) or 'ничего'}; копию метаданных шаблона нельзя заменить "
-                           "метаданными базы, а без замены 1С не найдёт вид нового поля")
-    return "replaced"
+    text = serialize_dialog(tree)
+    return Rebuilt(text, changes.items, ert_metadata,
+                   kinds(text, template if ert_metadata == "kept" else metadata, metadata))
 
 
 def dialog_payload(text, old_payload):
@@ -672,8 +728,8 @@ def dialog_identifiers(description):
 
 
 def extract(input_path, output, metadata=None):
-    """metadata: a 1Cv7.MD path whose names replace the numbers of reference kinds (task 012);
-    without it the names come from the copy of the metadata the ERT carries."""
+    """The kinds of reference fields are named by the copy of the metadata the ERT carries, as 1C
+    reads them; metadata, a 1Cv7.MD path, is checked by these names (task 013)."""
     from .artifacts import _container, _destination, _input, _publish
     from .metadata77 import Metadata
     input_path, raw = _input(input_path)
@@ -686,23 +742,25 @@ def extract(input_path, output, metadata=None):
     compound, _, _ = _container(raw)
     text = decode_dialog(compound.read_stream(dialog_entry(compound)))
     own = Metadata.of_ert(compound)
-    names = metadata or own
-    description = describe(text, names)
+    description = describe(text, own)
     payload = dumps(description).encode("utf-8")
-    result = _publish(output, payload, lambda data: describe(text, names) == loads(data) or _mismatch(),
+    result = _publish(output, payload, lambda data: describe(text, own) == loads(data) or _mismatch(),
                       inputs)
+    fields = kinds(text, own, metadata)
     report = {"schema_version": 1, "tool": "harness77", "operation": "form-extract", "status": "passed",
               "scope": "ert_form_extract", "input": {"path": str(input_path), "sha256": sha256(raw)},
               "output": {**result, "encoding": "utf-8"},
               "template_dialog_sha256": description["template_dialog_sha256"],
               "controls": len(description["controls"]),
-              "names_from": "metadata" if metadata else "ert" if own else None,
-              "references_by_number": by_number(description),
+              "names_from": "ert" if own else None,
+              "references_by_number": by_number(description), "kinds": fields,
               "inputs_unchanged": True, "platform_checked": False}
     if own is not None:
         report["ert_metadata"] = {"sha256": own.sha256, "configuration": own.configuration}
     if metadata is not None:
         report["metadata"] = metadata.public()
+        report["missing_in_metadata"] = [{"control": row["control"], "object": row["object"]}
+                                         for row in fields if row["target_object_id"] is None]
     return report
 
 
@@ -716,7 +774,7 @@ def main(argv):
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", required=True, type=Path, help="Новый файл в существующем каталоге")
     parser.add_argument("--metadata", type=Path,
-                        help="1Cv7.MD базы: виды ссылочных полей именами, а не номерами")
+                        help="1Cv7.MD базы: сверить виды ссылочных полей с ней по именам")
     args = parser.parse_args(argv)
     try:
         report = extract(args.input, args.output, args.metadata)

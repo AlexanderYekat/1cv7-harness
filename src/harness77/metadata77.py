@@ -13,7 +13,9 @@ accounts in ``Buh`` -> ``Plans``; an object record starts {"<number>", "<name>",
 An ERT carries its own copy in a stream of the same name, followed by a NUL
 byte (all 416 corpus forms), and 1C finds the kind of a form field there: with
 the empty copy of FIO.ERT a field of a kind is refused, one of any object is
-not (task 012, R1 and its diagnosis).
+not (task 012, R1 and its diagnosis). The copy turns the number into a name, and
+1C looks the name up in the open configuration (the owner's check in
+Торговля+Склад 9.2), so a target base is compared by names (task 013).
 """
 
 import hashlib
@@ -83,7 +85,7 @@ class Metadata:
         payload = _payload(compound)
         if payload is None:
             raise ErtError(f"Метаданные: нужен ровно один поток {STREAM!r} (это не 1Cv7.MD?)")
-        self._read(payload, sha256(data), path)
+        self._read(payload, sha256(data), path, "1Cv7.MD")
 
     @classmethod
     def of_ert(cls, compound):
@@ -92,15 +94,15 @@ class Metadata:
         if payload is None:
             return None
         metadata = cls.__new__(cls)
-        metadata._read(payload, sha256(payload), None)
+        metadata._read(payload, sha256(payload), None, "копия метаданных ERT")
         return metadata
 
     def ert_stream(self):
         """The stream as an ERT carries it: the length prefix, the text and a NUL byte."""
         return self.stream if self.stream.endswith(b"\0") else self.stream + b"\0"
 
-    def _read(self, payload, digest, path):
-        self.path, self.sha256, self.stream = path, digest, payload
+    def _read(self, payload, digest, path, label):
+        self.path, self.sha256, self.stream, self.label = path, digest, payload, label
         tree = _tree(payload)
         task = _section(tree, "TaskItem")
         self.configuration = task[1][1] if task and len(task) > 1 and isinstance(task[1], list) \
@@ -124,19 +126,23 @@ class Metadata:
                 self.names[code, number] = name
                 self.numbers[code, name.casefold()] = number
 
+    def number(self, code, kind):
+        """The number of a kind by its name, as 1C finds it (letter case aside), or None."""
+        return self.numbers.get((code, kind.casefold()))
+
     def resolve(self, value):
         """(code, number, canonical name) of a type name; refuses a kind these metadata lack."""
         code, kind = parse_name(value)
         if kind is None:
             return code, 0, TYPES[code]
-        number = self.numbers.get((code, kind.casefold()))
+        number = self.number(code, kind)
         if number is None:
             raise ErtError(f"Тип {value!r}: в метаданных {self.describe()} нет объекта "
                            f"{TYPES[code]}.{kind}")
         return code, number, f"{TYPES[code]}.{self.names[code, number]}"
 
     def describe(self):
-        name = Path(self.path).name if self.path else "копии метаданных шаблона ERT"
+        name = Path(self.path).name if self.path else self.label
         return f"{name} ({self.configuration or 'без имени конфигурации'}, {self.sha256[:8]}…)"
 
     def public(self):

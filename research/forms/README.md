@@ -1,4 +1,4 @@
-# Формы ERT в настоящей 1С 7.7 (задачи 008, 010–012)
+# Формы ERT в настоящей 1С 7.7 (задачи 008, 010–013)
 
 Исследовательская часть [задачи 008](../../docs/tasks/008-form-description.md):
 открыть форму собранной ERT видимой в своём сеансе 1С, сверить окна элементов
@@ -71,6 +71,19 @@
 - `verify_corpus77.py --metadata 1Cv7.MD` — обратное преобразование корпуса
   с именами видов вместо номеров.
 
+Задача 013 ([сверка видов по именам](../../docs/tasks/013-kind-name-checks.md)):
+
+- `kinds_module77.1s` — модуль проб K1–K5 для `Договор_Оргтехники.ert`: данных
+  не читает, при открытии пишет `value:<поле>=<ТипЗначенияСтр>|<Вид()>` по каждому
+  полю вида (вне harness — `Сообщить`); строку-метку полей подготовка заменяет
+  вызовами по полям случая.
+- `prepare_kinds77.py` — описания K1–K3 (без правок, + `Документ.Выписка`,
+  + `Справочник.ТипыЦен`), шаблон K5 с копией метаданных базы без перевода номеров
+  и профили K1–K5b; K4 — `[build] metadata` другой конфигурации (только чтение).
+- `verify_kinds77.py` — приёмка по свидетельствам K1–K5b и трём сверкам корпуса.
+- `verify_corpus77.py`: виды всегда называются по копии ERT; с `--metadata`
+  в итогах — число видов, отсутствующих в базе, форм с ними и видов с другим номером.
+
 ## Что установлено (стенд 7.70.027, Windows 11, 96 DPI)
 
 - **ID окон не равны полю 9 записи.** Окно записи с индексом i из N получает
@@ -112,6 +125,15 @@
   в FIO.ERT снимают ошибку (R1b, R1c). Поля показывают представление значения
   (счёт — код по маске плана счетов «51 .  . », без кнопки «…»); поле вида
   превращает значение другого вида в пустое значение своего (R3).
+- **Задача 013:** номер поля вида 1С переводит в имя по копии ERT и ищет вид
+  по имени в открытой базе: «Тарифы» под 25507 в копии стали «Тарифами» базы, где
+  у них 26051 (K1, K2); после замены копии и перевода номера — тоже (K3). Номер,
+  которого нет в непустой копии, отчёт не ломает, а делает поле «любым» (K5:
+  `Справочник|`, K5b: поле держит элемент «Сотрудники»); с пустой копией (012) —
+  «Ошибка создания внешнего отчета». `Документ.Выписка` (поле документа с видом)
+  получает свой вид. У `Договор_Оргтехники.ert` три окна `BMASKED` расходятся
+  с одним линейным отображением единиц на 1,9–2,3 px — больше допуска 2 px
+  проверки раскладки `open`, поэтому пробы K объявляют `check`.
 - В 7.7 сравнения вокруг `ИЛИ` нужно брать в скобки: без них контроллер
   не компилируется («Неправильное использование арифметической или строковой
   операции»). Переменные модуля (`Перем`) в `ВыполняемыйМодуль` допустимы.
@@ -146,6 +168,18 @@ python -m harness77 run --project .local/stage12-native/NEW/r-references.toml --
 python -B research/forms/verify_references77.py --runs .artifacts/runs --series .local/stage12-native/series `
   --corpus .artifacts/forms/corpus-20261019-v3 --corpus-md .artifacts/forms/corpus-20261019-v3-md `
   --output .artifacts/forms/references-acceptance-NEW.json
+```
+
+Сверка видов по именам (задача 013; `--foreign` — `1Cv7.MD` другой конфигурации,
+только чтение):
+
+```powershell
+python -B research/forms/verify_corpus77.py .local/bases/base-for-test/ExtForms --metadata <другая база>/1Cv7.MD --output .artifacts/forms/corpus-NEW
+python -B research/forms/prepare_kinds77.py --stand .local/stage12-native/series/stand.toml --foreign <другая база>/1Cv7.MD --output .local/stage13-native/NEW
+python -m harness77 run --project .local/stage13-native/NEW/k3-replaced.toml --stand .local/stage13-native/NEW/stand.toml --output-root .artifacts/runs
+python -B research/forms/verify_kinds77.py --runs .artifacts/runs --series .local/stage13-native `
+  --corpus .artifacts/forms/corpus-20261019-013 --corpus-md .artifacts/forms/corpus-20261019-013-md `
+  --corpus-foreign .artifacts/forms/corpus-20261019-013-ts --output .artifacts/forms/kinds-acceptance-NEW.json
 ```
 
 Новые элементы (задача 011):

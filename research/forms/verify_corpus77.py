@@ -1,12 +1,13 @@
-"""Lossless form round trip over a local ERT corpus (tasks 008, 011, 012; static acceptance).
+"""Lossless form round trip over a local ERT corpus (tasks 008, 011–013; static acceptance).
 
 For every unique ERT: ``form-extract`` to a description, then ``build --form``
 with that unchanged description and a fixed small module, and compare the
 built Dialog Stream with the original byte for byte. ``build`` itself verifies
 the other streams and the directory metadata. Refusals are recorded with their
-reason; nothing in the corpus is written. With ``--metadata`` (task 012) both
-steps take that 1Cv7.MD: kinds of reference fields are named, and the build
-translates the names back to the numbers.
+reason; nothing in the corpus is written. Kinds of reference fields are named
+by the ERT's own copy of the metadata. With ``--metadata`` both steps take that
+1Cv7.MD as the target base (task 013): ``form-extract`` reports the kinds it
+lacks by name, and the build refuses a form with such a kind.
 
     python -B research/forms/verify_corpus77.py .local/bases/base-for-test/ExtForms \
         [--metadata .local/bases/base-for-test/1Cv7.MD] --output .artifacts/forms/corpus-YYYYMMDD
@@ -42,7 +43,10 @@ def check(path, work, metadata=None):
     except (OSError, ValueError, ert.ErtError) as error:
         return "refused", "form-extract: " + str(error), None
     types = [c.get("type", {}) for c in form77.loads(description.read_bytes())["controls"]]
-    references = {"named": sum(1 for t in types if "object" in t), "by_number": report["references_by_number"]}
+    references = {"named": sum(1 for t in types if "object" in t), "by_number": report["references_by_number"],
+                  "kinds": len(report["kinds"]), "missing": report.get("missing_in_metadata", []),
+                  "other_number": sum(1 for k in report["kinds"]
+                                      if k.get("target_object_id") not in (None, k["object_id"]))}
     try:
         build(path, work / "module.1s", work / "built.ert", form=description, metadata=metadata)
     except (OSError, ValueError, ert.ErtError) as error:
@@ -77,14 +81,18 @@ def main(argv=None):
     after = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
     counts = collections.Counter(row["outcome"] for row in rows)
     references = [row["references"] for row in rows if row.get("references")]
-    result = {"schema_version": 1, "scope": "tasks 008, 011, 012: lossless form round trip",
+    result = {"schema_version": 1, "scope": "tasks 008, 011–013: lossless form round trip",
               "description_schema_version": form77.SCHEMA_VERSION, "files": len(files),
               "counts": dict(counts), "corpus_unchanged": before == after,
               "metadata": ({"path": str(args.metadata.resolve()),
                             "sha256": hashlib.sha256(args.metadata.read_bytes()).hexdigest()}
                            if args.metadata else None),
               "references": {"named": sum(r["named"] for r in references),
-                             "by_number": sum(len(r["by_number"]) for r in references)},
+                             "by_number": sum(len(r["by_number"]) for r in references),
+                             "kinds": sum(r["kinds"] for r in references),
+                             "missing": sum(len(r["missing"]) for r in references),
+                             "other_number": sum(r["other_number"] for r in references),
+                             "forms_missing": sum(1 for r in references if r["missing"])},
               "module": MODULE, "rows": rows}
     (args.output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n",
                                              encoding="utf-8")
