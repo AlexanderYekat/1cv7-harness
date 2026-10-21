@@ -4,6 +4,8 @@ name: CI
 
 on:
   push:
+    # A Dependabot branch is checked once, by its pull request.
+    branches-ignore: ["dependabot/**"]
   pull_request:
   workflow_dispatch:
 
@@ -103,3 +105,19 @@ jobs:
       - name: Summary
         if: ${{ !cancelled() }}
         run: python -B scripts/ci_summary77.py product-tests.log >> "$GITHUB_STEP_SUMMARY"
+
+  # The single required check of master: green only when every job above passed.
+  # always(): a cancelled or skipped job must fail it, not leave it skipped.
+  ci:
+    name: ci
+    if: ${{ always() }}
+    needs: [windows, package, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do test "$result" = success; done

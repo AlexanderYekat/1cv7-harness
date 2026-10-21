@@ -1,0 +1,13 @@
+# Updates of the actions pinned by commit SHA in .github/workflows (task 016).
+# setuptools stays pinned by hand: verify_package77 checks its exact version.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
