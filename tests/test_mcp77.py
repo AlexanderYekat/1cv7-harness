@@ -120,7 +120,8 @@ class ServerProcessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix="harness77-mcp-")
-        cls.root = Path(cls.temp.name)
+        # Reports carry resolved paths: a short 8.3 TEMP (GitHub runners) must match them.
+        cls.root = Path(cls.temp.name).resolve()
         cls.client = Client(cls.root)
         cls.init = cls.client.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                                      "clientInfo": {"name": "tests", "version": "1"}})

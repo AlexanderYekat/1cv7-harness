@@ -13,7 +13,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from stage4_fixtures import run, write_project
+from stage4_fixtures import run, windows_only, write_project
 
 LAUNCHER = textwrap.dedent('''
     import argparse, hashlib, json
@@ -70,17 +70,20 @@ class NativeBackendTests(unittest.TestCase):
         from harness77.deadlines77 import Clock
         return run(self.project, stand, self.root / "runs", clock=Clock())
 
+    @windows_only
     def test_clean_native_run_is_checked_and_passes(self):
         report = self.go(self.stand(launcher_body=LAUNCHER.replace("__STATUS__", "passed").replace("__CLEANUP__", "True")))
         self.assertEqual((report["status"], report["exit_code"]), ("passed", 0))
         self.assertTrue(report["platform_checked"])
         self.assertTrue(report["result_files"][0]["sha256_matches"])
 
+    @windows_only
     def test_unverified_shutdown_blocks_even_if_status_passed(self):
         report = self.go(self.stand(launcher_body=LAUNCHER.replace("__STATUS__", "passed").replace("__CLEANUP__", "False")))
         self.assertEqual(report["status"], "blocked")
         self.assertIn("shutdown", report["reason"])
 
+    @windows_only
     def test_missing_result_file_blocks(self):
         body = "import sys\nsys.exit(0)\n"  # launcher writes no platform-result.json
         report = self.go(self.stand(launcher_body=body))

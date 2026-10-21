@@ -1,7 +1,9 @@
 """Portable builders for stage-4 run tests. Not collected as tests itself."""
 
 import json
+import os
 from pathlib import Path
+import unittest
 
 from harness77 import ert_module as ert
 from harness77.config77 import load_project, load_stand, resolve_deadlines
@@ -9,6 +11,10 @@ from harness77.deadlines77 import ManualClock
 from harness77.run77 import execute
 
 from test_ert_dialog import make_ert, DIALOG
+
+# The native backend refuses before its launcher off Windows (native_preflight),
+# so the launcher contract is checked only there.
+windows_only = unittest.skipUnless(os.name == "nt", "native backend: 1C 7.7 runs only on Windows")
 
 DEFAULT_DEADLINES = {"open_timeout_s": 30, "calculation_timeout_s": 60,
                      "cancel_timeout_s": 10, "shutdown_timeout_s": 20, "total_timeout_s": 200}

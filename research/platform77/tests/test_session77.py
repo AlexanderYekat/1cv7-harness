@@ -119,7 +119,10 @@ class SessionFailureTests(unittest.TestCase):
             launched.append(command)
             return self.debugger if len(launched) == 1 else client
 
-        with patch.object(session.subprocess, "Popen", side_effect=popen), patch.object(session.time, "sleep"):
+        # A 1-s-per-read clock: Windows monotonic() before 3.13 ticks by ~16 ms and may not move at all.
+        ticks = iter(range(100000))
+        with patch.object(session.subprocess, "Popen", side_effect=popen), patch.object(session.time, "sleep"), \
+                patch.object(session.time, "monotonic", side_effect=lambda: next(ticks)):
             result = self.run_simulated_popen()
         self.assertEqual(result["timeout_phase"], "open")
         self.assertIn("open deadline", result["error"])

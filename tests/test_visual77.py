@@ -16,7 +16,7 @@ import zlib
 from harness77 import visual77 as visual
 from harness77.config77 import ConfigError, load_project
 
-from stage4_fixtures import base_scenario, run, write_project, write_sim_stand
+from stage4_fixtures import base_scenario, run, windows_only, write_project, write_sim_stand
 
 ENVIRONMENT = {"platform_version": "7.70.027", "configuration": "c" * 64, "windows_build": "10.0.26200",
                "system_dpi": 96, "window_dpi": 96, "theme": {"active": True, "name": "Aero.msstyles"},
@@ -450,6 +450,7 @@ FAKE_LAUNCHER = textwrap.dedent('''
 ''')
 
 
+@windows_only
 class NativeContractTests(unittest.TestCase):
     """The native backend asks the launcher for captures and re-evidences them from disk."""
 

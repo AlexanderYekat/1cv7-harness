@@ -410,7 +410,8 @@ class BuildTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="harness77-form-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Profiles resolve paths: a short 8.3 TEMP (GitHub runners) must not differ from them.
+        self.root = Path(self.temp.name).resolve()
         self.template = self.root / "form.ert"
         self.template.write_bytes(make_ert(ert.encode_dialog(DIALOG)))
         self.source = self.root / "module.1s"

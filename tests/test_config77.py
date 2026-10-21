@@ -13,7 +13,8 @@ class ConfigTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="harness77-cfg-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Profiles resolve paths: a short 8.3 TEMP (GitHub runners) must not differ from them.
+        self.root = Path(self.temp.name).resolve()
 
     def write(self, name, text):
         path = self.root / name

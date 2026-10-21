@@ -18,7 +18,7 @@ from harness77.config77 import ConfigError, load_project
 from harness77.deadlines77 import Clock
 from harness77.report77 import file_evidence
 
-from stage4_fixtures import run, write_project
+from stage4_fixtures import run, windows_only, write_project
 
 ARGS = '''
 import argparse, hashlib, json, sys, time
@@ -77,6 +77,7 @@ FAST = {"open_timeout_s": 5, "calculation_timeout_s": 60, "cancel_timeout_s": 1,
         "shutdown_timeout_s": 1, "total_timeout_s": 100}
 
 
+@windows_only
 class LongNativeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="harness77-long-")
