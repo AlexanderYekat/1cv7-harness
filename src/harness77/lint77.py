@@ -18,13 +18,15 @@ from .catalog77 import load_packaged
 from .ert_module import (DIALOG_STREAM, CompoundFile, ErtError, decode_dialog, decode_source_bytes,
                          dialog_controls)
 
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 LIMITATIONS = [
     'Частичный разбор языка; отсутствие диагностик не означает успешную компиляцию 1С.',
     'Имена встроенных функций и методов — из каталога платформы 7.70.027; неизвестные вызовы '
     'по умолчанию — предупреждения.',
     'Типы, методы конфигурации, COM и внешних компонент, динамически исполняемый код не проверяются.',
     'Объявление переменных (L7711) проверяется только в модуле с известным диалогом: ERT или --dialog.',
+    'Имена объектов метаданных (L7712, L7713) проверяются только с метаданными базы: --metadata или '
+    'модули самого 1Cv7.MD; реквизиты, имена форм, тексты запросов и строки вне аргументов функций — нет.',
     'Доступность известных встроенных функций в конкретном контексте модуля не проверяется.',
     'Проводки, запросы и корректность бухгалтерского учета не проверяются.',
 ]
@@ -61,6 +63,32 @@ KNOWN8 = {
     'год': 'Год', 'year': 'Year', 'месяц': 'Месяц', 'month': 'Month',
     'день': 'День', 'day': 'Day',
 }
+# Task 018: global attributes naming configuration objects -> classes of metadata77.
+GLOBAL_OBJECTS = {'константа': 'Константа', 'перечисление': 'Перечисление', 'видысубконто': 'ВидСубконто',
+                  'планысчетов': 'ПланСчетов'}
+# Functions whose parameters take a type name or an object descriptor (syntax helper 7.70.027)
+# and what 7.70.027 does with a kind the base lacks (task 018 probes); English names come
+# from the catalog.
+_LOST = '1С 7.7 ошибки не даёт: тип останется без вида (например, любой справочник)'
+_LOST_UNPROBED = _LOST + ' — так ведут себя НоваяКолонка и ПолучитьПустоеЗначение; эта функция нативно не проверялась'
+TYPE_FUNCTIONS = {
+    'СоздатьОбъект': '1С 7.7 загружает модуль, исполнение строки прерывает «Неудачная попытка создания объекта»',
+    'ОткрытьФорму': '1С 7.7 загружает модуль, исполнение строки прерывает «Неверно указан вид» '
+                    '(«Неверный вид справочника», «Неверный вид журнала»)',
+    'ОткрытьФормуМодально': '1С 7.7 загружает модуль, исполнение строки прерывает «Неверно указан вид»',
+    'ОткрытьПодбор': '1С 7.7 загружает модуль, исполнение строки прерывает «Неверный вид справочника»',
+    'ПолучитьПустоеЗначение': _LOST, 'НоваяКолонка': _LOST, 'ВставитьКолонку': _LOST,
+    'УстановитьПараметрыКолонки': _LOST,
+    'ПравоДоступа': '1С 7.7 ошибки не даёт: право проверяется для объекта, которого нет',
+    'НазначитьТип': _LOST_UNPROBED, 'ВвестиЗначение': _LOST_UNPROBED, 'УстановитьРеквизитСправочника': _LOST_UNPROBED,
+}
+# "Type." of such a string -> classes its kind may belong to; "Журнал.<вид документа>" opens
+# the journal of that kind, "Журнал.Подчиненные" the subordinate documents.
+TYPE_PREFIXES = {'справочник': ('Справочник',), 'элемент': ('Справочник',), 'документ': ('Документ',),
+                 'журнал': ('Журнал', 'Документ'), 'перечисление': ('Перечисление',), 'счет': ('ПланСчетов',),
+                 'плансчетов': ('ПланСчетов',), 'регистр': ('Регистр',), 'отчет': ('Отчет',),
+                 'обработка': ('Обработка',)}
+TYPE_STRING = re.compile(r'"([A-Za-zА-Яа-яЁё]+)\.([A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*)([.#][^"]*)?"\Z')
 
 
 @dataclass
@@ -106,6 +134,8 @@ class Source:
     is_global: bool = False
     # Identifiers of the form dialog (casefolded); None: the form context is unknown.
     dialog: frozenset[str] | None = None
+    # metadata77.Metadata of the base the module runs on (L7712, L7713); None: unknown.
+    metadata: object | None = None
 
 
 @dataclass
@@ -365,6 +395,8 @@ class Catalog:
     # Largest parameter count of a Cyrillic method name; None: variadic signature.
     method_limits: dict[str, int | None]
     provenance: dict
+    # Casefolded Russian and English names of TYPE_FUNCTIONS -> the Russian name.
+    type_functions: dict[str, str] = field(default_factory=dict)
 
 
 _CATALOG: Catalog | None = None
@@ -376,10 +408,14 @@ def load_catalog() -> Catalog:
         data = load_packaged()
         globals_ = json.loads(files('harness77').joinpath('lint77-globals.json').read_text(encoding='utf-8'))
         calls, readable, limits = set(), {n.casefold() for n in globals_['names']}, {}
+        type_functions = {name.casefold(): name for name in TYPE_FUNCTIONS}
         for item in data['items']:
             names = [n.casefold() for n in (item['name_ru'], item['name_en']) if n]
             if item['kind'] in ('global_function', 'method'):
                 calls.update(names)
+                russian = type_functions.get((item['name_ru'] or '').casefold())
+                if russian:
+                    type_functions.update(dict.fromkeys(names, russian))
             if item['kind'] == 'attribute' and item['folder'].startswith('Контекст формы/') and '/Объект' not in item['folder']:
                 readable.update(names)
             name = item['name_ru']
@@ -389,7 +425,8 @@ def load_catalog() -> Catalog:
         provenance = {'platform_version': data['platform_version'],
                       'sources': [{'name': s['name'], 'sha256': s['sha256']} for s in data['sources']],
                       'globals_evidence': globals_['provenance']['evidence']}
-        _CATALOG = Catalog({n.casefold() for n in data['reserved']['names']}, calls, readable, limits, provenance)
+        _CATALOG = Catalog({n.casefold() for n in data['reserved']['names']}, calls, readable, limits, provenance,
+                           type_functions)
     return _CATALOG
 
 
@@ -513,6 +550,58 @@ def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict
         walk(tail, len(tokens), set())
 
 
+def check_metadata_names(parsed: Parsed, catalog: Catalog, own: set[str], strict=False):
+    """L7712 objects through global attributes, L7713 "Type.Kind" arguments, absent from the base's metadata.
+
+    Both are late bound in 7.7 (docs/tasks/018-metadata-names-acceptance.md): the
+    module loads, and the line fails when it runs or, for type names of columns and
+    empty values, quietly keeps the type without its kind. A processing may serve
+    several configurations and check Метаданные.<Класс>("Имя").Выбран() first, hence
+    warnings.
+    """
+    metadata = parsed.source.metadata
+    if metadata is None:
+        return
+    objects, tokens = metadata.objects(), parsed.tokens
+    severity = 'error' if strict else 'warning'
+    base = metadata.describe()
+
+    def follows(index, text):
+        return index < len(tokens) and tokens[index].text == text
+
+    for i, token in enumerate(tokens):
+        if token.kind != 'id':
+            continue
+        method = bool(i) and tokens[i-1].text == '.'
+        if (token.key in GLOBAL_OBJECTS and not method and follows(i + 1, '.') and i + 2 < len(tokens)
+                and tokens[i+2].kind == 'id' and not follows(i + 3, '(')):
+            name, kind = tokens[i+2], GLOBAL_OBJECTS[token.key]
+            if name.key not in objects[kind]:
+                parsed.report(name, 'L7712', f'{token.text}.{name.text}: в метаданных {base} нет объекта '
+                              f'{kind}.{name.text}. 1С 7.7 загружает модуль, а исполнение строки прерывает '
+                              f'«Поле агрегатного объекта не обнаружено ({name.text})».', severity)
+            elif (kind == 'Перечисление' and follows(i + 3, '.') and i + 4 < len(tokens)
+                  and tokens[i+4].kind == 'id' and not follows(i + 5, '(')):
+                value = tokens[i+4]
+                if value.key not in metadata.enum_values(name.text):
+                    parsed.report(value, 'L7712', f'{token.text}.{name.text}.{value.text}: у перечисления '
+                                  f'{objects[kind][name.key]} в метаданных {base} нет значения {value.text}. '
+                                  '1С 7.7 загружает модуль, а исполнение строки прерывает «Поле агрегатного '
+                                  f'объекта не обнаружено ({value.text})».', severity)
+        elif token.key in catalog.type_functions and follows(i + 1, '(') and (method or token.key not in own):
+            end = parsed.pairs.get(i + 1)
+            for part in split_arguments(tokens, i + 2, end) if end is not None else ():
+                match = TYPE_STRING.match(part[0].text) if len(part) == 1 and part[0].kind == 'string' else None
+                classes = TYPE_PREFIXES.get(match.group(1).casefold()) if match else None
+                if not classes or match.group(1).casefold() == 'журнал' and match.group(2).casefold() == 'подчиненные':
+                    continue
+                if not any(match.group(2).casefold() in objects[kind] for kind in classes):
+                    where = ' или '.join(f'{kind}.{match.group(2)}' for kind in classes)
+                    outcome = TYPE_FUNCTIONS[catalog.type_functions[token.key]]
+                    parsed.report(part[0], 'L7713', f'{token.text}({part[0].text}): в метаданных {base} нет '
+                                  f'объекта {where}. {outcome}.', severity)
+
+
 def module_variables(parsed: Parsed) -> dict[str, bool]:
     """Module variables declared "Перем Имя [Экспорт]" before the first procedure: name → exported."""
     tokens, names = parsed.tokens, {}
@@ -586,16 +675,21 @@ def cfb_paths(compound: CompoundFile) -> dict[int, str]:
     return paths
 
 
-def load_sources(path: Path) -> list[Source]:
+def load_sources(path: Path, own_metadata_names=True) -> list[Source]:
+    """Modules of a text, ERT or 1Cv7.MD; a 1Cv7.MD's own object names unless only its exports are wanted."""
     path = path.resolve()
     if path.suffix.casefold() not in ('.ert', '.md'):
         # Existing decoder prints encoding notes; keep JSON stdout machine-readable.
         with contextlib.redirect_stdout(sys.stderr):
             text = decode_source_bytes(path.read_bytes(), path)
         return [Source(str(path), '', text)]
-    compound = CompoundFile(path.read_bytes())
+    data = path.read_bytes()
+    compound = CompoundFile(data)
     paths = cfb_paths(compound)
     dialog = ert_dialog(compound) if path.suffix.casefold() == '.ert' else None
+    # Modules of a configuration run on its own metadata (L7712, L7713).
+    metadata = (own_metadata(compound, data, path)
+                if own_metadata_names and path.suffix.casefold() == '.md' else None)
     result = []
     for entry in compound.directory_entries:
         if entry.object_type != 2 or entry.name != 'MD Programm text':
@@ -609,10 +703,33 @@ def load_sources(path: Path) -> list[Source]:
             text = zlib.decompress(raw, -15).decode('cp1251')
         except (zlib.error, UnicodeError) as exc:
             raise ErtError(f'Не удалось прочитать модуль {module}: {exc}') from exc
-        result.append(Source(str(path), module, text, module.startswith('TypedText/ModuleText_Number1/'), dialog))
+        result.append(Source(str(path), module, text, module.startswith('TypedText/ModuleText_Number1/'), dialog,
+                             metadata))
     if not result:
         raise ErtError(f'В {path.name} не найдены модули кода.')
     return result
+
+
+def own_metadata(compound: CompoundFile, data: bytes, path: Path):
+    """The names of a 1Cv7.MD for its own modules; None if it has no metadata stream."""
+    from .metadata77 import STREAM, Metadata
+    if not any(entry.object_type == 2 and entry.name == STREAM for entry in compound.directory_entries):
+        return None
+    return base_metadata(Metadata(data, path))
+
+
+def base_metadata(metadata):
+    """Metadata whose object names have been read: an unknown record refuses the analysis up front."""
+    metadata.objects()
+    return metadata
+
+
+def load_metadata(path: Path):
+    """--metadata: the 1Cv7.MD of the base the modules run on."""
+    from .metadata77 import load
+    if path.suffix.casefold() != '.md':
+        raise ValueError(f'Метаданные базы задаются файлом 1Cv7.MD: {path}')
+    return base_metadata(load(path))
 
 
 def collect_paths(inputs: list[str]) -> list[Path]:
@@ -668,11 +785,19 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
         check_method_arity(item, catalog, strict)
         check_line_length(item)
         check_declarations(item, catalog, known | set(visible_globals), strict)
+        check_metadata_names(item, catalog, set(visible_globals) | set(item.symbols), strict)
         diagnostics.extend(item.diagnostics)
     diagnostics.sort(key=lambda d: (d.path, d.module, d.line, d.column, d.rule))
+    contexts = {}
+    for item in parsed:
+        if item.source.metadata is not None:
+            public = item.source.metadata.public()
+            contexts.setdefault((public['path'], public['sha256']), public)
     return {'schema_version': 1, 'tool': 'lint77', 'version': VERSION,
             'modules': len(parsed), 'global_context_modules': len(external),
             'form_context_modules': sum(item.source.dialog is not None for item in parsed),
+            'metadata_context_modules': sum(item.source.metadata is not None for item in parsed),
+            'metadata': list(contexts.values()),
             'catalog': catalog.provenance,
             'errors': sum(d.severity == 'error' for d in diagnostics),
             'warnings': sum(d.severity == 'warning' for d in diagnostics),
@@ -688,6 +813,9 @@ def main(argv=None) -> int:
                         help='Явно разрешить функцию внешнего контекста; можно повторять.')
     parser.add_argument('--dialog', type=Path, metavar='FORM.ert',
                         help='ERT или описание формы JSON: контекст формы текстовых модулей (для L7711).')
+    parser.add_argument('--metadata', type=Path, metavar='1Cv7.MD',
+                        help='Метаданные базы, на которой исполняются модули TXT/1S/BSL/ERT (для L7712, L7713); '
+                             'модули самого 1Cv7.MD сверяются с его метаданными.')
     parser.add_argument('--strict', action='store_true', help='Неизвестные вызовы считать ошибками')
     parser.add_argument('--format', choices=('text', 'json'), default='text')
     parser.add_argument('--output', type=Path, help='Записать отчёт в файл')
@@ -697,7 +825,8 @@ def main(argv=None) -> int:
         inputs = collect_paths(args.paths)
         contexts = [Path(name).resolve() for name in args.globals]
         if args.output:
-            protected = inputs + contexts + ([args.dialog.resolve()] if args.dialog else []) + [
+            protected = inputs + contexts + ([args.dialog.resolve()] if args.dialog else []) + (
+                [args.metadata.resolve()] if args.metadata else []) + [
                 Path(__file__).resolve()] + [Path(__file__).with_name(name).resolve() for name in (
                     'lint77-builtins.json', 'lint77-globals.json', 'catalog77.json')]
             if (args.output.resolve() in set(protected)
@@ -709,9 +838,14 @@ def main(argv=None) -> int:
             for source in sources:
                 if Path(source.path).suffix.casefold() not in ('.ert', '.md'):
                     source.dialog = dialog
+        if args.metadata:
+            metadata = load_metadata(args.metadata)
+            for source in sources:
+                if Path(source.path).suffix.casefold() != '.md':
+                    source.metadata = metadata
         global_sources = []
         for path in contexts:
-            loaded = load_sources(path)
+            loaded = load_sources(path, own_metadata_names=False)
             if path.suffix.casefold() == '.md':
                 loaded = [source for source in loaded if source.is_global]
                 if not loaded:

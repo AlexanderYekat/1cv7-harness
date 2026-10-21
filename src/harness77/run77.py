@@ -57,10 +57,18 @@ class Observations:
         self._stream.close()
 
 
-def _static_stage(project):
+def _static_stage(project, stand=None):
     from .ert_module import CompoundFile, ErtError
-    from .lint77 import analyze, collect_paths, ert_dialog, load_sources
+    from .lint77 import analyze, collect_paths, ert_dialog, load_metadata, load_sources
     stage = Stage("static", required=True, scope=STAGE_SCOPES["static"])
+    # The base the module runs on names the objects of L7712/L7713 (task 018): the
+    # project's [build] metadata, otherwise the stand base's 1Cv7.MD when there is one.
+    if project.metadata is not None:
+        metadata_path, metadata_source = Path(project.metadata), "project"
+    elif stand is not None and (Path(stand.base) / "1Cv7.MD").is_file():
+        metadata_path, metadata_source = Path(stand.base) / "1Cv7.MD", "stand"
+    else:
+        metadata_path = metadata_source = None
     try:
         sources = [s for path in collect_paths([str(project.source)]) for s in load_sources(path)]
         # The module is built into the template: its dialog, or the form description
@@ -76,13 +84,20 @@ def _static_stage(project):
         for source in sources:
             if source.dialog is None:
                 source.dialog = dialog
-        globals_sources = [s for path in project.globals for s in load_sources(Path(path))]
+        metadata = load_metadata(metadata_path) if metadata_path is not None else None
+        for source in sources:
+            if source.metadata is None:
+                source.metadata = metadata
+        globals_sources = [s for path in project.globals
+                           for s in load_sources(Path(path), own_metadata_names=False)]
         report = analyze(sources, globals_sources, project.allow, project.strict)
     except (OSError, ValueError, ErtError) as error:
         return stage.finish(BLOCKED, reason=f"static_input_error: {type(error).__name__}: {error}")
     status = FAILED if report["errors"] else PASSED
     return stage.finish(status, diagnostics=report["diagnostics"],
-                        errors=report["errors"], warnings=report["warnings"])
+                        errors=report["errors"], warnings=report["warnings"],
+                        metadata=({"sha256": metadata.sha256, "configuration": metadata.configuration,
+                                   "source": metadata_source} if metadata is not None else None))
 
 
 def _metadata(project, stand):
@@ -294,7 +309,7 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
     static = _build = platform = tests = visual = None
     platform_result = None
     try:
-        static = _static_stage(project)
+        static = _static_stage(project, stand)
         build_stage, built = _build_stage(project, run_dir, stand)
         _build = build_stage
         if built is None:

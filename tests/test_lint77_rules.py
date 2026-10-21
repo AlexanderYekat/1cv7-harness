@@ -245,7 +245,7 @@ class FormContextTests(unittest.TestCase):
     def test_report_names_the_catalog(self):
         report = analyze('А = 1;')
         self.assertEqual(report['catalog']['platform_version'], '7.70.027')
-        self.assertEqual(report['version'], '0.2.0')
+        self.assertEqual(report['version'], '0.3.0')
 
 
 class RunStaticContextTests(unittest.TestCase):

@@ -16,6 +16,13 @@ the empty copy of FIO.ERT a field of a kind is refused, one of any object is
 not (task 012, R1 and its diagnosis). The copy turns the number into a name, and
 1C looks the name up in the open configuration (the owner's check in
 Торговля+Склад 9.2), so a target base is compared by names (task 013).
+
+Module code names objects of more classes (task 018): constants in ``Consts``,
+registers in ``Registers``, reports in ``ReportList``, processings in ``CalcVars``,
+journals in ``Journalisters``, subconto kinds in ``Buh`` -> ``SbKind``, the values
+of an enumeration in its ``EnumVal`` (static survey of base-for-test and of the
+owner's Торговля+Склад 9.2). They are read on demand, so a form build never
+depends on them.
 """
 
 import hashlib
@@ -35,6 +42,11 @@ CODES = {name.casefold(): code for code, name in TYPES.items()}
 ANY = ("B", "O", "T", "K", "P")
 # Codes with kinds and where their names are: the top-level section or Buh -> Plans.
 SECTIONS = {"B": "SbCnts", "O": "Documents", "E": "EnumList", "T": "Plans"}
+# Classes of objects module code names, and their sections (task 018); Buh sections are nested.
+CLASSES = {"Константа": "Consts", "Справочник": "SbCnts", "Документ": "Documents", "Перечисление": "EnumList",
+           "Регистр": "Registers", "Отчет": "ReportList", "Обработка": "CalcVars", "Журнал": "Journalisters",
+           "ПланСчетов": "Plans", "ВидСубконто": "SbKind"}
+BUH = ("Plans", "SbKind")
 NUMBER = re.compile(r"[1-9][0-9]*\Z")
 
 
@@ -103,28 +115,45 @@ class Metadata:
 
     def _read(self, payload, digest, path, label):
         self.path, self.sha256, self.stream, self.label = path, digest, payload, label
-        tree = _tree(payload)
-        task = _section(tree, "TaskItem")
+        self._tree, self._objects = _tree(payload), None
+        task = _section(self._tree, "TaskItem")
         self.configuration = task[1][1] if task and len(task) > 1 and isinstance(task[1], list) \
             and len(task[1]) > 1 and isinstance(task[1][1], str) else None
         self.names, self.numbers = {}, {}
-        buh = _section(tree, "Buh")
-        plans = None
-        if buh is not None:
-            for item in buh[1:]:
-                if isinstance(item, list):
-                    plans = _section(item, "Plans") if plans is None else plans
         for code, key in SECTIONS.items():
-            section = plans if key == "Plans" else _section(tree, key)
-            for record in (section or [None])[1:]:
-                if not isinstance(record, list) or len(record) < 2 or not all(
-                        isinstance(x, str) for x in record[:2]) or not NUMBER.match(record[0]):
-                    raise ErtError(f"Метаданные: неизвестная запись в разделе {key}: {str(record)[:80]}")
-                number, name = int(record[0]), record[1]
-                if not name or (code, name.casefold()) in self.numbers:
-                    raise ErtError(f"Метаданные: имя {name!r} в разделе {key} пусто или повторяется")
+            for number, name in _records(self._section(key), key):
                 self.names[code, number] = name
                 self.numbers[code, name.casefold()] = number
+
+    def _section(self, key):
+        """A top-level section, or one of Buh (plans of accounts, subconto kinds)."""
+        if key not in BUH:
+            return _section(self._tree, key)
+        found = None
+        for item in (_section(self._tree, "Buh") or [None])[1:]:
+            if isinstance(item, list):
+                found = _section(item, key) if found is None else found
+        return found
+
+    def objects(self):
+        """Names by class for module code (task 018): {class: {casefolded name: name}}; refuses unknown records."""
+        if self._objects is None:
+            objects = {name: {key.casefold(): key for _, key in _records(self._section(section), section)}
+                       for name, section in CLASSES.items()}
+            values = {}
+            for record in (self._section("EnumList") or [None])[1:]:
+                found = [item for item in record[2:] if isinstance(item, list) and item[:1] == ["EnumVal"]]
+                if len(found) > 1:
+                    raise ErtError(f"Метаданные: у перечисления {record[1]!r} повторяется список значений")
+                values[record[1].casefold()] = {name.casefold(): name for _, name in
+                                                _records(found[0] if found else None, f"EnumVal {record[1]}")}
+            self._objects = objects, values
+        return self._objects[0]
+
+    def enum_values(self, kind):
+        """{casefolded value: value} of an enumeration by its name, or None without one."""
+        self.objects()
+        return self._objects[1].get(kind.casefold())
 
     def number(self, code, kind):
         """The number of a kind by its name, as 1C finds it (letter case aside), or None."""
@@ -148,6 +177,20 @@ class Metadata:
     def public(self):
         return {"path": str(self.path) if self.path else None, "sha256": self.sha256,
                 "configuration": self.configuration}
+
+
+def _records(section, key):
+    """(number, name) of each object record {"<number>", "<name>", …} of a section; refuses others."""
+    seen = set()
+    for record in (section or [None])[1:]:
+        if not isinstance(record, list) or len(record) < 2 or not all(
+                isinstance(x, str) for x in record[:2]) or not NUMBER.match(record[0]):
+            raise ErtError(f"Метаданные: неизвестная запись в разделе {key}: {str(record)[:80]}")
+        name = record[1]
+        if not name or name.casefold() in seen:
+            raise ErtError(f"Метаданные: имя {name!r} в разделе {key} пусто или повторяется")
+        seen.add(name.casefold())
+        yield int(record[0]), name
 
 
 def _payload(compound):
