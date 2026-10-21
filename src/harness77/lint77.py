@@ -18,7 +18,7 @@ from .catalog77 import load_packaged
 from .ert_module import (DIALOG_STREAM, CompoundFile, ErtError, decode_dialog, decode_source_bytes,
                          dialog_controls)
 
-VERSION = '0.3.0'
+VERSION = '0.4.0'
 LIMITATIONS = [
     'Частичный разбор языка; отсутствие диагностик не означает успешную компиляцию 1С.',
     'Имена встроенных функций и методов — из каталога платформы 7.70.027; неизвестные вызовы '
@@ -26,7 +26,12 @@ LIMITATIONS = [
     'Типы, методы конфигурации, COM и внешних компонент, динамически исполняемый код не проверяются.',
     'Объявление переменных (L7711) проверяется только в модуле с известным диалогом: ERT или --dialog.',
     'Имена объектов метаданных (L7712, L7713) проверяются только с метаданными базы: --metadata или '
-    'модули самого 1Cv7.MD; реквизиты, имена форм, тексты запросов и строки вне аргументов функций — нет.',
+    'модули самого 1Cv7.MD; имена форм, тексты запросов и строки вне аргументов функций — нет.',
+    'Реквизиты (L7714) проверяются только у объекта, который переменная получает из '
+    'СоздатьОбъект("Справочник|Документ|Регистр.<Вид>"), и далее по ссылочным реквизитам; '
+    'реквизиты значений неизвестного типа и модуля самого объекта — нет.',
+    'Внутри Если, условие которого проверяет имя через Метаданные, L7712-L7714 об этом имени молчат; '
+    'проверка, сохранённая в переменную или с выходом из процедуры, не распознаётся.',
     'Доступность известных встроенных функций в конкретном контексте модуля не проверяется.',
     'Проводки, запросы и корректность бухгалтерского учета не проверяются.',
 ]
@@ -89,6 +94,19 @@ TYPE_PREFIXES = {'справочник': ('Справочник',), 'элеме�
                  'плансчетов': ('ПланСчетов',), 'регистр': ('Регистр',), 'отчет': ('Отчет',),
                  'обработка': ('Обработка',)}
 TYPE_STRING = re.compile(r'"([A-Za-zА-Яа-яЁё]+)\.([A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*)([.#][^"]*)?"\Z')
+# Task 019: objects СоздатьОбъект("<Тип>.<Вид>") makes whose attributes lint follows; the
+# catalog's "<Класс>/Атрибуты" are the attributes every object of the class has.
+OBJECT_CLASSES = {'справочник': 'Справочник', 'документ': 'Документ', 'регистр': 'Регистр'}
+# Метаданные.<Класс>("Имя") in a condition of Если guards an object; .<Член>("Имя") after it, or
+# Метаданные.ОбщийРеквизитДокумента("Имя"), an attribute or an enumeration value.
+GUARD_CLASSES = {name.casefold(): name for name in ('Константа', 'Справочник', 'Документ', 'Перечисление', 'Регистр',
+                                                    'Отчет', 'Обработка', 'Журнал', 'ПланСчетов', 'ВидСубконто')}
+GUARD_MEMBERS = {'реквизит', 'реквизитшапки', 'реквизиттабличнойчасти', 'измерение', 'ресурс', 'значение'}
+GUARD_GENERAL = 'общийреквизитдокумента'
+NAME_STRING = re.compile(r'"([A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*)"\Z')
+STATEMENT_END = {'конецесли', 'endif', 'иначе', 'else', 'иначеесли', 'elsif', 'elseif', 'конеццикла', 'enddo',
+                 'конецпопытки', 'endtry', 'исключение', 'except', 'конецпроцедуры', 'endprocedure',
+                 'конецфункции', 'endfunction'}
 
 
 @dataclass
@@ -134,7 +152,7 @@ class Source:
     is_global: bool = False
     # Identifiers of the form dialog (casefolded); None: the form context is unknown.
     dialog: frozenset[str] | None = None
-    # metadata77.Metadata of the base the module runs on (L7712, L7713); None: unknown.
+    # metadata77.Metadata of the base the module runs on (L7712-L7714); None: unknown.
     metadata: object | None = None
 
 
@@ -147,10 +165,23 @@ class Parsed:
     symbols: dict[str, Symbol] = field(default_factory=dict)
     declarations: dict[int, tuple[int, Symbol]] = field(default_factory=dict)
     header_tokens: set[int] = field(default_factory=set)
+    # Findings of L7712-L7714 left out under a Метаданные check; attributes L7714 compared (task 019).
+    guarded: int = 0
+    attributes_checked: int = 0
+    _guards: list | None = None
 
     def report(self, token, rule, message, severity='error'):
         self.diagnostics.append(Diagnostic(self.source.path, self.source.module,
                                            token.line, token.column, rule, severity, message))
+
+    def is_guarded(self, index, keys):
+        """Whether the token is inside an Если whose condition checks one of these names in Метаданные."""
+        if self._guards is None:
+            self._guards = metadata_guards(self.tokens)
+        if any(start <= index <= end and guards & keys for start, end, guards in self._guards):
+            self.guarded += 1
+            return True
+        return False
 
 
 def lex(source: Source) -> tuple[list[Token], list[Diagnostic]]:
@@ -397,6 +428,10 @@ class Catalog:
     provenance: dict
     # Casefolded Russian and English names of TYPE_FUNCTIONS -> the Russian name.
     type_functions: dict[str, str] = field(default_factory=dict)
+    # Attributes every object of a class has (Код, НомерДок…), casefolded: class -> names.
+    object_attributes: dict[str, set[str]] = field(default_factory=dict)
+    # TYPE_FUNCTIONS that are only global functions: X.СоздатьОбъект(…) is another base's (V77.CreateObject).
+    global_type_functions: set[str] = field(default_factory=set)
 
 
 _CATALOG: Catalog | None = None
@@ -409,13 +444,19 @@ def load_catalog() -> Catalog:
         globals_ = json.loads(files('harness77').joinpath('lint77-globals.json').read_text(encoding='utf-8'))
         calls, readable, limits = set(), {n.casefold() for n in globals_['names']}, {}
         type_functions = {name.casefold(): name for name in TYPE_FUNCTIONS}
+        object_attributes = {name: set() for name in OBJECT_CLASSES.values()}
+        kinds = {}
         for item in data['items']:
             names = [n.casefold() for n in (item['name_ru'], item['name_en']) if n]
+            if item['kind'] == 'attribute' and item['folder'].endswith('/Атрибуты') \
+                    and item['folder'][:-len('/Атрибуты')] in object_attributes:
+                object_attributes[item['folder'][:-len('/Атрибуты')]].update(names)
             if item['kind'] in ('global_function', 'method'):
                 calls.update(names)
                 russian = type_functions.get((item['name_ru'] or '').casefold())
                 if russian:
                     type_functions.update(dict.fromkeys(names, russian))
+                    kinds.setdefault(russian, set()).add(item['kind'])
             if item['kind'] == 'attribute' and item['folder'].startswith('Контекст формы/') and '/Объект' not in item['folder']:
                 readable.update(names)
             name = item['name_ru']
@@ -426,7 +467,8 @@ def load_catalog() -> Catalog:
                       'sources': [{'name': s['name'], 'sha256': s['sha256']} for s in data['sources']],
                       'globals_evidence': globals_['provenance']['evidence']}
         _CATALOG = Catalog({n.casefold() for n in data['reserved']['names']}, calls, readable, limits, provenance,
-                           type_functions)
+                           type_functions, object_attributes,
+                           {name for name, found in kinds.items() if found == {'global_function'}})
     return _CATALOG
 
 
@@ -480,9 +522,6 @@ def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict
     for _, symbol in parsed.declarations.values():
         for param in symbol.params:
             reserved(param, 'параметра')
-    closers = {'procedure': ('конецпроцедуры', 'endprocedure'), 'function': ('конецфункции', 'endfunction')}
-    definitions = sorted((start, last, symbol) for start, (last, symbol) in parsed.declarations.items()
-                         if not symbol.forward)
     module_vars: set[str] = set()
 
     def walk(start, end, declared):
@@ -537,17 +576,33 @@ def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict
                               severity)
             prev, i = token, i + 1
 
+    (begin, end, _), *bodies = scopes(parsed)
+    walk(begin, end, module_vars)
+    for begin, end, symbol in bodies:
+        walk(begin, end, {param.key for param in symbol.params} if symbol else set())
+
+
+def scopes(parsed: Parsed) -> list[tuple[int, int, Symbol | None]]:
+    """Token ranges (begin, end, symbol): the module head, each procedure body, the main program.
+
+    The head runs up to the first procedure (the whole module without procedures); the
+    main program, symbol None as the head's, follows the last one.
+    """
+    tokens = parsed.tokens
+    closers = {'procedure': ('конецпроцедуры', 'endprocedure'), 'function': ('конецфункции', 'endfunction')}
+    definitions = sorted((start, last, symbol) for start, (last, symbol) in parsed.declarations.items()
+                         if not symbol.forward)
     first = definitions[0][0] if definitions else len(tokens)
-    walk(0, first, module_vars)
-    tail = first
+    result, tail = [(0, first, None)], first
     for start, last, symbol in definitions:
         end = next((j for j in range(last, len(tokens)) if tokens[j].key in closers[symbol.kind]
                     and tokens[j-1].text != '.' and (j + 1 == len(tokens) or tokens[j+1].text != '=')),
                    len(tokens))
-        walk(last, end, {param.key for param in symbol.params})
+        result.append((last, end, symbol))
         tail = end + 1
     if definitions:
-        walk(tail, len(tokens), set())
+        result.append((tail, len(tokens), None))
+    return result
 
 
 def check_metadata_names(parsed: Parsed, catalog: Catalog, own: set[str], strict=False):
@@ -557,7 +612,7 @@ def check_metadata_names(parsed: Parsed, catalog: Catalog, own: set[str], strict
     module loads, and the line fails when it runs or, for type names of columns and
     empty values, quietly keeps the type without its kind. A processing may serve
     several configurations and check Метаданные.<Класс>("Имя").Выбран() first, hence
-    warnings.
+    warnings; inside an Если that checks the name they are left out (task 019).
     """
     metadata = parsed.source.metadata
     if metadata is None:
@@ -577,29 +632,198 @@ def check_metadata_names(parsed: Parsed, catalog: Catalog, own: set[str], strict
                 and tokens[i+2].kind == 'id' and not follows(i + 3, '(')):
             name, kind = tokens[i+2], GLOBAL_OBJECTS[token.key]
             if name.key not in objects[kind]:
+                if parsed.is_guarded(i, {(kind, name.key)}):
+                    continue
                 parsed.report(name, 'L7712', f'{token.text}.{name.text}: в метаданных {base} нет объекта '
                               f'{kind}.{name.text}. 1С 7.7 загружает модуль, а исполнение строки прерывает '
                               f'«Поле агрегатного объекта не обнаружено ({name.text})».', severity)
             elif (kind == 'Перечисление' and follows(i + 3, '.') and i + 4 < len(tokens)
                   and tokens[i+4].kind == 'id' and not follows(i + 5, '(')):
                 value = tokens[i+4]
-                if value.key not in metadata.enum_values(name.text):
+                if value.key not in metadata.enum_values(name.text) and not parsed.is_guarded(i, {(None, value.key)}):
                     parsed.report(value, 'L7712', f'{token.text}.{name.text}.{value.text}: у перечисления '
                                   f'{objects[kind][name.key]} в метаданных {base} нет значения {value.text}. '
                                   '1С 7.7 загружает модуль, а исполнение строки прерывает «Поле агрегатного '
                                   f'объекта не обнаружено ({value.text})».', severity)
-        elif token.key in catalog.type_functions and follows(i + 1, '(') and (method or token.key not in own):
+        elif (token.key in catalog.type_functions and follows(i + 1, '(') and (method or token.key not in own)
+              and not (method and catalog.type_functions[token.key] in catalog.global_type_functions)):
             end = parsed.pairs.get(i + 1)
             for part in split_arguments(tokens, i + 2, end) if end is not None else ():
                 match = TYPE_STRING.match(part[0].text) if len(part) == 1 and part[0].kind == 'string' else None
                 classes = TYPE_PREFIXES.get(match.group(1).casefold()) if match else None
                 if not classes or match.group(1).casefold() == 'журнал' and match.group(2).casefold() == 'подчиненные':
                     continue
-                if not any(match.group(2).casefold() in objects[kind] for kind in classes):
+                if not any(match.group(2).casefold() in objects[kind] for kind in classes) and not parsed.is_guarded(
+                        i, {(kind, match.group(2).casefold()) for kind in classes}):
                     where = ' или '.join(f'{kind}.{match.group(2)}' for kind in classes)
                     outcome = TYPE_FUNCTIONS[catalog.type_functions[token.key]]
                     parsed.report(part[0], 'L7713', f'{token.text}({part[0].text}): в метаданных {base} нет '
                                   f'объекта {where}. {outcome}.', severity)
+
+
+def metadata_guards(tokens: list[Token]) -> list[tuple[int, int, set]]:
+    """Если statements whose conditions check names in Метаданные: (Если, КонецЕсли, guards).
+
+    A guard is (class, casefolded name) of Метаданные.<Класс>("Имя"), or (None, casefolded
+    name) of an attribute or value checked after it (.Реквизит("Имя"), .Значение("Имя")…)
+    and of Метаданные.ОбщийРеквизитДокумента("Имя"). Every branch of the statement counts:
+    the check may be "= 1" or "= 0".
+    """
+    def at(j, text):
+        return j < len(tokens) and tokens[j].text == text
+
+    def name(j):
+        match = NAME_STRING.match(tokens[j].text) if j < len(tokens) and tokens[j].kind == 'string' else None
+        return match.group(1).casefold() if match else None
+
+    regions, stack, condition = [], [], None
+    for i, token in enumerate(tokens):
+        if token.kind != 'id' or (i and tokens[i-1].text == '.'):
+            continue
+        if token.key in ('если', 'if'):
+            stack.append((i, set()))
+            condition = stack[-1][1]
+        elif token.key in ('иначеесли', 'elsif', 'elseif') and stack:
+            condition = stack[-1][1]
+        elif token.key in ('тогда', 'then'):
+            condition = None
+        elif token.key in ('конецесли', 'endif') and stack:
+            start, guards = stack.pop()
+            if guards:
+                regions.append((start, i, guards))
+        elif (condition is not None and token.key in ('метаданные', 'metadata') and at(i + 1, '.')
+              and i + 2 < len(tokens) and at(i + 3, '(') and name(i + 4) and at(i + 5, ')')):
+            member = tokens[i+2].key
+            if member == GUARD_GENERAL:
+                condition.add((None, name(i + 4)))
+            elif member in GUARD_CLASSES:
+                condition.add((GUARD_CLASSES[member], name(i + 4)))
+                if (at(i + 6, '.') and i + 7 < len(tokens) and tokens[i+7].key in GUARD_MEMBERS and at(i + 8, '(')
+                        and name(i + 9) and at(i + 10, ')')):
+                    condition.add((None, name(i + 9)))
+    return regions
+
+
+def check_attributes(parsed: Parsed, catalog: Catalog, own: set[str], known: set[str], strict=False):
+    """L7714: an attribute of an object made by СоздатьОбъект("<Тип>.<Вид>") absent from the base's metadata.
+
+    A name holds the object when every assignment to it in its scope is that call with one
+    kind: a local of a procedure or of the main program, or a module variable assigned only
+    so in every procedure. A parameter, a loop counter, a form attribute, a global name or a
+    name passed whole to a procedure of the module may hold anything else and is not followed.
+    Reference attributes lead on: Док.Сотрудник.Должность checks the catalog of Сотрудник.
+    """
+    metadata = parsed.source.metadata
+    if metadata is None:
+        return
+    tokens, severity, base = parsed.tokens, 'error' if strict else 'warning', metadata.describe()
+    module_vars, dialog = module_variables(parsed), parsed.source.dialog or frozenset()
+    # Binding -> (class, kind, assignment token) of the object it holds; None: anything else.
+    held, uses = {}, []
+
+    def follows(index, text):
+        return index < len(tokens) and tokens[index].text == text
+
+    def created(i):
+        """(class, kind) of "= СоздатьОбъект("<Тип>.<Вид>")" ending the statement after tokens[i], or None."""
+        call = tokens[i+2] if i + 2 < len(tokens) else None
+        if (call is None or call.kind != 'id' or catalog.type_functions.get(call.key) != 'СоздатьОбъект'
+                or call.key in own or not follows(i + 3, '(')):
+            return None
+        end = parsed.pairs.get(i + 3)
+        parts = split_arguments(tokens, i + 4, end) if end is not None else []
+        match = TYPE_STRING.match(parts[0][0].text) if len(parts) == 1 and len(parts[0]) == 1 \
+            and parts[0][0].kind == 'string' else None
+        if (not match or match.group(3) or match.group(1).casefold() not in OBJECT_CLASSES
+                or not (end + 1 == len(tokens) or tokens[end+1].text == ';' or tokens[end+1].key in STATEMENT_END)):
+            return None
+        cls = OBJECT_CLASSES[match.group(1).casefold()]
+        kind = metadata.objects()[cls].get(match.group(2).casefold())
+        return (cls, kind) if kind else None
+
+    def assign(name, value):
+        if name is not None:
+            previous = held.get(name, value)
+            held[name] = previous if previous and value and previous[:2] == value[:2] else None
+
+    for number, (begin, end, symbol) in enumerate(scopes(parsed)):
+        local = {param.key for param in symbol.params} if symbol else set()
+        for key in local:
+            held[('local', number, key)] = None
+        starts, prev = [], None
+        for i in range(begin, end):
+            if i in parsed.header_tokens:
+                prev = None
+                continue
+            if prev is None or prev.text in (';', ':') or (prev.kind == 'id' and prev.key in STATEMENT_START):
+                starts.append(i)
+                if symbol and tokens[i].key in ('перем', 'var'):
+                    # A name follows Перем or a comma, as check_declarations reads it.
+                    j, depth, expect = i + 1, 0, True
+                    while j < end and tokens[j].text != ';':
+                        depth += {'[': 1, ']': -1}.get(tokens[j].text, 0)
+                        if tokens[j].text == ',' and not depth:
+                            expect = True
+                        elif tokens[j].kind == 'id' and not depth and expect:
+                            local.add(tokens[j].key)
+                            expect = False
+                        j += 1
+            prev = tokens[i]
+
+        def bound(key):
+            """The variable a name in this scope stands for; None: a global or form name."""
+            if key in local:
+                return ('local', number, key)
+            if key in module_vars or (not number and key not in known and key not in dialog):
+                return ('module', key)
+            return None if key in known or key in dialog else ('local', number, key)
+
+        for i in starts:
+            token = tokens[i]
+            if token.kind == 'id' and token.key in ('для', 'for') and i + 1 < end and tokens[i+1].kind == 'id':
+                assign(bound(tokens[i+1].key), None)
+            elif token.kind == 'id' and token.key not in KEYWORDS and follows(i + 1, '='):
+                kind = created(i)
+                assign(bound(token.key), kind and (*kind, token))
+        for i in range(begin, end):
+            token = tokens[i]
+            if token.kind != 'id' or i in parsed.header_tokens or (i and tokens[i-1].text in ('.', '~')):
+                continue
+            if token.key in own and follows(i + 1, '(') and parsed.pairs.get(i + 1) is not None:
+                for part in split_arguments(tokens, i + 2, parsed.pairs[i + 1]):
+                    if len(part) == 1 and part[0].kind == 'id':
+                        assign(bound(part[0].key), None)
+            elif follows(i + 1, '.') and not follows(i + 3, '(') and bound(token.key):
+                uses.append((i, bound(token.key)))
+    for key in held:
+        if key[0] == 'module' and module_vars.get(key[1]):
+            held[key] = None
+    for i, key in uses:
+        if not held.get(key):
+            continue
+        cls, kind, origin = held[key]
+        j, path = i, [tokens[i].text]
+        while (follows(j + 1, '.') and j + 2 < len(tokens) and tokens[j+2].kind == 'id'
+               and not follows(j + 3, '(')):
+            name = tokens[j+2]
+            path.append(name.text)
+            parsed.attributes_checked += 1
+            if name.key in catalog.object_attributes[cls]:
+                break
+            attribute = metadata.attributes(cls, kind).get(name.key)
+            if attribute is None:
+                if not parsed.is_guarded(i, {(None, name.key)}):
+                    via = '' if j == i else f' (реквизит {tokens[j].text})'
+                    parsed.report(name, 'L7714', f'{".".join(path)}: у объекта {cls}.{kind}{via} в метаданных '
+                                  f'{base} нет реквизита {name.text}; {tokens[i].text} — '
+                                  f'СоздатьОбъект("{held[key][0]}.{held[key][1]}") в строке {origin.line}. '
+                                  '1С 7.7 загружает модуль, а исполнение строки прерывает «Поле агрегатного '
+                                  f'объекта не обнаружено ({name.text})».', severity)
+                break
+            if attribute.target is None:
+                break
+            cls, kind = attribute.target
+            j += 2
 
 
 def module_variables(parsed: Parsed) -> dict[str, bool]:
@@ -687,7 +911,7 @@ def load_sources(path: Path, own_metadata_names=True) -> list[Source]:
     compound = CompoundFile(data)
     paths = cfb_paths(compound)
     dialog = ert_dialog(compound) if path.suffix.casefold() == '.ert' else None
-    # Modules of a configuration run on its own metadata (L7712, L7713).
+    # Modules of a configuration run on its own metadata (L7712-L7714).
     metadata = (own_metadata(compound, data, path)
                 if own_metadata_names and path.suffix.casefold() == '.md' else None)
     result = []
@@ -719,8 +943,9 @@ def own_metadata(compound: CompoundFile, data: bytes, path: Path):
 
 
 def base_metadata(metadata):
-    """Metadata whose object names have been read: an unknown record refuses the analysis up front."""
+    """Metadata whose object and attribute names have been read: an unknown record refuses the analysis up front."""
     metadata.objects()
+    metadata.attributes('Справочник', '')
     return metadata
 
 
@@ -786,6 +1011,7 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
         check_line_length(item)
         check_declarations(item, catalog, known | set(visible_globals), strict)
         check_metadata_names(item, catalog, set(visible_globals) | set(item.symbols), strict)
+        check_attributes(item, catalog, set(visible_globals) | set(item.symbols), known | set(visible_globals), strict)
         diagnostics.extend(item.diagnostics)
     diagnostics.sort(key=lambda d: (d.path, d.module, d.line, d.column, d.rule))
     contexts = {}
@@ -798,6 +1024,8 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
             'form_context_modules': sum(item.source.dialog is not None for item in parsed),
             'metadata_context_modules': sum(item.source.metadata is not None for item in parsed),
             'metadata': list(contexts.values()),
+            'metadata_guarded': sum(item.guarded for item in parsed),
+            'attributes_checked': sum(item.attributes_checked for item in parsed),
             'catalog': catalog.provenance,
             'errors': sum(d.severity == 'error' for d in diagnostics),
             'warnings': sum(d.severity == 'warning' for d in diagnostics),
@@ -814,7 +1042,7 @@ def main(argv=None) -> int:
     parser.add_argument('--dialog', type=Path, metavar='FORM.ert',
                         help='ERT или описание формы JSON: контекст формы текстовых модулей (для L7711).')
     parser.add_argument('--metadata', type=Path, metavar='1Cv7.MD',
-                        help='Метаданные базы, на которой исполняются модули TXT/1S/BSL/ERT (для L7712, L7713); '
+                        help='Метаданные базы, на которой исполняются модули TXT/1S/BSL/ERT (для L7712–L7714); '
                              'модули самого 1Cv7.MD сверяются с его метаданными.')
     parser.add_argument('--strict', action='store_true', help='Неизвестные вызовы считать ошибками')
     parser.add_argument('--format', choices=('text', 'json'), default='text')

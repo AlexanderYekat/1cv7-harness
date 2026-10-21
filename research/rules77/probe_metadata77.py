@@ -259,24 +259,8 @@ def judge(case, observed):
     return "confirmed" if all(checks) else "contradicted"
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--stand", required=True, type=Path)
-    parser.add_argument("--template", required=True, type=Path)
-    parser.add_argument("--metadata", required=True, type=Path, help="1Cv7.MD of the stand base")
-    parser.add_argument("--work", required=True, type=Path, help="local directory for generated cases")
-    parser.add_argument("--output-root", type=Path, default=ROOT / ".artifacts" / "runs")
-    parser.add_argument("--evidence", required=True, type=Path, help="new JSON file with all results")
-    parser.add_argument("--case", action="append", default=[], help="run only these case ids")
-    args = parser.parse_args(argv)
-    if os.path.lexists(args.evidence):
-        parser.error(f"evidence file exists: {args.evidence}")
-    cases = CASES + [names_case(args.metadata), access_case(args.metadata)]
-    if args.case:
-        unknown = set(args.case) - {c["id"] for c in cases}
-        if unknown:
-            parser.error(f"unknown case ids: {sorted(unknown)}")
-        cases = [c for c in cases if c["id"] in args.case]
+def run_cases(cases, args, scope, judge=judge):
+    """Each case as its own `harness77 run`; the evidence file collects every outcome."""
     template = args.template.resolve(strict=True)
     rows = []
     for case in cases:
@@ -284,7 +268,7 @@ def main(argv=None):
         folder.mkdir(parents=True, exist_ok=True)
         text = module_text(case)
         (folder / "module.1s").write_text(text, encoding="utf-8", newline="\n")
-        deadline = 300 if case["id"].endswith("-survey") else 60
+        deadline = 300 if case["id"].endswith("-survey") or case.get("batch") else 60
         (folder / "project.toml").write_text(project_text(template, deadline), encoding="utf-8")
         probe_line = next((n for n, line in enumerate(text.splitlines(), 1) if PROBE in line), None)
         completed = subprocess.run([sys.executable, "-m", "harness77", "run", "--project", str(folder / "project.toml"),
@@ -300,7 +284,8 @@ def main(argv=None):
         report, observed = observe(run_dir)
         verdict = judge(case, observed)
         rows.append({"id": case["id"], "rule": case["rule"], "note": case.get("note"),
-                     "expected": {k: case.get(k) for k in ("compile", "runtime", "value")},
+                     "expected": {k: case.get(k) for k in ("compile", "runtime", "value")}
+                     | {k: case[k] for k in ("value_prefix",) if k in case},
                      "probe_line": probe_line,
                      "construct": next((line.replace(PROBE, "").strip() for line in text.splitlines()
                                         if PROBE in line), None),
@@ -311,7 +296,7 @@ def main(argv=None):
         print(case["id"], verdict, observed["compile"], observed["runtime"], (observed["value"] or "")[:200],
               (observed["runtime_error"] or "")[:200],
               [d.get("message") for d in observed["diagnostics"]][:2], file=sys.stderr, flush=True)
-    evidence = {"schema_version": 1, "scope": "task 018 metadata name probes on real 1C 7.7",
+    evidence = {"schema_version": 1, "scope": scope,
                 "generated": datetime.datetime.now().astimezone().isoformat(),
                 "stand": "local-7.70.027 (base-for-test, pinned)", "template_sha256": sha256(template),
                 "metadata_sha256": sha256(args.metadata), "cases": rows}
@@ -319,6 +304,36 @@ def main(argv=None):
     with open(args.evidence, "x", encoding="utf-8") as stream:
         json.dump(evidence, stream, ensure_ascii=False, indent=1)
     return 0 if all(r["verdict"] in ("confirmed", "observed") for r in rows) else 1
+
+
+def arguments(argv, doc):
+    parser = argparse.ArgumentParser(description=doc, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--stand", required=True, type=Path)
+    parser.add_argument("--template", required=True, type=Path)
+    parser.add_argument("--metadata", required=True, type=Path, help="1Cv7.MD of the stand base")
+    parser.add_argument("--work", required=True, type=Path, help="local directory for generated cases")
+    parser.add_argument("--output-root", type=Path, default=ROOT / ".artifacts" / "runs")
+    parser.add_argument("--evidence", required=True, type=Path, help="new JSON file with all results")
+    parser.add_argument("--case", action="append", default=[], help="run only these case ids")
+    args = parser.parse_args(argv)
+    if os.path.lexists(args.evidence):
+        parser.error(f"evidence file exists: {args.evidence}")
+    return parser, args
+
+
+def select(parser, args, cases):
+    if args.case:
+        unknown = set(args.case) - {c["id"] for c in cases}
+        if unknown:
+            parser.error(f"unknown case ids: {sorted(unknown)}")
+        cases = [c for c in cases if c["id"] in args.case]
+    return cases
+
+
+def main(argv=None):
+    parser, args = arguments(argv, __doc__)
+    cases = select(parser, args, CASES + [names_case(args.metadata), access_case(args.metadata)])
+    return run_cases(cases, args, "task 018 metadata name probes on real 1C 7.7")
 
 
 if __name__ == "__main__":

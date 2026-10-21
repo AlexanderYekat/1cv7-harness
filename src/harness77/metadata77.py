@@ -23,6 +23,12 @@ journals in ``Journalisters``, subconto kinds in ``Buh`` -> ``SbKind``, the valu
 of an enumeration in its ``EnumVal`` (static survey of base-for-test and of the
 owner's Торговля+Склад 9.2). They are read on demand, so a form build never
 depends on them.
+
+The attributes of an object follow its record (task 019): ``Params`` of a catalog,
+``Head Fields`` and ``Table Fields`` of a document with the common ``GenJrnlFldDef``
+of every document, ``Props``, ``Figures`` and ``Flds`` of a register. An attribute
+record is {"<number>", "<name>", "<comment>", "<synonym>", "<type code>", "<length>",
+"<precision>", "<kind number>", …}, as in base-for-test and Торговля+Склад 9.2.
 """
 
 import hashlib
@@ -48,6 +54,23 @@ CLASSES = {"Константа": "Consts", "Справочник": "SbCnts", "Д
            "ПланСчетов": "Plans", "ВидСубконто": "SbKind"}
 BUH = ("Plans", "SbKind")
 NUMBER = re.compile(r"[1-9][0-9]*\Z")
+# Classes with attributes and the subsections of their records (task 019); GENERAL are every document's.
+ATTRIBUTES = {"Справочник": ("Params",), "Документ": ("Head Fields", "Table Fields"),
+              "Регистр": ("Props", "Figures", "Flds")}
+GENERAL = "GenJrnlFldDef"
+ATTRIBUTE_TYPES = ("S", "N", "D", "B", "O", "E", "T", "K", "P", "U")
+
+
+class Attribute:
+    """An attribute of a metadata object: its name, type code and the class and name of its kind, if any."""
+
+    def __init__(self, name, code, kind):
+        self.name, self.code, self.kind = name, code, kind
+
+    @property
+    def target(self):
+        """(class, kind name) of the object a reference attribute names, or None."""
+        return (TYPES[self.code], self.kind) if self.kind and self.code in ("B", "O") else None
 
 
 def sha256(data):
@@ -115,7 +138,7 @@ class Metadata:
 
     def _read(self, payload, digest, path, label):
         self.path, self.sha256, self.stream, self.label = path, digest, payload, label
-        self._tree, self._objects = _tree(payload), None
+        self._tree, self._objects, self._attributes = _tree(payload), None, None
         task = _section(self._tree, "TaskItem")
         self.configuration = task[1][1] if task and len(task) > 1 and isinstance(task[1], list) \
             and len(task[1]) > 1 and isinstance(task[1][1], str) else None
@@ -155,6 +178,34 @@ class Metadata:
         self.objects()
         return self._objects[1].get(kind.casefold())
 
+    def attributes(self, name, kind):
+        """{casefolded attribute: Attribute} of a catalog, document or register by its name, or None without it.
+
+        A document has its head, table and common attributes (task 019); an attribute record
+        of another layout or a repeated name refuses them all, as objects() does.
+        """
+        if self._attributes is None:
+            general = [_attribute(record, GENERAL, self.names)
+                       for record in (_section(self._tree, GENERAL) or [None])[1:]]
+            found = {}
+            for cls, subsections in ATTRIBUTES.items():
+                key, found[cls] = CLASSES[cls], {}
+                for record in (self._section(key) or [None])[1:]:
+                    where = f"{key} {record[1]}"
+                    items = [item for item in record[2:] if isinstance(item, list) and item[:1]
+                             and item[0] in subsections]
+                    if len({item[0] for item in items}) < len(items):
+                        raise ErtError(f"Метаданные: в записи {where} повторяется список реквизитов")
+                    attributes = [_attribute(row, f"{where} {item[0]}", self.names)
+                                  for item in items for row in item[1:]]
+                    attributes += general if cls == "Документ" else []
+                    names = {attribute.name.casefold(): attribute for attribute in attributes}
+                    if len(names) < len(attributes):
+                        raise ErtError(f"Метаданные: у объекта {where} повторяется имя реквизита")
+                    found[cls][record[1].casefold()] = names
+            self._attributes = found
+        return self._attributes[name].get(kind.casefold())
+
     def number(self, code, kind):
         """The number of a kind by its name, as 1C finds it (letter case aside), or None."""
         return self.numbers.get((code, kind.casefold()))
@@ -191,6 +242,16 @@ def _records(section, key):
             raise ErtError(f"Метаданные: имя {name!r} в разделе {key} пусто или повторяется")
         seen.add(name.casefold())
         yield int(record[0]), name
+
+
+def _attribute(record, where, names):
+    """An Attribute of a record {"<number>", "<name>", "", "", "<type code>", "", "", "<kind number>", …}."""
+    if (not isinstance(record, list) or len(record) < 8 or not all(isinstance(x, str) for x in record[:8])
+            or not NUMBER.match(record[0]) or not record[1] or record[4] not in ATTRIBUTE_TYPES
+            or not record[7].isdigit()):
+        raise ErtError(f"Метаданные: неизвестная запись реквизита в разделе {where}: {str(record)[:80]}")
+    number = int(record[7])
+    return Attribute(record[1], record[4], names.get((record[4], number)) if number else None)
 
 
 def _payload(compound):
