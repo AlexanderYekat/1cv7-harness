@@ -10,7 +10,7 @@ import shutil
 
 from ert_probe77 import read_results, protocol_path
 from shutdown77 import assess, atomic_json, sha256
-from compiler_protocol77 import parse_protocol
+from harness77.compiler_protocol77 import parse_protocol
 
 
 CASES = ("ok", "syntax", "unused-syntax", "unused-name")

@@ -10,8 +10,9 @@ from module_suite77 import vb_assignment, vb_literal
 from shutdown77 import atomic_json, prepare_shutdown, sha256
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "1cv77-devtools"))
-import ert_module as ert
+# The package's copy of the devtools reader (same code), so a plain checkout is enough.
+sys.path.insert(0, str(ROOT / "src"))
+from harness77 import ert_module as ert
 
 TEMPLATE_SHA = "096e1a05f871158b9ec5adaafa397adca87cee4aae8cd6f28f130080ac318b4a"
 CASES = ("ok", "syntax", "unused-syntax", "unused-name", "runtime", "wait")

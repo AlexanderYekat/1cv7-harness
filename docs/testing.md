@@ -45,8 +45,44 @@ PYTHONPATH. Проверяет консольную команду, `python -m`,
 успехом: для приёмки требуется среда с доступной проверкой файловой идентичности.
 При ограниченном TEMP задайте TEMP/TMP в доступный каталог до запуска Python.
 
-Исследовательские тесты этапа 2 запускаются отдельно:
-`python -B -m unittest discover -s research/platform77/tests -v`.
-Они не доказывают работоспособность нового платформенного runner: он ещё не создан.
+Исследовательские тесты запускаются отдельно, по набору на каталог:
+`python -B -m unittest discover -s research/platform77/tests -p "test_*.py" -v`, так же
+`research/forms/tests` и `research/kudir/tests`. Им достаточно checkout: `ert_module`
+и `compiler_protocol77` берутся из `src` этого репозитория, соседний `1cv77-devtools`
+не нужен. Они не доказывают работу с настоящей 1С: это делает нативная приёмка.
+
+## CI
+
+`.github/workflows/ci.yml` (задача 016) запускается на GitHub при push в любую ветку,
+при pull request и вручную:
+
+- `windows` — Windows Server 2025, Python 3.11, 3.13 и 3.15: установка, как в
+  [development.md](development.md), тесты продукта и три набора исследования;
+- `package` — Windows, Python 3.13: `scripts/verify_package77.py`; `summary.json`,
+  журналы команд и дистрибутивы — артефакт `package77` запуска;
+- `linux` — Ubuntu 24.04, Python 3.13: тесты продукта; тесты, которым нужна Windows,
+  пропускаются с причиной.
+
+Сводка каждого задания (`scripts/ci_summary77.py`) перечисляет пропущенные тесты
+с причинами и упавшие тесты. На runner нет 1С, поэтому сверка каталога с установленной
+платформой пропускается.
+
+CI не запускает настоящую 1С 7.7: платформа, базы и лицензия есть только на стенде
+владельца, а собственный runner в публичном репозитории выполнял бы на этом стенде код
+из чужих pull request. Нативная приёмка остаётся локальной. Повторить CI локально —
+те же команды в чистом клоне и новом venv:
+
+```powershell
+git clone . $env:TEMP\harness77-ci; cd $env:TEMP\harness77-ci
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-build.txt
+.\.venv\Scripts\python -m pip install --no-build-isolation -e .
+.\.venv\Scripts\python -B -m unittest discover -s tests -v
+.\.venv\Scripts\python -B -m unittest discover -s research/platform77/tests -p "test_*.py" -v
+.\.venv\Scripts\python scripts/verify_package77.py
+```
+
+Рабочий каталог владельца может скрыть зависимость от неотслеживаемых файлов
+(`1cv77-devtools`, `.local`); чистый клон её покажет.
 Локальный корпус проверяется отдельно по хешам, без изменения оригиналов;
 не включайте базу и прикладные ERT в переносимый набор.
