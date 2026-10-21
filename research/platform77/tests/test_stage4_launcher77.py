@@ -64,6 +64,31 @@ class BaseTraceTests(unittest.TestCase):
 
     def test_open_phase_maps_to_section_8_5(self):
         self.assertEqual(launcher.PHASES["open"], "open")
+        # Task 015: starting CDB and 1C is part of opening.
+        self.assertEqual(launcher.PHASES["ownership"], "open")
+        self.assertEqual(launcher.PHASES["debugger-ready"], "open")
+
+    def test_client_waits_for_the_initialize_permission_within_the_open_deadline(self):
+        # L6: under load cdb reported the proxy identity after the research 10 s.
+        out = Path(self.temp.name) / "native"
+        ert = Path(self.temp.name) / "built.ert"
+        ert.write_bytes(b"ert")
+        launcher.scaffold(out, ert, "0b6d6c8e-6a52-4f8e-9e0c-3a1f5d2b7c40", permit_timeout_s=180)
+        client = (out / "client.vbs").read_text(encoding="utf-16")
+        self.assertIn("If Elapsed(proxyStart) > 180000 Then", client)
+        self.assertNotIn(launcher.PERMIT_WAIT, client)
+        # The research client (and kudir, which embeds the file) keeps its 10 s.
+        self.assertIn(launcher.PERMIT_WAIT, launcher.proxy_client())
+        with patch.object(launcher.Path, "read_text", return_value="no wait here"):
+            with self.assertRaisesRegex(ValueError, "permission wait was not found"):
+                launcher.proxy_client(180)
+
+    def test_stale_registrations_of_both_roots_reach_the_open_report(self):
+        evidence = {"run_id": "killed", "processes": [{"role": "registrar", "pid": 1, "gone": "absent"}], "keys": ["k"]}
+        lifecycle = {"identity_registration": {"roots": ["a", "b"], "stale_removed": evidence},
+                     "temporary_com_registration": {"roots": ["c", "d"]}}
+        self.assertEqual(launcher.stale_registrations(lifecycle), [dict(evidence, roots=["a", "b"])])
+        self.assertEqual(launcher.stale_registrations({"error": "refused before registration"}), [])
 
 
 

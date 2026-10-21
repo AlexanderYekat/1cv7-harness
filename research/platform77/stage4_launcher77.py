@@ -16,7 +16,9 @@ result to this run.
 Deadlines come from section 8.5 (``--deadlines-json``): each ERT command gets
 the calculation deadline, the session limit is total (it covers opening the
 base, reindexing included), and the client (cscript) limit covers total +
-shutdown, so a tens-of-minutes report is not cut at 140 s. A
+shutdown, so a tens-of-minutes report is not cut at 140 s. Starting CDB and
+1C belongs to opening: it gets the profile's open deadline instead of the
+research 20/30 s, which a loaded machine exceeded (task 015). A
 ``cancel`` file in the run directory (written by the backend on Ctrl+C) stops
 the session through the same owned-only cleanup as a deadline.
 
@@ -42,6 +44,7 @@ from concurrent77 import IDENTITY_SHA
 IDENTITY = "harness77"            # constant cooperation marker; run identity is separate
 COMMANDS = ("check", "execute")   # compile-only, then the control/report call
 PROTOCOL_DIRECTORY = probe.PROTOCOL_DIRECTORY
+PERMIT_WAIT = "If Elapsed(proxyStart) > 10000 Then"  # the research client's 10 s
 # Core timeout phases in the section 8.5 vocabulary of the run report.
 PHASES = {"ownership": "open", "debugger-ready": "open", "open-base": "open", "open": "open",
           "ert-operation": "calculation", "modal-recovery": "calculation",
@@ -113,6 +116,13 @@ def open_deadline(deadlines, trace):
     """The open deadline: the profile's open, plus the reindex allowance after an interruption."""
     extra = deadlines.get("reindex_timeout_s", 0) if trace.get("interrupted") else 0
     return int(deadlines["open_timeout_s"] + extra)
+
+
+def stale_registrations(lifecycle):
+    """Registrations a killed session left, removed after proving its processes gone (task 015)."""
+    return [dict(lifecycle[key]["stale_removed"], roots=lifecycle[key]["roots"])
+            for key in ("identity_registration", "temporary_com_registration")
+            if (lifecycle.get(key) or {}).get("stale_removed")]
 
 
 def session_limits(deadlines):
@@ -189,7 +199,19 @@ class Harness77Adapter:
         return None
 
 
-def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters=None):
+def proxy_client(permit_timeout_s=None):
+    """The proxy-identity client; its wait for the controller's Initialize permission
+    follows the open deadline when given (task 015, L6: cdb under load reported the
+    identity later than the research 10 s). The file stays as is: kudir embeds it."""
+    text = Path(probe.__file__).with_name("proxy_identity77.vbs").read_text(encoding="utf-8")
+    if permit_timeout_s is None:
+        return text
+    if text.count(PERMIT_WAIT) != 1:
+        raise ValueError("proxy identity client changed: its permission wait was not found")
+    return text.replace(PERMIT_WAIT, "If Elapsed(proxyStart) > %d Then" % int(permit_timeout_s * 1000))
+
+
+def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters=None, permit_timeout_s=None):
     """Reconstruct the controller/client/shutdown scaffolding for an external ERT."""
     adapter = adapter or Harness77Adapter()
     folder = out / "Тестовые обработки"
@@ -201,8 +223,7 @@ def scaffold(out, built_ert, run_id, adapter=None, commands=COMMANDS, parameters
     protocol_root = out / PROTOCOL_DIRECTORY
     protocol_root.mkdir(exist_ok=True)
     client = Path(probe.__file__).with_name("ert_probe77.vbs").read_text(encoding="utf-8")
-    client = client.replace("__PROXY_IDENTITY__",
-                            Path(probe.__file__).with_name("proxy_identity77.vbs").read_text(encoding="utf-8"))
+    client = client.replace("__PROXY_IDENTITY__", proxy_client(permit_timeout_s))
     suite = Path(probe.__file__).with_name("module_suite77.vbs").read_text(encoding="utf-8")
     utilities = suite[suite.index("Function Quote"):suite.index("Sub CompileCase")]
     shutdown, shutdown_manifest = prepare_shutdown(out, run_id)
@@ -318,7 +339,8 @@ def main(argv=None, adapter=None):
         # preflight requires a fresh output directory, so validate before creating it.
         adapter.preflight(base, exe, cdb, helper, drive)
         drive.mkdir(parents=True, exist_ok=False)
-        manifest, shutdown_manifest, ert_target = scaffold(drive, built, args.run_id, adapter, commands, parameters)
+        manifest, shutdown_manifest, ert_target = scaffold(drive, built, args.run_id, adapter, commands, parameters,
+                                                           permit_timeout_s=deadlines["open_timeout_s"])
         # The 1C process inherits the environment through CDB.
         os.environ.update(adapter.prepare(out, parameters))
         # Honour the configured section 8.5 deadlines in this process (the owner's
@@ -336,6 +358,9 @@ def main(argv=None, adapter=None):
                      "fault": "none", "status": "blocked", "run_id": args.run_id,
                      "ert_operation_timeout_seconds": operation_timeout,
                      "open_timeout_seconds": report["open"]["deadline_s"],
+                     # CDB and 1C start within the profile's open deadline, not the research
+                     # 20/30 s (task 015); the reindex allowance is for reindexing only.
+                     "startup_timeout_seconds": deadlines["open_timeout_s"],
                      "client_timeout_seconds": client_timeout,
                      "cancel_path": str(out / "cancel"),
                      "identity_observer_profile": "challenge-only-v2",
@@ -364,11 +389,17 @@ def main(argv=None, adapter=None):
             begun = datetime.datetime.fromisoformat(lifecycle["started_at"]).timestamp()
             report["open"]["elapsed_s"] = round(first.stat().st_mtime - begun, 1)
         report["open"]["base_trace_after"] = base_trace(base)
+        report["open"]["startup_deadline_s"] = lifecycle.get("startup_timeout_seconds")
+        report["open"]["startup_s"] = lifecycle.get("startup_elapsed_seconds")
+        report["open"]["stale_com_registrations"] = stale_registrations(lifecycle)
         report["shutdown"] = {"status": shutdown_result["status"],
                               "cleanup_verified": bool(lifecycle.get("cleanup_verified")),
                               "forced_cleanup": bool(lifecycle.get("forced_cleanup")),
                               "server_exit_code": lifecycle.get("server_exit_code"),
                               "others_preserved": bool(lifecycle.get("baseline_preserved")),
+                              # The shutdown fell between a read of its events and the exit check (task 015).
+                              "observed_after_exit": bool(lifecycle.get("shutdown_observed_after_exit")),
+                              "poll_rounds": lifecycle.get("poll_rounds"),
                               "issues": shutdown_result["issues"]}
         report["platform_identity"]["platform_version"] = "7.70.027"
         report["cancelled"] = bool(lifecycle.get("user_cancelled"))

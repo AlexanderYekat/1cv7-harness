@@ -62,6 +62,21 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
     open_started = None
     shutdown_observed_at = None
     report["shutdown_observations"] = []
+    # Starting CDB and 1C is part of opening; a caller may give it the open deadline (task 015).
+    # Without one the accepted research limits stay: ownership by 20 s, debugger ready by 30 s.
+    startup = report.get("startup_timeout_seconds")
+    ownership_until = started + (startup or 20)
+    ready_until = started + (startup or 30)
+
+    def note(role, pid, process_handle):
+        """Record a started process in the owner record of both temporary registrations."""
+        for registration in (identity_cleanup, registration_cleanup):
+            if registration is not None:
+                registration.note_process(role, pid, process_handle)
+
+    def shutdown_started(events):
+        return any(isinstance(e, dict) and e.get("run_id") == report["run_id"]
+                   and e.get("name") == "modules_released" for e in events)
 
     def launch(command, stdout, cwd=None):
         if desktop is not None:
@@ -113,7 +128,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                  str(out / "debugger.log"), "-cf", str(commands), str(exe), "-Embedding"],
                 stdout=debug_stdout, cwd=str(exe.parent))
             report["debugger_pid"] = debugger.pid
-            while time.monotonic() < started + 20:
+            note("debugger", debugger.pid, int(debugger._handle))
+            while time.monotonic() < ownership_until:
                 children = [p for p in processes() if p["parent_pid"] == debugger.pid]
                 if len(children) == 1:
                     candidate = children[0]
@@ -142,6 +158,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                     report["server"] = dict(candidate, image=buf.value,
                         creation_filetime=server_time, ownership_verified=True,
                         ownership="direct CDB child; image/time verified; retained HANDLE")
+                    report["startup_elapsed_seconds"] = {"ownership": round(time.monotonic() - started, 3)}
+                    note("server", candidate["pid"], handle)
                     atomic_json(out / "owner.json", report)
                     break
                 if debugger.poll() is not None:
@@ -151,13 +169,14 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             else:
                 report["timeout_phase"] = "ownership"
                 raise TimeoutError("server ownership deadline")
-            while time.monotonic() < started + 30:
+            while time.monotonic() < ready_until:
                 startup_log = debug_text()
                 if "Couldn't resolve error" in startup_log:
                     raise RuntimeError("debugger observer could not resolve COM entry point")
                 if ("\nHARNESS77_DEBUGGER_READY\n" in startup_log
                         and (identity_dll is None or "\nHARNESS77_FACTORY_WATCH\n" in startup_log)):
                     report["debugger_ready"] = True
+                    report["startup_elapsed_seconds"]["debugger_ready"] = round(time.monotonic() - started, 3)
                     break
                 if debugger.poll() is not None:
                     raise RuntimeError("CDB exited before ready")
@@ -181,6 +200,10 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                  "activation-only" if report.get("activation_only") else "ert"],
                 stdout=client_stdout)
             report["helper_pid"] = client.pid
+            note("client", client.pid, int(client._handle))
+            # How long the polling rounds take: under load a round lasted over 10 s (task 015, R1).
+            rounds = report["poll_rounds"] = {"count": 0, "max_seconds": 0.0}
+            previous_round = None
             while True:
                 now = time.monotonic()
                 if identity_dll is not None and not report.get("proxy_verified_before_initialize"):
@@ -210,8 +233,12 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 except (OSError, UnicodeError, ValueError):
                     # Appended last line may be incomplete. Final validation is strict.
                     events = []
-                if any(isinstance(e, dict) and e.get("run_id") == report["run_id"]
-                       and e.get("name") == "modules_released" for e in events):
+                events_read_at = time.monotonic()
+                if previous_round is not None:
+                    rounds["count"] += 1
+                    rounds["max_seconds"] = max(rounds["max_seconds"], round(now - previous_round, 3))
+                previous_round = now
+                if shutdown_started(events):
                     deadline.observe_shutdown(now)
                     report["shutdown_started_observed"] = True
                     if shutdown_observed_at is None:
@@ -316,6 +343,21 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 if client.poll() is not None and client.returncode != 0:
                     raise RuntimeError("client failed with code " + str(client.returncode))
                 if debugger.poll() is not None and client.poll() is not None:
+                    if shutdown_observed_at is None:
+                        # A fast shutdown can fall between this round's read of the events and
+                        # the exit check (N1c, task 014). Read them once more. Like any observation
+                        # it arms the shutdown deadline when seen: the processes have exited, so it
+                        # can no longer hang (a round under load outlasted the 10 s limit, task 015 R1).
+                        exited = time.monotonic()
+                        try:
+                            events = read_events(out)
+                        except (OSError, UnicodeError, ValueError):
+                            events = []
+                        if shutdown_started(events):
+                            deadline.observe_shutdown(exited)
+                            report["shutdown_started_observed"] = True
+                            report["shutdown_observed_after_exit"] = True
+                            report["shutdown_exit_after_read_seconds"] = round(exited - events_read_at, 3)
                     if shutdown_observed_at is not None:
                         report["shutdown_elapsed_seconds"] = round(now - shutdown_observed_at, 3)
                         observe_timing(now, "processes-exited")
@@ -384,7 +426,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         if identity_dll is not None:
             attempt("identity hash", lambda: report.update(identity_hash_after=sha256(identity_dll)))
             attempt("observer hashes", lambda: report.update(identity_observer_hashes_after={p.name: sha256(p) for p in out.glob("identity-*.txt")}))
-            if profile == "challenge-only-v2":
+            # Without an owned server there was no observer to retire (a refusal or a startup
+            # timeout before ownership); checking it would be a spurious cleanup error (task 015, L5).
+            if profile == "challenge-only-v2" and report.get("server"):
                 attempt("observer retirement", lambda: report.update(
                     identity_observer_retired_verified=observer_retired(debug_text(), report["run_id"], report["server"])))
         report["helper_exit_code"] = client.poll() if client else None
