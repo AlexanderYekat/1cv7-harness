@@ -15,6 +15,7 @@ python -B research/launcher/launcher_probes77.py L2 --output .artifacts/launcher
 python -B research/launcher/launcher_probes77.py L3 --output .artifacts/launcher/<новый>/L3
 python -B research/launcher/launcher_probes77.py L6 --output .artifacts/launcher/<новый>/L6 `
   [--run-args "--open-timeout-s 600 --shutdown-timeout-s 120 --total-timeout-s 1000"]
+python -B research/launcher/launcher_probes77.py P2 --output .artifacts/launcher/<новый>/P2
 python -B research/launcher/launcher_probes77.py gate-release
 python -B research/launcher/launcher_probes77.py R1 --output .artifacts/launcher/<новый>/R1
 ```
@@ -25,4 +26,6 @@ python -B research/launcher/launcher_probes77.py R1 --output .artifacts/launcher
 если launcher их не тронул; при любых ключах до пробы она не запускается. `gate-take` держит
 gate исследования (`.artifacts/platform77/active-session.json`), чтобы задания `kudir` сразу
 отказывали; `gate-release` снимает только свою запись. R1 (`run_ert77.py`) берёт gate сам.
+P2 ([задача 017](../../docs/tasks/017-poll-round.md)) — обычный запуск, пока 4 процесса без
+перерыва пишут файлы по 64 МБ с `fsync` в `<output>/io-load` (после пробы каталог удаляется).
 Перед серией убедиться, что на стенде нет чужого сеанса с ключами `Harness77Diagnostic.*`.

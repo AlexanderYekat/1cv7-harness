@@ -202,10 +202,29 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             report["helper_pid"] = client.pid
             note("client", client.pid, int(client._handle))
             # How long the polling rounds take: under load a round lasted over 10 s (task 015, R1).
-            rounds = report["poll_rounds"] = {"count": 0, "max_seconds": 0.0}
+            # Each step is timed too, to name what stretches a round (task 017); perf_counter
+            # is fine-grained on every Windows Python and not the monotonic tests replace.
+            rounds = report["poll_rounds"] = {"count": 0, "max_seconds": 0.0, "step_max_seconds": {}, "slowest": None}
             previous_round = None
+            steps, lap_start = {}, [0.0]
+
+            def lap(step):
+                at = time.perf_counter()
+                steps[step] = steps.get(step, 0.0) + at - lap_start[0]
+                lap_start[0] = at
+                top = rounds["step_max_seconds"]
+                top[step] = max(top.get(step, 0.0), round(steps[step], 3))
+
             while True:
                 now = time.monotonic()
+                if previous_round is not None:
+                    rounds["count"] += 1
+                    if round(now - previous_round, 3) > rounds["max_seconds"]:
+                        rounds["max_seconds"] = round(now - previous_round, 3)
+                        rounds["slowest"] = {step: round(seconds, 3) for step, seconds in steps.items()}
+                previous_round = now
+                steps.clear()
+                lap_start[0] = time.perf_counter()
                 if identity_dll is not None and not report.get("proxy_verified_before_initialize"):
                     challenge_path = out / "proxy-challenge-complete"
                     identity = observed_identity(debug_text(), report["run_id"], report["server"])
@@ -228,16 +247,14 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         permit = out / "initialize-permit.tmp"
                         permit.write_text(report["run_id"], encoding="ascii")
                         permit.replace(out / "initialize-permit")
+                lap("identity")
                 try:
                     events = read_events(out)
                 except (OSError, UnicodeError, ValueError):
                     # Appended last line may be incomplete. Final validation is strict.
                     events = []
                 events_read_at = time.monotonic()
-                if previous_round is not None:
-                    rounds["count"] += 1
-                    rounds["max_seconds"] = max(rounds["max_seconds"], round(now - previous_round, 3))
-                previous_round = now
+                lap("events")
                 if shutdown_started(events):
                     deadline.observe_shutdown(now)
                     report["shutdown_started_observed"] = True
@@ -259,18 +276,21 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                     if not first.exists() and now - started >= report["open_timeout_seconds"]:
                         report["timeout_phase"] = "open"
                         raise TimeoutError("open deadline")
+                lap("markers")
                 log = debug_text()
                 if "\nHARNESS77_FIRST_CHANCE_AV\n" in log:
                     raise RuntimeError("first chance AV; guarded session stopped")
                 if any(message in log for message in (
                         "Numeric expression missing", "Syntax error at", "Unable to insert breakpoint", "Couldn't resolve error")):
                     raise RuntimeError("debugger command failed")
+                lap("debugger_log")
                 inventory = processes()
                 if identity_dll is not None:
                     if not baseline.preserved() or unexpected_processes(inventory, report["processes_before"], report["server"]):
                         raise RuntimeError("concurrent process inventory changed; stop only owned session")
                 elif any(p["pid"] != report["server"]["pid"] for p in inventory):
                     raise RuntimeError("foreign 1C process appeared; stop only owned session")
+                lap("inventory")
                 if report.get("open_failure_probe") and (out / "base-open-started").exists():
                     if (out / "base-open-started").read_text(encoding="ascii").strip() != report["run_id"]:
                         raise ValueError("foreign base-open marker")
@@ -340,6 +360,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                             raise RuntimeError("modal wait already returned before dismissal")
                         report["modal_dismissal"] = modal.dismiss(windows)
                         recovery_until = time.monotonic() + 10
+                lap("markers")
                 if client.poll() is not None and client.returncode != 0:
                     raise RuntimeError("client failed with code " + str(client.returncode))
                 if debugger.poll() is not None and client.poll() is not None:
@@ -362,7 +383,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         report["shutdown_elapsed_seconds"] = round(now - shutdown_observed_at, 3)
                         observe_timing(now, "processes-exited")
                     break
+                lap("exit_check")
                 time.sleep(0.1)
+                lap("sleep")
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
     finally:

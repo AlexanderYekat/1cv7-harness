@@ -6,7 +6,8 @@
 Cases (docs/tasks/015-launcher-robustness.md): L0 control run; L4 keys of the older
 layout without an owner record; L5 a 1-second open deadline; L1 kill the `harness77 run`
 tree during the calculation; L2 the next run after L1; L3 a second run while a long one
-runs; L6 a run under processor load; R1 the research run_ert77.py with its 20/30 s.
+runs; L6 a run under processor load; R1 the research run_ert77.py with its 20/30 s;
+P2 (docs/tasks/017-poll-round.md) a run under disk write load.
 `gate-take`/`gate-release` hold the research active-session gate around L0-L6 (R1 takes it itself).
 
 Each case writes <output>/<case>.json: what was run, the exit code, the run report's
@@ -222,6 +223,34 @@ class Probe:
         record["busy_processes"] = count
         return record
 
+    def P2(self):
+        """Task 017: a run while 4 processes keep writing 64 MB files with fsync (disk, antivirus)."""
+        load = self.out / "io-load"
+        load.mkdir()
+        writer = ("import os, sys\n"
+                  "path, block, n = sys.argv[1], os.urandom(1 << 20), 0\n"
+                  "while True:\n"
+                  "    with open(path, 'wb') as f:\n"
+                  "        for _ in range(64):\n"
+                  "            f.write(block)\n"
+                  "        f.flush(); os.fsync(f.fileno())\n"
+                  "    n += 1\n"
+                  "    open(path + '.count', 'w').write(str(n))\n")
+        writers = [subprocess.Popen([sys.executable, "-c", writer, str(load / f"w{i}.bin")]) for i in range(4)]
+        try:
+            time.sleep(5)
+            record = self.run("project-control.toml", *self.args.run_args.split())
+        finally:
+            for process in writers:
+                process.kill()
+                process.wait()
+        counts = [int(p.read_text()) for p in load.glob("*.count")]
+        record["io_writers"] = {"count": len(writers), "files_of_64_mb_written": sum(counts)}
+        for path in load.iterdir():
+            path.unlink()
+        load.rmdir()
+        return record
+
     def R1(self):
         output = self.out / "r1"
         before = state(self.base)
@@ -258,7 +287,7 @@ def gate(action):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("case", choices=("L0", "L4", "L5", "L1", "L2", "L3", "L6", "R1", "gate-take", "gate-release"))
+    parser.add_argument("case", choices=("L0", "L4", "L5", "L1", "L2", "L3", "L6", "P2", "R1", "gate-take", "gate-release"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--profiles", type=Path, default=ROOT / ".local/stage14-native")
     parser.add_argument("--run-args", default="", help="L6: extra `harness77 run` options, e.g. wider deadlines")

@@ -180,6 +180,58 @@ class SessionFailureTests(unittest.TestCase):
             self.addCleanup(item.stop)
         return self.run_simulated_popen()
 
+    def test_round_steps_name_what_stretched_the_slowest_round(self):
+        # Task 017: under load a round lasted up to 16 s; the steps say which part took it.
+        (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
+        reads, clock = [0], [0.0]
+
+        def tick():
+            clock[0] += 0.01
+            return clock[0]
+
+        def events(out):
+            reads[0] += 1
+            return []
+
+        # before, ownership, ancestry recheck, before activation; then one read per round
+        before = iter([[], [self.candidate], [self.candidate], [self.candidate]])
+
+        def processes():
+            item = next(before, None)
+            if item is not None:
+                return item
+            if reads[0] == 2:
+                clock[0] += 5  # the second round's process inventory stalls
+            return [self.candidate] if reads[0] < 3 else []
+
+        self.inventory = processes
+        client = Mock(pid=11, _handle=43, returncode=0)
+        client.poll.side_effect = lambda: 0 if reads[0] >= 3 else None
+        self.kernel.WaitForSingleObject.side_effect = None
+        self.kernel.WaitForSingleObject.return_value = 0
+        launched = []
+
+        def popen(command, **kwargs):
+            launched.append(command)
+            return self.debugger if len(launched) == 1 else client
+
+        fake = types.SimpleNamespace(process_cpu_ms=Mock(return_value=1.0))
+        with patch.object(session.subprocess, "Popen", side_effect=popen), patch.object(session.time, "sleep"), \
+                patch.object(session.time, "monotonic", side_effect=tick), \
+                patch.object(session.time, "perf_counter", side_effect=tick), \
+                patch.object(session, "read_events", side_effect=events), \
+                patch.dict(sys.modules, {"win32_session77": fake}):
+            result = self.run_simulated_popen()
+        self.assertNotIn("error", result)
+        rounds = result["poll_rounds"]
+        self.assertEqual(rounds["count"], 2)
+        self.assertGreaterEqual(rounds["max_seconds"], 5)
+        self.assertEqual(set(rounds["step_max_seconds"]),
+                         {"identity", "events", "markers", "debugger_log", "inventory", "exit_check", "sleep"})
+        self.assertGreaterEqual(rounds["step_max_seconds"]["inventory"], 5)
+        self.assertGreaterEqual(rounds["slowest"]["inventory"], 5)
+        self.assertLess(max(v for k, v in rounds["slowest"].items() if k != "inventory"), 1)
+
     def test_shutdown_between_the_read_and_the_exit_check_is_observed_after_exit(self):
         # N1c (task 014): the whole coordinated shutdown fell between two checks.
         events = [{"run_id": "simulation", "name": "modules_released", "value": "ok"},
