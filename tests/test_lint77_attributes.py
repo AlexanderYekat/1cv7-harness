@@ -289,7 +289,7 @@ class ContextTests(unittest.TestCase):
                                        capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(report["version"], "0.4.0")
+        self.assertEqual(report["version"], "0.5.0")
         self.assertEqual([d["rule"] for d in report["diagnostics"]], ["L7714"])
         self.assertEqual((report["attributes_checked"], report["metadata_guarded"]), (2, 1))
 

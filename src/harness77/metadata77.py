@@ -59,6 +59,11 @@ ATTRIBUTES = {"Справочник": ("Params",), "Документ": ("Head Fi
               "Регистр": ("Props", "Figures", "Flds")}
 GENERAL = "GenJrnlFldDef"
 ATTRIBUTE_TYPES = ("S", "N", "D", "B", "O", "E", "T", "K", "P", "U")
+# Folders of 1Cv7.MD modules that run in the context of an object (task 020) and the type code
+# of their number: a document's form and module, a catalog's element and group forms. A list
+# form is numbered as the form in its catalog's (SubList) or journal's (Journal) record.
+MODULE_OWNERS = {"Document": "O", "Transact": "O", "Subconto": "B", "SubFolder": "B"}
+LIST_FORMS = {"SubList": ("SbCnts", "Справочник"), "Journal": ("Journalisters", "Журнал")}
 
 
 class Attribute:
@@ -205,6 +210,26 @@ class Metadata:
                     found[cls][record[1].casefold()] = names
             self._attributes = found
         return self._attributes[name].get(kind.casefold())
+
+    def owner(self, folder, number):
+        """(class, kind) of the object whose module or form a 1Cv7.MD folder holds, or None.
+
+        Document_<n> and Transact_<n> are document n, Subconto_<n> and SubFolder_<n> catalog n,
+        SubList_<n> and Journal_<n> the catalog or journal whose record lists form n (static
+        survey of base-for-test and Торговля+Склад 9.2, task 020).
+        """
+        if folder in MODULE_OWNERS:
+            code = MODULE_OWNERS[folder]
+            name = self.names.get((code, number))
+            return (TYPES[code], name) if name else None
+        if folder in LIST_FORMS:
+            key, cls = LIST_FORMS[folder]
+            for record in (self._section(key) or [None])[1:]:
+                for item in record[2:]:
+                    if isinstance(item, list) and item[:1] == ["Form"] and any(
+                            isinstance(form, list) and form[:1] == [str(number)] for form in item[1:]):
+                        return (cls, record[1])
+        return None
 
     def number(self, code, kind):
         """The number of a kind by its name, as 1C finds it (letter case aside), or None."""

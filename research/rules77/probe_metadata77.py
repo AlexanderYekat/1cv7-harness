@@ -268,8 +268,9 @@ def run_cases(cases, args, scope, judge=judge):
         folder.mkdir(parents=True, exist_ok=True)
         text = module_text(case)
         (folder / "module.1s").write_text(text, encoding="utf-8", newline="\n")
-        deadline = 300 if case["id"].endswith("-survey") or case.get("batch") else 60
-        (folder / "project.toml").write_text(project_text(template, deadline), encoding="utf-8")
+        deadline = case.get("deadline") or (300 if case["id"].endswith("-survey") or case.get("batch") else 60)
+        own = Path(case["template"]).resolve(strict=True) if case.get("template") else template
+        (folder / "project.toml").write_text(project_text(own, deadline), encoding="utf-8")
         probe_line = next((n for n, line in enumerate(text.splitlines(), 1) if PROBE in line), None)
         completed = subprocess.run([sys.executable, "-m", "harness77", "run", "--project", str(folder / "project.toml"),
                                     "--stand", str(args.stand.resolve()), "--output-root", str(args.output_root.resolve())],
@@ -291,6 +292,7 @@ def run_cases(cases, args, scope, judge=judge):
                                         if PROBE in line), None),
                      "observed": observed, "verdict": verdict, "run_id": summary["run_id"],
                      "module_sha256": sha256(folder / "module.1s"),
+                     **({"template_sha256": sha256(own)} if own != template else {}),
                      "ert_sha256": (report.get("artifact") or {}).get("sha256"),
                      "run_json_sha256": sha256(run_dir / "run.json")})
         print(case["id"], verdict, observed["compile"], observed["runtime"], (observed["value"] or "")[:200],

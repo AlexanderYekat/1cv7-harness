@@ -16,20 +16,22 @@ import zlib
 
 from .catalog77 import load_packaged
 from .ert_module import (DIALOG_STREAM, CompoundFile, ErtError, decode_dialog, decode_source_bytes,
-                         dialog_controls)
+                         dialog_controls, parse_dialog)
+from .moxcel77 import area_names, form_table, worksheets
 
-VERSION = '0.4.0'
+VERSION = '0.5.0'
 LIMITATIONS = [
     'Частичный разбор языка; отсутствие диагностик не означает успешную компиляцию 1С.',
     'Имена встроенных функций и методов — из каталога платформы 7.70.027; неизвестные вызовы '
     'по умолчанию — предупреждения.',
     'Типы, методы конфигурации, COM и внешних компонент, динамически исполняемый код не проверяются.',
-    'Объявление переменных (L7711) проверяется только в модуле с известным диалогом: ERT или --dialog.',
+    'Объявление переменных (L7711) проверяется только в модуле с известным контекстом: ERT, --dialog, '
+    'формы, модули документов и глобальный модуль 1Cv7.MD (кроме форм операций, проводок и плана счетов).',
     'Имена объектов метаданных (L7712, L7713) проверяются только с метаданными базы: --metadata или '
     'модули самого 1Cv7.MD; имена форм, тексты запросов и строки вне аргументов функций — нет.',
     'Реквизиты (L7714) проверяются только у объекта, который переменная получает из '
-    'СоздатьОбъект("Справочник|Документ|Регистр.<Вид>"), и далее по ссылочным реквизитам; '
-    'реквизиты значений неизвестного типа и модуля самого объекта — нет.',
+    'СоздатьОбъект("Справочник|Документ|Регистр.<Вид>"), у реквизитов объекта в его модуле 1Cv7.MD '
+    'и далее по ссылочным реквизитам; реквизиты значений неизвестного типа — нет.',
     'Внутри Если, условие которого проверяет имя через Метаданные, L7712-L7714 об этом имени молчат; '
     'проверка, сохранённая в переменную или с выходом из процедуры, не распознаётся.',
     'Доступность известных встроенных функций в конкретном контексте модуля не проверяется.',
@@ -97,6 +99,14 @@ TYPE_STRING = re.compile(r'"([A-Za-zА-Яа-яЁё]+)\.([A-Za-zА-Яа-яЁё_][
 # Task 019: objects СоздатьОбъект("<Тип>.<Вид>") makes whose attributes lint follows; the
 # catalog's "<Класс>/Атрибуты" are the attributes every object of the class has.
 OBJECT_CLASSES = {'справочник': 'Справочник', 'документ': 'Документ', 'регистр': 'Регистр'}
+ATTRIBUTE_CLASSES = set(OBJECT_CLASSES.values())
+# Task 020: catalog folders of the attributes a module of an object reads bare, by its class.
+CONTEXT_ATTRIBUTES = {'Справочник': 'Справочник/Атрибуты', 'Документ': 'Документ/Атрибуты',
+                      'Регистр': 'Регистр/Атрибуты', 'Журнал': 'Документ/Модуль формы журнала документов/Атрибуты'}
+# The form's table attribute: readable in a form that lists worksheets, not in one without (task 020).
+FORM_TABLE = {'таблица', 'table'}
+# 1Cv7.MD forms whose context (an operation, its entries, a chart of accounts) lint does not model.
+UNMODELLED_FORMS = {'Operation', 'OperationList', 'ProvList', 'AccountChart', 'AccountChartList'}
 # Метаданные.<Класс>("Имя") in a condition of Если guards an object; .<Член>("Имя") after it, or
 # Метаданные.ОбщийРеквизитДокумента("Имя"), an attribute or an enumeration value.
 GUARD_CLASSES = {name.casefold(): name for name in ('Константа', 'Справочник', 'Документ', 'Перечисление', 'Регистр',
@@ -154,6 +164,8 @@ class Source:
     dialog: frozenset[str] | None = None
     # metadata77.Metadata of the base the module runs on (L7712-L7714); None: unknown.
     metadata: object | None = None
+    # (class, kind) of the object whose form or module this 1Cv7.MD module is (task 020); None: no object.
+    owner: tuple[str, str] | None = None
 
 
 @dataclass
@@ -249,6 +261,15 @@ def lex(source: Source) -> tuple[list[Token], list[Diagnostic]]:
                                    start_column, 'L7701', 'error', 'Незакрытая строка.'))
             tokens.append(Token('string', text[start:end], start_line, start_column))
             advance(end)
+            continue
+        # A date literal '01.01.2000' (task 020: 'ОК' in Торговля+Склад is one too, not a name).
+        close = -1
+        if char == "'":
+            line_end = text.find('\n', i)
+            close = text.find("'", i + 1, len(text) if line_end < 0 else line_end)
+        if close > 0:
+            tokens.append(Token('date', text[start:close + 1], start_line, start_column))
+            advance(close + 1)
             continue
         if char.isalpha() or char == '_':
             end = i + 1
@@ -444,13 +465,13 @@ def load_catalog() -> Catalog:
         globals_ = json.loads(files('harness77').joinpath('lint77-globals.json').read_text(encoding='utf-8'))
         calls, readable, limits = set(), {n.casefold() for n in globals_['names']}, {}
         type_functions = {name.casefold(): name for name in TYPE_FUNCTIONS}
-        object_attributes = {name: set() for name in OBJECT_CLASSES.values()}
+        object_attributes = {name: set() for name in CONTEXT_ATTRIBUTES}
+        classes = {folder: name for name, folder in CONTEXT_ATTRIBUTES.items()}
         kinds = {}
         for item in data['items']:
             names = [n.casefold() for n in (item['name_ru'], item['name_en']) if n]
-            if item['kind'] == 'attribute' and item['folder'].endswith('/Атрибуты') \
-                    and item['folder'][:-len('/Атрибуты')] in object_attributes:
-                object_attributes[item['folder'][:-len('/Атрибуты')]].update(names)
+            if item['kind'] == 'attribute' and item['folder'] in classes:
+                object_attributes[classes[item['folder']]].update(names)
             if item['kind'] in ('global_function', 'method'):
                 calls.update(names)
                 russian = type_functions.get((item['name_ru'] or '').casefold())
@@ -458,7 +479,8 @@ def load_catalog() -> Catalog:
                     type_functions.update(dict.fromkeys(names, russian))
                     kinds.setdefault(russian, set()).add(item['kind'])
             if item['kind'] == 'attribute' and item['folder'].startswith('Контекст формы/') and '/Объект' not in item['folder']:
-                readable.update(names)
+                # Таблица belongs to a form with tables only (task 020): ert_dialog adds it there.
+                readable.update(set(names) - FORM_TABLE)
             name = item['name_ru']
             if item['kind'] == 'method' and name and CYRILLIC.search(name):
                 key, limit = name.casefold(), item['max_params']
@@ -712,11 +734,14 @@ def check_attributes(parsed: Parsed, catalog: Catalog, own: set[str], known: set
     so in every procedure. A parameter, a loop counter, a form attribute, a global name or a
     name passed whole to a procedure of the module may hold anything else and is not followed.
     Reference attributes lead on: Док.Сотрудник.Должность checks the catalog of Сотрудник.
+    In a module of an object (task 020) its own reference attributes start the chain bare:
+    Контрагент.ИНН in a document module checks the catalog of Контрагент.
     """
-    metadata = parsed.source.metadata
+    metadata, owner = parsed.source.metadata, parsed.source.owner
     if metadata is None:
         return
     tokens, severity, base = parsed.tokens, 'error' if strict else 'warning', metadata.describe()
+    owned = metadata.attributes(*owner) if owner and owner[0] in ATTRIBUTE_CLASSES else {}
     module_vars, dialog = module_variables(parsed), parsed.source.dialog or frozenset()
     # Binding -> (class, kind, assignment token) of the object it holds; None: anything else.
     held, uses = {}, []
@@ -774,9 +799,13 @@ def check_attributes(parsed: Parsed, catalog: Catalog, own: set[str], known: set
             """The variable a name in this scope stands for; None: a global or form name."""
             if key in local:
                 return ('local', number, key)
-            if key in module_vars or (not number and key not in known and key not in dialog):
+            if key in module_vars:
                 return ('module', key)
-            return None if key in known or key in dialog else ('local', number, key)
+            if key in owned:
+                return ('owner', key)
+            if key in known or key in dialog:
+                return None
+            return ('module', key) if not number else ('local', number, key)
 
         for i in starts:
             token = tokens[i]
@@ -799,9 +828,16 @@ def check_attributes(parsed: Parsed, catalog: Catalog, own: set[str], known: set
         if key[0] == 'module' and module_vars.get(key[1]):
             held[key] = None
     for i, key in uses:
-        if not held.get(key):
+        if key[0] == 'owner':
+            if owned[key[1]].target is None:
+                continue
+            (cls, kind), via = owned[key[1]].target, f' (реквизит {tokens[i].text})'
+            origin = f'{tokens[i].text} — реквизит {owner[0]}.{owner[1]}, чей это модуль'
+        elif held.get(key):
+            cls, kind, made = held[key]
+            via, origin = '', f'{tokens[i].text} — СоздатьОбъект("{cls}.{kind}") в строке {made.line}'
+        else:
             continue
-        cls, kind, origin = held[key]
         j, path = i, [tokens[i].text]
         while (follows(j + 1, '.') and j + 2 < len(tokens) and tokens[j+2].kind == 'id'
                and not follows(j + 3, '(')):
@@ -813,16 +849,14 @@ def check_attributes(parsed: Parsed, catalog: Catalog, own: set[str], known: set
             attribute = metadata.attributes(cls, kind).get(name.key)
             if attribute is None:
                 if not parsed.is_guarded(i, {(None, name.key)}):
-                    via = '' if j == i else f' (реквизит {tokens[j].text})'
                     parsed.report(name, 'L7714', f'{".".join(path)}: у объекта {cls}.{kind}{via} в метаданных '
-                                  f'{base} нет реквизита {name.text}; {tokens[i].text} — '
-                                  f'СоздатьОбъект("{held[key][0]}.{held[key][1]}") в строке {origin.line}. '
-                                  '1С 7.7 загружает модуль, а исполнение строки прерывает «Поле агрегатного '
-                                  f'объекта не обнаружено ({name.text})».', severity)
+                                  f'{base} нет реквизита {name.text}; {origin}. 1С 7.7 загружает модуль, '
+                                  'а исполнение строки прерывает «Поле агрегатного объекта не обнаружено '
+                                  f'({name.text})».', severity)
                 break
             if attribute.target is None:
                 break
-            cls, kind = attribute.target
+            (cls, kind), via = attribute.target, f' (реквизит {name.text})'
             j += 2
 
 
@@ -854,13 +888,47 @@ def exported_variables(parsed: Parsed) -> set[str]:
     return {name for name, exported in module_variables(parsed).items() if exported}
 
 
-def ert_dialog(compound: CompoundFile) -> frozenset[str] | None:
-    """Identifiers of the form dialog; None if the ERT has no readable dialog."""
+def ert_dialog(compound: CompoundFile, entry=None) -> frozenset[str] | None:
+    """Names the form's module reads without declaration (the ERT's form or this dialog entry's).
+
+    The dialog's controls and list columns (Browser/Fixed, the identifier is field 7), Таблица
+    if the form lists worksheets, and the named areas of the form's table, the worksheet its
+    Container.Profile names (task 020). None if the dialog is unreadable or that table is not
+    a worksheet this reader knows.
+    """
     try:
-        controls = dialog_controls(decode_dialog(compound.read_stream(compound.find_stream(DIALOG_STREAM))))
+        entry = compound.find_stream(DIALOG_STREAM) if entry is None else entry
+        text = decode_dialog(compound.read_stream(entry))
+        names = {control.identifier for control in dialog_controls(text)}
+        for section in parse_dialog(text)[1:]:
+            if isinstance(section, list) and section[:1] == ['Browser']:
+                for item in section[1:]:
+                    if isinstance(item, list) and item[:1] == ['Fixed']:
+                        names.update(record[7] for record in item[1:]
+                                     if isinstance(record, list) and len(record) > 7 and isinstance(record[7], str))
     except ErtError:
         return None
-    return frozenset(control.identifier.casefold() for control in controls if control.identifier)
+    paths = cfb_paths(compound)
+    folder = paths.get(entry.entry_id, '').rpartition('/')[0]
+    streams = {path: item for item_id, path in paths.items()
+               for item in [compound.directory_entries[item_id]] if item.object_type == 2}
+
+    def sibling(name):
+        found = streams.get(f'{folder}/{name}' if folder else name)
+        return None if found is None else compound.read_stream(found)
+
+    contents = sibling('Container.Contents') or b''
+    if worksheets(contents):
+        names.update(FORM_TABLE)
+    worksheet = form_table(contents, sibling('Container.Profile') or b'')
+    if worksheet is not None:
+        table = sibling(worksheet)
+        areas = area_names(table) if table is not None else None
+        if areas is None:
+            return None
+        names.update(areas)
+    # Only identifiers are names a module reads; an area "200" or a column without one adds nothing.
+    return frozenset(name.casefold() for name in names if name)
 
 
 def dialog_context(path: Path) -> frozenset[str]:
@@ -910,10 +978,12 @@ def load_sources(path: Path, own_metadata_names=True) -> list[Source]:
     data = path.read_bytes()
     compound = CompoundFile(data)
     paths = cfb_paths(compound)
-    dialog = ert_dialog(compound) if path.suffix.casefold() == '.ert' else None
+    is_md = path.suffix.casefold() == '.md'
+    dialog = None if is_md else ert_dialog(compound)
     # Modules of a configuration run on its own metadata (L7712-L7714).
-    metadata = (own_metadata(compound, data, path)
-                if own_metadata_names and path.suffix.casefold() == '.md' else None)
+    metadata = own_metadata(compound, data, path) if own_metadata_names and is_md else None
+    streams = {paths[entry.entry_id]: entry for entry in compound.directory_entries
+               if entry.object_type == 2 and entry.entry_id in paths}
     result = []
     for entry in compound.directory_entries:
         if entry.object_type != 2 or entry.name != 'MD Programm text':
@@ -927,11 +997,31 @@ def load_sources(path: Path, own_metadata_names=True) -> list[Source]:
             text = zlib.decompress(raw, -15).decode('cp1251')
         except (zlib.error, UnicodeError) as exc:
             raise ErtError(f'Не удалось прочитать модуль {module}: {exc}') from exc
+        owner = None
+        if is_md:
+            dialog, owner = md_context(compound, streams, module, metadata)
         result.append(Source(str(path), module, text, module.startswith('TypedText/ModuleText_Number1/'), dialog,
-                             metadata))
+                             metadata, owner))
     if not result:
         raise ErtError(f'В {path.name} не найдены модули кода.')
     return result
+
+
+def md_context(compound: CompoundFile, streams: dict, module: str, metadata):
+    """(dialog, owner) of a 1Cv7.MD module (task 020): a form's dialog is its folder's Dialog Stream,
+    a document module (Transact) and the global module have an empty one; the owner is the
+    object it belongs to."""
+    match = re.match(r'(?:\w+/)?(\w+?)_Number(\d+)/', module)
+    if not match:
+        return None, None
+    folder, number = match.group(1), int(match.group(2))
+    if folder in UNMODELLED_FORMS:
+        return None, None
+    owner = metadata.owner(folder, number) if metadata is not None else None
+    sibling = streams.get(module.rsplit('/', 1)[0] + '/' + DIALOG_STREAM)
+    if sibling is not None:
+        return ert_dialog(compound, sibling), owner
+    return (frozenset() if folder in ('Transact', 'ModuleText') else None), owner
 
 
 def own_metadata(compound: CompoundFile, data: bytes, path: Path):
@@ -981,6 +1071,15 @@ def load_builtins() -> set[str]:
     return {name.casefold() for name in data['functions']}
 
 
+def owner_names(source: Source, catalog: Catalog) -> set[str]:
+    """Names a module of an object reads without declaration (task 020): its attributes and its class's."""
+    if source.owner is None or source.metadata is None:
+        return set()
+    cls, kind = source.owner
+    own = source.metadata.attributes(cls, kind) if cls in ATTRIBUTE_CLASSES else None
+    return set(own or ()) | catalog.object_attributes[cls]
+
+
 def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) -> dict:
     parsed = [parse(source) for source in sources]
     external = [parse(source) for source in global_sources]
@@ -1009,7 +1108,7 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
         check_calls(item, visible_globals, builtins, strict)
         check_method_arity(item, catalog, strict)
         check_line_length(item)
-        check_declarations(item, catalog, known | set(visible_globals), strict)
+        check_declarations(item, catalog, known | set(visible_globals) | owner_names(item.source, catalog), strict)
         check_metadata_names(item, catalog, set(visible_globals) | set(item.symbols), strict)
         check_attributes(item, catalog, set(visible_globals) | set(item.symbols), known | set(visible_globals), strict)
         diagnostics.extend(item.diagnostics)
@@ -1022,6 +1121,8 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
     return {'schema_version': 1, 'tool': 'lint77', 'version': VERSION,
             'modules': len(parsed), 'global_context_modules': len(external),
             'form_context_modules': sum(item.source.dialog is not None for item in parsed),
+            'md_context_modules': sum(item.source.dialog is not None and Path(item.source.path).suffix.casefold() == '.md'
+                                      for item in parsed),
             'metadata_context_modules': sum(item.source.metadata is not None for item in parsed),
             'metadata': list(contexts.values()),
             'metadata_guarded': sum(item.guarded for item in parsed),
