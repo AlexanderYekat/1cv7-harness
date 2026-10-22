@@ -13,7 +13,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="harness77", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("command", choices=("lint", "compiler-protocol", "extract", "build", "run", "catalog",
-                                            "form-extract", "triage", "visual", "mcp"))
+                                            "form-extract", "triage", "visual", "mcp", "md-extract", "md-build"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.command == "lint":
@@ -32,6 +32,9 @@ def main(argv=None):
         from .visual77 import main as operation
     elif args.command == "mcp":
         from .mcp77 import main as operation
+    elif args.command in ("md-extract", "md-build"):
+        from .md77 import main as md_main
+        return md_main(args.command, args.arguments)
     else:
         from .artifacts import main as artifact_main
         return artifact_main(args.command, args.arguments)

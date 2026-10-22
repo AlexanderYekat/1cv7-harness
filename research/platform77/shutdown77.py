@@ -92,8 +92,12 @@ def prepare_shutdown(out, run_id, fault="none"):
     return fragment, manifest
 
 
-def assess(out, manifest, lifecycle):
-    """Do not infer success from process disappearance or a truthy flag."""
+def assess(out, manifest, lifecycle, pinned=None):
+    """Do not infer success from process disappearance or a truthy flag.
+
+    pinned: the expected hashes when not PINNED — the caller's, never the lifecycle's own
+    (a run's copy of the base with the configuration it built, task 021)."""
+    expected = pinned or PINNED
     issues = []
     result = {"mode": MODE, "status": "blocked", "issues": issues,
               "scope": "fixed synthetic module suite on pinned base-for-test; no ERT acceptance"}
@@ -128,7 +132,7 @@ def assess(out, manifest, lifecycle):
         for key in ("processes_before", "processes_after"):
             if lifecycle.get(key) != []:
                 issues.append(key + " must be empty")
-    if lifecycle.get("hashes_before") != PINNED or lifecycle.get("hashes_after") != PINNED:
+    if lifecycle.get("hashes_before") != expected or lifecycle.get("hashes_after") != expected:
         issues.append("pinned binary/configuration hashes do not match")
     registration = lifecycle.get("temporary_com_registration", {})
     if registration.get("removed") is not True or registration.get("sha256") != PINNED["helper"]:

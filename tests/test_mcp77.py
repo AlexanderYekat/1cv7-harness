@@ -148,7 +148,7 @@ class ServerProcessTests(unittest.TestCase):
     def test_tools_list(self):
         tools = {tool["name"]: tool for tool in self.client.request("tools/list")["result"]["tools"]}
         self.assertEqual(list(tools), ["lint", "compiler-protocol", "triage", "extract", "form-extract", "build",
-                                       "run", "visual-compare"])
+                                       "md-extract", "md-build", "run", "visual-compare"])
         for tool in tools.values():
             self.assertFalse(tool["inputSchema"]["additionalProperties"])
             self.assertEqual(tool["outputSchema"], mcp77.OUTPUT_SCHEMA)
@@ -241,6 +241,26 @@ class ServerProcessTests(unittest.TestCase):
         self.assertEqual(again["structuredContent"]["stdout"], None)
         self.assertEqual(again["structuredContent"]["stderr"]["status"], "blocked")
         self.assertIn("Выход уже существует", again["structuredContent"]["stderr"]["error"])
+
+    def test_md_operations_equal_cli(self):
+        # Task 021: the modules of a 1Cv7.MD out and a changed one back in.
+        from test_md77 import md_bytes
+        md = self.dir / "1Cv7.MD"
+        md.write_bytes(md_bytes())
+        mcp, direct = self.dir / "md-mcp", self.dir / "md-cli"
+        result = self.client.call("md-extract", {"input": str(md), "output": str(mcp)})
+        self.assertEqual(result["structuredContent"]["exit_code"], 0, result)
+        self.assertEqual(*same(result, cli(["md-extract", str(md), "--output", str(direct)], self.root),
+                               [(mcp, direct)]))
+        for folder in (mcp, direct):
+            (folder / "ГлобальныйМодуль.1s").write_text("// правка\r\n", encoding="utf-8", newline="")
+        result = self.client.call("md-build", {"template": str(md), "modules": str(mcp), "output": str(mcp) + ".MD"})
+        self.assertEqual([row["file"] for row in result["structuredContent"]["stdout"]["changed"]],
+                         ["ГлобальныйМодуль.1s"])
+        expected = cli(["md-build", "--template", str(md), "--modules", str(direct), "--output", str(direct) + ".MD"],
+                       self.root)
+        self.assertEqual(*same(result, expected, [(mcp, direct)]))
+        self.assertEqual(Path(str(mcp) + ".MD").read_bytes(), Path(str(direct) + ".MD").read_bytes())
 
     def test_visual_compare_equals_cli(self):
         baseline, actual = self.dir / "a.png", self.dir / "b.png"

@@ -18,7 +18,9 @@ from shutdown77 import Deadline, atomic_json, read_events, sha256
 from win32_session77 import kernel, processes, register_cleanup_helper
 
 
-def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, identity_dll=None):
+def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, identity_dll=None, pinned=None):
+    """pinned: the expected hashes when not shutdown77.PINNED — a run's copy of the base with
+    the configuration it built (task 021); every other file stays the stand's."""
     def hashes():
         return {name: sha256(path) for name, path in {
             "exe": exe, "helper": helper_dll,
@@ -89,6 +91,18 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         path = out / "debugger.log"
         return path.read_text(errors="replace") if path.exists() else ""
 
+    def open_windows():
+        """The windows of the owned 1C when opening outlasts its deadline, read only (task 021):
+        a dialog 1C waits on before the base opens is named in the report, not guessed."""
+        try:
+            from win32_modal77 import OwnedModal
+            modal = OwnedModal(handle, report["server"], report["proxy_identity"]["tid"], desktop, report["run_id"])
+            snapshot = {"run_id": report["run_id"], "windows": modal.snapshot()}
+        except Exception as error:  # noqa: BLE001 - a diagnostic never replaces the timeout
+            snapshot = {"run_id": report["run_id"], "error": f"{type(error).__name__}: {error}"}
+        atomic_json(out / "open-timeout-windows.json", snapshot)
+        report["open_timeout_windows"] = snapshot
+
     def observe_timing(now, step):
         from win32_session77 import process_cpu_ms
         report["shutdown_observations"].append({
@@ -119,7 +133,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         elif report["processes_before"]:
             raise RuntimeError("existing 1C process; no process was started")
         from shutdown77 import PINNED
-        if report["hashes_before"] != PINNED:
+        if report["hashes_before"] != (pinned or PINNED):
             raise RuntimeError("pinned files changed since preflight")
         registration_cleanup = register_cleanup_helper(helper_dll, report)
         with (out / "cdb-stdout.txt").open("wb") as debug_stdout, (out / "client-stdout.txt").open("wb") as client_stdout:
@@ -275,6 +289,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                     first = out / ("ert-" + report["ert_commands"][0] + "-started")
                     if not first.exists() and now - started >= report["open_timeout_seconds"]:
                         report["timeout_phase"] = "open"
+                        open_windows()
                         raise TimeoutError("open deadline")
                 lap("markers")
                 log = debug_text()

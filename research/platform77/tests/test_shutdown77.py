@@ -45,6 +45,15 @@ class ShutdownEvidenceTests(unittest.TestCase):
     def test_complete_contract(self):
         self.assertEqual(self.result()["status"], "passed")
 
+    def test_a_built_configuration_is_judged_by_the_caller_s_pins(self):
+        # Task 021: a run's copy of the base carries the configuration it built.
+        built = dict(shutdown.PINNED, **{"1Cv7.MD": "b" * 64})
+        self.lifecycle.update(hashes_before=dict(built), hashes_after=dict(built))
+        self.assertIn("pinned binary/configuration hashes do not match", self.result()["issues"])
+        (self.out / "shutdown-events.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in self.events) + "\n", encoding="utf-16")
+        self.assertEqual(shutdown.assess(self.out, self.manifest, self.lifecycle, pinned=built)["status"], "passed")
+
     def test_legacy_success_flag_is_insufficient(self):
         self.lifecycle = {"normal_shutdown_observed": True}
         self.assertEqual(self.result()["status"], "blocked")

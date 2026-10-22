@@ -1,7 +1,7 @@
 # Контракты harness77 0.1
 
 Реализованы операции: `lint`, `compiler-protocol`, `extract`, `build`, `run`, `catalog`,
-`form-extract`, `triage`, `visual`; `mcp` — сервер MCP над ними.
+`form-extract`, `triage`, `visual`, `md-extract`, `md-build`; `mcp` — сервер MCP над ними.
 `harness77 --version` и `python -m harness77 --version` выводят версию пакета.
 У каждой операции есть `--help`. Пути разрешаются относительно CWD вызывающего;
 пакет, словарь и зависимости от CWD не зависят. Stdout/stderr CLI — UTF-8.
@@ -251,6 +251,37 @@ ID/класса или типа существующего элемента, и�
 формы в 1С это не подтверждает: она проверена нативно для одного шаблона
 (задачи 008, 010, 011).
 
+## Модули конфигурации — `md-extract`, `md-build` (задача 021)
+
+```text
+harness77 md-extract 1Cv7.MD --output NEW_DIR
+harness77 md-build --template 1Cv7.MD --modules DIR --output NEW.MD
+```
+
+`md-extract` пишет в новый каталог все модули `1Cv7.MD` — UTF-8 без BOM, переводы
+строк как в 1С (CRLF), — и индекс `modules.json` (`format=harness77-md-modules`: для
+каждого файла путь потока в `1Cv7.MD`, объект, модуль, SHA-256 текста в Windows-1251;
+SHA-256 и имя конфигурации). Раскладка по метаданным: `ГлобальныйМодуль.1s`,
+`Документ/<Имя>/МодульДокумента.1s`, `Документ/<Имя>/Форма.1s`,
+`Справочник/<Имя>/ФормаЭлемента.1s`, `…/ФормаГруппы.1s`, `…/ФормаСписка.<Форма>.1s`,
+`Журнал/<Имя>/ФормаСписка.<Форма>.1s`, `Отчет/<Имя>/Форма.1s`, `Обработка/<Имя>/Форма.1s`;
+папка без названного объекта (бухгалтерские формы) — `Прочие/<Папка>_Number<n>.1s`.
+Описания `TypedText/UserHelp_*` — не код, в раскладку не входят. Два модуля одного
+файла, нечитаемый модуль — отказ.
+
+`md-build` заменяет в шаблоне только модули, текст которых отличается (сравнение после
+приведения переводов строк к CRLF; кодировка файла — как у `build`, `auto`); файла нет —
+модуль без изменений; без изменений выход — байты шаблона. Отказ (код 2): файл не из
+раскладки шаблона (новые модули не создаются), символ вне Windows-1251 (строка и колонка),
+NUL; с `modules.json` — изменённый файл, которого нет в индексе, и модуль, который шаблон
+изменил после извлечения (SHA-256 модуля шаблона ≠ индекса): правка не затирает чужое
+изменение. Результат читается с диска: изменённые модули — новый текст, остальные потоки
+(метаданные тоже) и записи каталога — байт в байт. Отчёт: шаблон (SHA-256, конфигурация),
+`modules` (каталог, число файлов, `index` — SHA-256 индекса и `md_sha256` извлечения),
+`output`, `rebuilt`, `changed` (файл, поток, объект, модуль, кодировка, SHA-256 и число
+строк до и после), `unchanged_modules`, `verification`. 1С это не проверяет — для этого
+`run` с `[configuration]`.
+
 ## Полный цикл — команда `run`
 
 ```text
@@ -278,6 +309,34 @@ harness77 run --project PROJECT.toml --stand STAND.toml [--output-root DIR]
 (`metadata_missing_kinds` с именами и элементами), 1С не запускается; другой номер
 того же вида — не отказ. Итог сверки — `metadata_check` этапа (SHA-256, конфигурация,
 `same_as_build`, `missing`).
+
+Изменённые модули конфигурации (задача 021, [задание](tasks/021-md-modules.md)):
+`[configuration] modules = "DIR"` (раскладка `md-extract`, достаточно изменённых файлов),
+`keep_copy = true` оставляет копию. Этап `configuration` собирает `1Cv7.MD` из `1Cv7.MD`
+базы стенда (закреплённый хеш обязан совпасть) и каталога: `md_sha256`, `changed`,
+`template_sha256`; отказ сборки — `blocked`, 1С не запускается. `static` проверяет
+модуль ERT с экспортом собранного глобального модуля, а изменённые модули — в контексте
+собранной конфигурации; в отчёте только замечания, которых у того же модуля шаблона не
+было (`configuration_preexisting` — их число, `configuration_modules`). 1С открывает копию
+базы по `[stand.base] copy_path` — пути, зарегистрированному в списке баз 1С однажды
+(через OLE 1С 7.7 открывает только зарегистрированную базу); `copy_exclude` — подкаталоги
+верхнего уровня, которые копия опускает. Прогон берёт замок `<copy_path>.lock`
+(занят живым процессом — `blocked`), заменяет только помеченную прежнюю копию, пишет метку
+`harness77-copy.json` со своим `run_id`, копирует базу (открыта в 1С — `blocked`) и кладёт в
+неё собранный `1Cv7.MD`; launcher принимает копию только с этой меткой, зарегистрированным
+путём и `--configuration-sha256`. После сеанса копия удаляется, замок снимается, база стенда
+сверяется по перечню файлов (имя, размер, время). `platform_check.base_copy`: путь (тег),
+файлы, байты, секунды, `excluded`, `md_sha256`, `removal`, `lock`, `source_check`,
+`session_log` — записи журнала копии за сеанс (`SYSLOG/1cv7.mlg`; сырые — файл
+`base-session-log.txt` запуска); `base_list` — хеш списка баз до и после. Ошибка
+компиляции изменённого модуля в журнале (`GrbgSyntaxErr`: «Глобальный модуль»,
+«Документ.<Имя>.Модуль Документа», «Документ.<Имя>.Форма.Модуль») делает `platform_check`
+`failed` — `configuration_compilation_failed: <файл>:<строка>: <сообщение>`, код 1, —
+если сеанс своей 1С завершён чисто; `configuration_diagnostics` — модуль, файл, строка,
+колонка, текст строки, `changed`. Так видна и ошибка модуля документа при проведении или
+модуля формы при открытии, на которых обработка исключения не получает. `platform.base_usage`
+— `copy-per-run`. По истечении срока открытия `open.timeout_windows` — окна своей 1С (только
+чтение).
 
 Имена объектов в коде (задача 018): этап `static` проверяет модуль с метаданными
 `[build] metadata` проекта, иначе с `1Cv7.MD` базы стенда, если он есть (L7712–L7714);
@@ -453,6 +512,8 @@ harness77 visual compare BASELINE.png ACTUAL.png --output NEW_DIR [--mask x,y,w,
 | `triage` | `triage` | `protocol`*, `source`, `ert`, `encoding` |
 | `extract` | `extract` | `input`*, `output`* |
 | `form-extract` | `form-extract` | `input`*, `output`*, `metadata` |
+| `md-extract` | `md-extract` | `input`*, `output`* |
+| `md-build` | `md-build` | `template`*, `modules`*, `output`* |
 | `build` | `build` | `template`*, `source`*, `output`*, `encoding`, `legacy_normalize`, `form`, `metadata` |
 | `run` | `run` | `project`*, `stand`*, `output_root`, `run_id`, `open_timeout_s`, `calculation_timeout_s`, `cancel_timeout_s`, `shutdown_timeout_s`, `total_timeout_s`, `reindex_timeout_s` |
 | `visual-compare` | `visual compare` | `baseline`*, `actual`*, `output`*, `masks`, `channel_tolerance`, `max_diff_pixels` |

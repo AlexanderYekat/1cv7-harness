@@ -92,6 +92,79 @@ class BaseTraceTests(unittest.TestCase):
 
 
 
+class BuiltConfigurationTests(unittest.TestCase):
+    """Task 021: a run's copy of the base passes only with the configuration the run built."""
+
+    def setUp(self):
+        import hashlib
+        import shutdown77
+        self.temp = tempfile.TemporaryDirectory(prefix="h77-built-")
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name).resolve()
+        self.base, self.out = root / "run" / "base", root / "run" / "native"
+        self.base.mkdir(parents=True)
+        files = {name: self.base / name for name in ("1Cv7.MD", "1Cv7.DD", "1CPP.dll", "FormEx.dll")}
+        files.update(exe=root / "1cv7l.exe", helper=root / "helper.dll")
+        for name, path in files.items():
+            path.write_bytes(name.encode() + b" bytes")
+        self.cdb = root / "cdb.exe"
+        self.cdb.write_bytes(b"MZ" + bytes(0x3a) + (0x40).to_bytes(4, "little") + b"PE\0\0\x4c\x01")
+        (self.base / "1SJOURN.DBF").write_bytes(b"journal")
+        self.exe, self.helper = files["exe"], files["helper"]
+        self.built = hashlib.sha256(b"1Cv7.MD bytes").hexdigest()
+        # The stand pins its own configuration; the copy carries the built one.
+        pins = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in files.items()}
+        pins["1Cv7.MD"] = "0" * 64
+        patcher = patch.dict(shutdown77.PINNED, pins, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def preflight(self, configuration):
+        launcher.preflight_copy(self.base, self.exe, self.cdb, self.helper, self.out, configuration_sha256=configuration)
+
+    def test_pinned_for_replaces_only_the_configuration(self):
+        import shutdown77
+        self.assertEqual(launcher.pinned_for(), shutdown77.PINNED)
+        self.assertEqual(launcher.pinned_for(self.built), dict(shutdown77.PINNED, **{"1Cv7.MD": self.built}))
+
+    def test_the_built_configuration_passes(self):
+        self.preflight(self.built)
+
+    def test_another_configuration_or_none_is_unqualified(self):
+        for configuration in ("1" * 64, None):
+            with self.subTest(configuration=configuration), self.assertRaisesRegex(ValueError, "1Cv7.MD"):
+                self.preflight(configuration)
+
+    def test_only_the_registered_copy_made_for_this_run(self):
+        import json
+        marker = self.base / launcher.COPY_MARKER
+        with patch.object(launcher, "registered", return_value=True):
+            with self.assertRaisesRegex(ValueError, "the product made"):
+                launcher.built_copy(self.base, "run-1")
+            for written, message in (({"run_id": "run-0", "complete": True}, "not made for this run"),
+                                     ({"run_id": "run-1", "complete": False}, "not made for this run")):
+                marker.write_text(json.dumps(written), encoding="utf-8")
+                with self.subTest(written=written), self.assertRaisesRegex(ValueError, message):
+                    launcher.built_copy(self.base, "run-1")
+            marker.write_text(json.dumps({"run_id": "run-1", "complete": True}), encoding="utf-8")
+            launcher.built_copy(self.base, "run-1")
+        # 1C would wait on «Регистрация Информационной Базы» for an unregistered path.
+        with patch.object(launcher, "registered", return_value=False):
+            with self.assertRaisesRegex(ValueError, "not in the 1C list of bases"):
+                launcher.built_copy(self.base, "run-1")
+
+    def test_the_stand_base_never_gets_a_built_configuration(self):
+        import run_shutdown77
+        root = Path(self.temp.name).resolve()  # the test's own directory, parent of run/base
+        with patch.object(run_shutdown77, "ROOT", root), \
+                patch.object(launcher, "preflight") as stand_preflight:
+            stand = root / ".local" / "bases" / "base-for-test"
+            stand.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "never on the stand base"):
+                launcher.preflight_copy(stand, self.exe, self.cdb, self.helper, self.out, configuration_sha256=self.built)
+            stand_preflight.assert_not_called()
+
+
 class ProtocolDiagnosticsTests(unittest.TestCase):
     """Task 009: the load protocol keeps column and source line for the marking."""
 

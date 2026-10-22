@@ -79,12 +79,18 @@ class ProjectProfile:
     visual: object | None = None
     # 1Cv7.MD numbering the named kinds of reference fields (task 012); None: the stand base's.
     metadata: Path | None = None
+    # Changed modules of the stand base's 1Cv7.MD (task 021, md-extract layout): the run builds the
+    # configuration and checks it on a copy of the base; keep_copy leaves the copy in the run.
+    configuration: Path | None = None
+    keep_copy: bool = False
 
     def public(self):
         return {"project_id": self.project_id, "profile": path_tag(self.path),
                 "template": path_tag(self.template), "source": path_tag(self.source),
                 "form": path_tag(self.form) if self.form is not None else None,
                 "metadata": path_tag(self.metadata) if self.metadata is not None else None,
+                "configuration": ({"modules": path_tag(self.configuration), "keep_copy": self.keep_copy}
+                                  if self.configuration is not None else None),
                 "encoding": self.encoding, "legacy_normalize": self.legacy_normalize,
                 "analysis": {"globals": [path_tag(p) for p in self.globals],
                              "allow": list(self.allow), "strict": self.strict},
@@ -116,12 +122,17 @@ class StandProfile:
     import_protocol: Path | None
     screenshots: bool
     extra: dict = field(default_factory=dict)
+    # The copy of the base for a changed configuration (task 021): its one path, registered in
+    # 1C's list of bases, and the top-level subdirectories it leaves out.
+    copy_path: Path | None = None
+    copy_exclude: tuple = ()
 
     def public(self):
         """Platform and base identity for the report, without secrets or raw paths."""
         block = {"stand": self.name, "backend": self.backend,
                  "platform_version": self.platform_version,
                  "base": path_tag(self.base), "base_usage": "existing-direct-no-copy",
+                 **({"copy": path_tag(self.copy_path)} if self.copy_path is not None else {}),
                  "user_present": bool(self.user), "credential_source": self.credential_source,
                  "pinned_hashes": dict(self.pinned), "screenshots_enabled": self.screenshots}
         for role, path in (("exe", self.exe), ("cdb", self.cdb),
@@ -163,6 +174,12 @@ def load_project(path) -> ProjectProfile:
             visual = parse_config(data["visual"], base_dir)
         except VisualError as error:
             raise ConfigError(f"{path}: {error}") from None
+    configuration = data.get("configuration")
+    if configuration is not None:
+        if not isinstance(configuration, dict) or set(configuration) - {"modules", "keep_copy"}:
+            raise ConfigError(f"{path}: [configuration] допускает только modules и keep_copy")
+        if not isinstance(configuration.get("keep_copy", False), bool):
+            raise ConfigError(f"{path}: configuration.keep_copy — логическое значение")
     return ProjectProfile(
         path=path, project_id=str(_require(project, "id", "project")),
         template=_resolve(base_dir, _require(build, "template", "build"), "build.template"),
@@ -174,7 +191,10 @@ def load_project(path) -> ProjectProfile:
         strict=bool(analysis.get("strict", False)),
         tests=tuple(tests), deadlines_raw=dict(data.get("deadlines", {})), parameters=dict(parameters),
         form=_resolve(base_dir, build["form"], "build.form") if "form" in build else None, visual=visual,
-        metadata=_resolve(base_dir, build["metadata"], "build.metadata") if "metadata" in build else None)
+        metadata=_resolve(base_dir, build["metadata"], "build.metadata") if "metadata" in build else None,
+        configuration=(_resolve(base_dir, _require(configuration, "modules", "configuration"), "configuration.modules")
+                       if configuration is not None else None),
+        keep_copy=bool((configuration or {}).get("keep_copy", False)))
 
 
 def load_stand(path) -> StandProfile:
@@ -201,6 +221,10 @@ def load_stand(path) -> StandProfile:
         raise ConfigError("stand.backend=simulation требует 'scenario'")
     if backend == "import" and import_protocol is None:
         raise ConfigError("stand.backend=import требует 'import_protocol'")
+    exclude = base_table.get("copy_exclude", [])
+    if not isinstance(exclude, list) or not all(
+            isinstance(name, str) and name.strip(". ") and not any(c in name for c in '/\\:') for name in exclude):
+        raise ConfigError("stand.base.copy_exclude — список имён подкаталогов базы верхнего уровня")
     return StandProfile(
         path=path, name=str(_require(stand, "name", "stand")), backend=backend,
         exe=optional("exe"), cdb=optional("cdb"), helper=optional("helper"), identity=optional("identity"),
@@ -210,7 +234,9 @@ def load_stand(path) -> StandProfile:
         platform_version=str(stand.get("platform_version", "")),
         pinned=dict(stand.get("pinned", {})), tool_hashes=dict(stand.get("tool_hashes", {})),
         deadlines_raw=dict(data.get("deadlines", {})), scenario=scenario, import_protocol=import_protocol,
-        screenshots=bool(stand.get("screenshots", False)),
+        screenshots=bool(stand.get("screenshots", False)), copy_exclude=tuple(exclude),
+        copy_path=(_resolve(base_dir, base_table["copy_path"], "stand.base.copy_path")
+                   if "copy_path" in base_table else None),
         extra={k: v for k, v in stand.items() if k not in (
             "name", "backend", "paths", "base", "credential_source", "platform_version",
             "pinned", "tool_hashes", "scenario", "import_protocol", "screenshots")})

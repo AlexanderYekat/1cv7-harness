@@ -36,11 +36,13 @@ class NativeBackend:
     name = "native"
 
     def __init__(self, stand, *, clock, ert_path, ert_sha256, run_id, run_dir, base_name="",
-                 parameters=None, commands=(), captures=()):
+                 parameters=None, commands=(), captures=(), configuration_sha256=None):
         self.stand = stand
         self.parameters = dict(parameters or {})
         self.commands = list(commands)
         self.captures = list(captures)
+        # The built 1Cv7.MD of a copy of the base (task 021); the launcher accepts the copy only with it.
+        self.configuration_sha256 = configuration_sha256
         self.clock = clock
         self.ert_path = Path(ert_path)
         self.ert_sha256 = ert_sha256
@@ -101,6 +103,8 @@ class NativeBackend:
         if self.captures:
             # Form states the visual checks need (task 010); older launchers ignore it.
             command += ["--captures-json", json.dumps(self.captures)]
+        if self.configuration_sha256:
+            command += ["--configuration-sha256", self.configuration_sha256]
         # The launcher owns the phase deadlines; this is only a hard wall-clock backstop.
         backstop = deadlines.total_s + max(30.0, deadlines.shutdown_s)
         # After a cancellation the launcher gets the cancel and shutdown phases to return.
@@ -170,6 +174,9 @@ class NativeBackend:
                   "open": produced.get("open")}
         self.platform_checked = result["platform_checked"]
         result["screenshots"] = produced.get("screenshots", [])
+        if produced.get("base_list"):
+            # The user's list of bases around a session on a copy of the base (task 021).
+            result["base_list"] = produced["base_list"]
         # Re-evidence result files from disk; never trust a reported hash alone.
         result["result_files"] = [
             dict(file_evidence(self.run_dir / spec["path"], root=self.run_dir,

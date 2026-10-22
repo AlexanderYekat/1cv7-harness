@@ -25,6 +25,12 @@ identity = "C:/MyProjects/harness77/.artifacts/platform77/proxy-challenge-build-
 # Принятый стенд; база используется напрямую, без копирования на каждый прогон.
 path = "C:/MyProjects/harness77/.local/bases/base-for-test"
 user = "ВВВ"
+# Прогоны с изменёнными модулями 1Cv7.MD ([configuration] проекта, задача 021) идут на
+# копии базы. 1С 7.7 через OLE открывает только базу из своего списка баз, поэтому путь
+# копии один и регистрируется в этом списке однажды (окно запуска 1С → «Добавить»);
+# каталог создаёт и удаляет сам прогон. copy_exclude — подкаталоги, которые копия опускает.
+# copy_path = "C:/MyProjects/harness77/.local/bases/harness77-copy"
+# copy_exclude = ["ExtForms", "actofsverok", "temp"]
 
 [stand.pinned]
 exe = "562790a34f8491782886e91e36a0800b8fd359afe91bfcf6f575ee4cb181f9bf"

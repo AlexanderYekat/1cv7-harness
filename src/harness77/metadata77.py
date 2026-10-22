@@ -64,6 +64,8 @@ ATTRIBUTE_TYPES = ("S", "N", "D", "B", "O", "E", "T", "K", "P", "U")
 # form is numbered as the form in its catalog's (SubList) or journal's (Journal) record.
 MODULE_OWNERS = {"Document": "O", "Transact": "O", "Subconto": "B", "SubFolder": "B"}
 LIST_FORMS = {"SubList": ("SbCnts", "Справочник"), "Journal": ("Journalisters", "Журнал")}
+# Folders of the form modules of reports and processings, numbered as their records (task 021).
+FORM_OBJECTS = {"Report": "Отчет", "CalcVar": "Обработка"}
 
 
 class Attribute:
@@ -223,12 +225,35 @@ class Metadata:
             name = self.names.get((code, number))
             return (TYPES[code], name) if name else None
         if folder in LIST_FORMS:
-            key, cls = LIST_FORMS[folder]
-            for record in (self._section(key) or [None])[1:]:
-                for item in record[2:]:
-                    if isinstance(item, list) and item[:1] == ["Form"] and any(
-                            isinstance(form, list) and form[:1] == [str(number)] for form in item[1:]):
-                        return (cls, record[1])
+            found = self._list_form(folder, number)
+            return found[:2] if found else None
+        return None
+
+    def module_object(self, folder, number):
+        """(class, name, form name or None) of the object a 1Cv7.MD module folder belongs to, or None.
+
+        As owner(), and the form module of a report or processing is numbered as its record;
+        a list form (SubList, Journal) also names its form (task 021).
+        """
+        if folder in LIST_FORMS:
+            return self._list_form(folder, number)
+        if folder in FORM_OBJECTS:
+            cls = FORM_OBJECTS[folder]
+            names = dict(_records(self._section(CLASSES[cls]), CLASSES[cls]))
+            return (cls, names[number], None) if number in names else None
+        found = self.owner(folder, number)
+        return (*found, None) if found else None
+
+    def _list_form(self, folder, number):
+        """(class, name, form name) of the catalog or journal whose record lists form n, or None."""
+        key, cls = LIST_FORMS[folder]
+        for record in (self._section(key) or [None])[1:]:
+            for item in record[2:]:
+                if not isinstance(item, list) or item[:1] != ["Form"]:
+                    continue
+                for form in item[1:]:
+                    if isinstance(form, list) and form[:1] == [str(number)]:
+                        return cls, record[1], form[1] if len(form) > 1 and isinstance(form[1], str) else None
         return None
 
     def number(self, code, kind):

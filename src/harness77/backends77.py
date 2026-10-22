@@ -277,9 +277,11 @@ class ImportBackend(_Backend):
 
 
 def load_backend(stand, *, ert_path, ert_sha256, run_id, run_dir, clock=None, parameters=None, commands=(),
-                 captures=()):
+                 captures=(), base_name=None, configuration_sha256=None):
+    """base_name: the stand base's name when 1C opens a copy of it; configuration_sha256: the
+    built 1Cv7.MD of that copy (task 021), which only the native launcher must be told."""
     common = {"ert_path": ert_path, "ert_sha256": ert_sha256, "run_id": run_id,
-              "run_dir": run_dir, "base_name": Path(stand.base).name}
+              "run_dir": run_dir, "base_name": base_name or Path(stand.base).name}
     if stand.backend == "simulation":
         from .deadlines77 import ManualClock
         scenario = json.loads(Path(stand.scenario).read_text(encoding="utf-8"))
@@ -290,5 +292,6 @@ def load_backend(stand, *, ert_path, ert_sha256, run_id, run_dir, clock=None, pa
     if stand.backend == "native":
         from . import native77
         return native77.NativeBackend(stand, clock=clock or Clock(), parameters=parameters,
-                                      commands=commands, captures=captures, **common)
+                                      commands=commands, captures=captures,
+                                      configuration_sha256=configuration_sha256, **common)
     raise ValueError(f"unknown backend: {stand.backend}")

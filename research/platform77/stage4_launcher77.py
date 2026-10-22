@@ -51,16 +51,61 @@ PHASES = {"ownership": "open", "debugger-ready": "open", "open-base": "open", "o
           "session": "total", "shutdown": "shutdown"}
 
 
-def preflight_copy(base, exe, cdb, helper, out):
+def pinned_for(configuration_sha256=None):
+    """The pinned hashes of a session: the stand's, the built 1Cv7.MD of a run's copy instead (task 021)."""
+    from shutdown77 import PINNED
+    return dict(PINNED, **({"1Cv7.MD": configuration_sha256} if configuration_sha256 else {}))
+
+
+COPY_MARKER = "harness77-copy.json"
+TITLES = r"Software\1C\1Cv7\7.7\Titles"
+
+
+def registered(base):
+    """Whether the user's list of 1C bases has this path: their value names, with a trailing backslash."""
+    import winreg
+    wanted = os.path.normcase(os.path.abspath(base)).rstrip("\\")
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, TITLES, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as key:
+            count = winreg.QueryInfoKey(key)[1]
+            names = [winreg.EnumValue(key, index)[0] for index in range(count)]
+    except FileNotFoundError:
+        return False
+    return any(os.path.normcase(os.path.abspath(name)).rstrip("\\") == wanted for name in names if name)
+
+
+def built_copy(base, run_id):
+    """The copy of the base for a built configuration (task 021): made for this run, and registered.
+
+    The product marks the copy with the run it was made for. 1C 7.7 opens through OLE
+    only a registered base: an unregistered path waits on «Регистрация Информационной
+    Базы» until the open deadline (task 021, m-same), so it is refused here instead.
+    """
+    try:
+        marker = json.loads((base / COPY_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise ValueError("a built configuration runs only on a copy of the base the product made") from None
+    if marker.get("run_id") != run_id or marker.get("complete") is not True:
+        raise ValueError("the copy of the base was not made for this run")
+    if not registered(base):
+        raise ValueError("the copy path is not in the 1C list of bases (HKCU " + TITLES + "): "
+                         "register it once, 1C opens through OLE only a registered base")
+
+
+def preflight_copy(base, exe, cdb, helper, out, configuration_sha256=None):
     """The core preflight for another copy of the pinned base: same hashes, any path.
 
     The core qualifies only .local/bases/base-for-test by path; a copy (the owner
     keeps several) must carry exactly the pinned configuration and components,
     and a base held by 1C in exclusive mode is refused before any 1C starts.
+    With configuration_sha256 the copy is this run's, its 1Cv7.MD the one the run
+    built (task 021); the stand base itself never gets a built configuration.
     """
-    from shutdown77 import PINNED
     import run_shutdown77
+    PINNED = pinned_for(configuration_sha256)
     if base == (run_shutdown77.ROOT / ".local/bases/base-for-test").resolve():
+        if configuration_sha256:
+            raise ValueError("a built configuration runs on a copy of the base, never on the stand base")
         preflight(base, exe, cdb, helper, out)
         return
     if out.is_relative_to(base) or base.is_relative_to(out):
@@ -312,6 +357,7 @@ def main(argv=None, adapter=None):
     parser.add_argument("--commands-json", default="[]", help="commands of the declared tests, in order")
     parser.add_argument("--screenshots", action="store_true")
     parser.add_argument("--captures-json", default="[]", help="form states to capture (visual checks)")
+    parser.add_argument("--configuration-sha256", help="the built 1Cv7.MD of this run's copy of the base (task 021)")
     args, _ = parser.parse_known_args(argv)
     out = Path(args.run_dir).resolve()
     result_path = Path(args.result)
@@ -337,7 +383,14 @@ def main(argv=None, adapter=None):
         commands = adapter.commands(parameters, json.loads(args.commands_json))
         adapter.request_captures(json.loads(args.captures_json))
         # preflight requires a fresh output directory, so validate before creating it.
-        adapter.preflight(base, exe, cdb, helper, drive)
+        built_md = args.configuration_sha256
+        if built_md:
+            # Only the copy the product made for this run, at a path 1C opens without a dialog.
+            built_copy(base, args.run_id)
+            preflight_copy(base, exe, cdb, helper, drive, configuration_sha256=built_md)
+        else:
+            adapter.preflight(base, exe, cdb, helper, drive)
+        pinned = pinned_for(built_md)
         drive.mkdir(parents=True, exist_ok=False)
         manifest, shutdown_manifest, ert_target = scaffold(drive, built, args.run_id, adapter, commands, parameters,
                                                            permit_timeout_s=deadlines["open_timeout_s"])
@@ -368,11 +421,18 @@ def main(argv=None, adapter=None):
                      "ert_protocol_paths": manifest["protocol_paths"]}
         from session77 import run_session
         from desktop77 import PrivateDesktop
+        if built_md:
+            # 1C may register a base it opens by path in the user's list of bases (task 021).
+            from win32_session77 import base_titles_fingerprint
+            report["base_list"] = {"before": base_titles_fingerprint()}
         with PrivateDesktop() as desktop, adapter.watch(drive, lifecycle, desktop.name):
             lifecycle = run_session(base, exe, cdb, helper, args.user, drive, lifecycle,
-                                    desktop=desktop.name, identity_dll=identity_dll)
+                                    desktop=desktop.name, identity_dll=identity_dll, pinned=pinned)
         lifecycle["desktop_closed"] = True
-        shutdown_result = assess(drive, shutdown_manifest, lifecycle)
+        if built_md:
+            report["base_list"]["after"] = base_titles_fingerprint()
+            report["base_list"]["unchanged"] = report["base_list"]["after"] == report["base_list"]["before"]
+        shutdown_result = assess(drive, shutdown_manifest, lifecycle, pinned=pinned)
         operations, issues = interpret(drive, manifest, lifecycle, shutdown_result, adapter)
         report["operations"] = operations
         report["result_files"] = adapter.result_files(out, operations)
@@ -389,6 +449,9 @@ def main(argv=None, adapter=None):
             begun = datetime.datetime.fromisoformat(lifecycle["started_at"]).timestamp()
             report["open"]["elapsed_s"] = round(first.stat().st_mtime - begun, 1)
         report["open"]["base_trace_after"] = base_trace(base)
+        if lifecycle.get("open_timeout_windows"):
+            # What 1C showed when opening outlasted its deadline (task 021).
+            report["open"]["timeout_windows"] = lifecycle["open_timeout_windows"]
         report["open"]["startup_deadline_s"] = lifecycle.get("startup_timeout_seconds")
         report["open"]["startup_s"] = lifecycle.get("startup_elapsed_seconds")
         report["open"]["stale_com_registrations"] = stale_registrations(lifecycle)
