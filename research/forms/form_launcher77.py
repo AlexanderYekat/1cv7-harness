@@ -32,6 +32,14 @@ hides the window again. Each capture is ``PrintWindow`` with
 caret, with the caret rectangle and the capture environment. The captures are
 compared by the product, not here.
 
+With ``[platform.parameters] form_object = "Обработка.<Имя>"`` (or ``Документ.<Имя>``,
+``Отчет.<Имя>``; task 022) the controller opens that form of the configuration instead of
+the run's ERT, and the expected controls are its dialog in the 1Cv7.MD of the base the
+session opens (the run's copy with the built configuration), with the place of its table part
+among the windows. ``Форма.Закрыть(0)`` closes a new document the form modified without asking
+to write it (f-doc-close). The capture environment then names the stand base's configuration,
+not the built one, so a baseline outlives the change under test.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -44,6 +52,7 @@ Evidence: ``<run>/form/``.
 import contextlib
 import json
 from pathlib import Path
+import re
 import sys
 import threading
 import time
@@ -68,6 +77,9 @@ WINDOWS = ("form", "dialog")
 STABLE_ATTEMPTS = 6
 STABLE_PAUSE_S = 0.35  # between the captures of one stability series
 PLATFORM_VERSION = "7.70.027"
+# Forms of the configuration the controller opens by name (task 022): their own dialog, «Форма».
+FORM_OBJECT = re.compile(r"(Документ|Обработка|Отчет)\.([^\W\d]\w*)\Z")
+OPEN_ERT = '            Открыта77 = ОткрытьФорму("Отчет", Контекст77, Путь);\n'
 
 CONTROLLER = """Перем Параметры77Формы;
 Перем Контекст77Формы;
@@ -185,6 +197,59 @@ def actions(parameters):
     return result
 
 
+def form_object(parameters):
+    """The configuration form ``[platform.parameters] form_object`` names, or None for the run's ERT."""
+    value = parameters.get("form_object")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not FORM_OBJECT.match(value):
+        raise ValueError("[platform.parameters] form_object is Документ.<Имя>, Обработка.<Имя> or Отчет.<Имя>, "
+                         f"got {value!r}")
+    return value
+
+
+def controller_text(parameters):
+    """The controller module: it opens the run's ERT, or the configuration form of form_object."""
+    name = form_object(parameters)
+    if name is None:
+        return CONTROLLER
+    if CONTROLLER.count(OPEN_ERT) != 1:
+        raise ValueError("unexpected controller layout")
+    return CONTROLLER.replace(OPEN_ERT, OPEN_ERT.replace('"Отчет", Контекст77, Путь', f'"{name}", Контекст77'))
+
+
+def browser(text):
+    """{position, columns} of a dialog's table part (form_window77.window_ids), or None without one."""
+    from harness77.ert_module import parse_dialog
+    for section in parse_dialog(text)[1:]:
+        if isinstance(section, list) and section[:1] == ["Browser"]:
+            fixed = [item for item in section[2:] if isinstance(item, list) and item[:1] == ["Fixed"]]
+            if len(fixed) != 1 or not section[1].isdigit():
+                raise ValueError("unknown layout of the Browser section")
+            return {"position": int(section[1]), "columns": len(fixed[0]) - 1}
+    return None
+
+
+def configuration_description(md_path, name):
+    """(description, source) of the form ``name`` of a 1Cv7.MD: its own dialog, as md-extract describes it."""
+    from harness77.ert_module import CompoundFile
+    from harness77.form77 import describe
+    from harness77.md77 import read_forms
+    from harness77.metadata77 import Metadata
+    data = Path(md_path).read_bytes()
+    metadata = Metadata(data)
+    found = [form for form in read_forms(CompoundFile(data), metadata)
+             if (form.object or "").casefold() == name.casefold() and form.module == "Форма"]
+    if len(found) != 1:
+        raise ValueError(f"the configuration has no form of {name}")
+    form = found[0]
+    description = describe(form.text, metadata)
+    table = browser(form.text)
+    if table is not None:
+        description["browser"] = table
+    return description, {"form_object": name, "md_sha256": sha256(md_path), "path": form.path, "file": form.file}
+
+
 def capture_requests(requests):
     """Validated ``--captures-json``: a list of {state, window} the visual checks need."""
     if not isinstance(requests, list):
@@ -249,7 +314,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
 
     def inspect(self):
         import ctypes as C
-        from form_window77 import OwnedForm, awareness, expected_geometry, fit_units
+        from form_window77 import OwnedForm, awareness, edged_ids, expected_geometry, fit_units
         from harness77.screenshots77 import capture_window, evidence
         from win32_session77 import kernel
         server, tid = self.lifecycle["server"], self.lifecycle["proxy_identity"]["tid"]
@@ -265,7 +330,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             inspection["measuring_process"] = awareness()
             if inspection["found"]:
                 measured = {c["id"]: tuple(c["rect"]) for c in inspection["controls"]}
-                inspection["units"] = fit_units(expected, measured)
+                inspection["units"] = fit_units(expected, measured, edged=edged_ids(self.description))
                 shots = []
                 for role, window in (("form", inspection["chain"][1] if len(inspection["chain"]) > 1
                                       else inspection["chain"][0]), ("dialog", inspection["chain"][0])):
@@ -465,6 +530,7 @@ class FormAdapter(launcher.Harness77Adapter):
         self.parameters = {}
         self.requests = []
         self.configuration = None
+        self.form = None  # (description, source) of a configuration form (task 022)
 
     def request_captures(self, requests):
         self.requests = capture_requests(requests)
@@ -473,15 +539,26 @@ class FormAdapter(launcher.Harness77Adapter):
         super().preflight(base, exe, cdb, helper, drive)
         self.configuration = sha256(base / "1Cv7.MD")
 
+    def select_base(self, base, configuration_sha256=None):
+        if configuration_sha256:
+            # A copy with the built configuration: a baseline names the stand base's (task 022).
+            from shutdown77 import PINNED
+            self.configuration = PINNED["1Cv7.MD"]
+        name = form_object(self.parameters)
+        if name is not None:
+            self.form = configuration_description(base / "1Cv7.MD", name)
+
     def commands(self, parameters, requested):
         actions(parameters)
+        controller_text(parameters)
+        self.parameters = dict(parameters)
         unknown = [command for command in requested if command not in COMMANDS]
         if unknown:
             raise ValueError("unknown form command: " + ", ".join(unknown))
         return list(COMMANDS)
 
     def controller(self, parameters):
-        return CONTROLLER
+        return controller_text(parameters)
 
     def client(self, text):
         if text.count(CALL) != 1:
@@ -504,7 +581,11 @@ class FormAdapter(launcher.Harness77Adapter):
         return [c for c in inspection.get("captures") or [] if isinstance(c, dict)]
 
     def watch(self, out, lifecycle, desktop):  # pragma: no cover - native
-        description = built_description(out / "Тестовые обработки" / "Обработка проверки.ert")
+        if self.form is not None:
+            description = self.form[0]
+            atomic_json(self.run_dir / "form" / "form-source.json", self.form[1])
+        else:
+            description = built_description(out / "Тестовые обработки" / "Обработка проверки.ert")
         atomic_json(self.run_dir / "form" / "description.json", description)
 
         @contextlib.contextmanager

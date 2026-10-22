@@ -13,6 +13,13 @@ every other stream, the metadata included, byte for byte: the data dictionary of
 base follows its metadata, and a module change leaves the metadata alone. With the
 index of an extraction, a module the template changed after it is refused rather than
 silently overwritten.
+
+The dialog of a form (task 022) is described next to its module, ``<module>.json`` in the
+harness77-form schema of the ERT forms (tasks 008, 011–013); a build rebuilds the dialog of a
+description that differs from the template's and checks it in the configuration's context:
+its metadata name and number the kinds, the built global module's exports are callable, and a
+field named after an attribute of the form's object is that attribute's field. The
+description carries the hash of the dialog it was made from, so a stale one is refused.
 """
 
 import argparse
@@ -27,14 +34,17 @@ import sys
 import tempfile
 
 from .artifacts import _decode, _destination, _input, _publish, _unchanged, sha256
-from .ert_module import (CompoundFile, ErtError, MODULE_STREAM, compress_module, decompress_module,
-                         normalize_newlines)
+from .ert_module import (CompoundFile, DIALOG_STREAM, ErtError, MODULE_STREAM, compress_module, decode_dialog,
+                         decompress_module, normalize_newlines)
 from .lint77 import cfb_paths
 from .metadata77 import Metadata
 
 INDEX = "modules.json"
 FORMAT = "harness77-md-modules"
+# Version 2 (task 022) adds the forms; a version 1 index (task 021) is still read.
+INDEX_VERSION, INDEX_VERSIONS = 2, (1, 2)
 SUFFIX = ".1s"
+FORM_SUFFIX = ".json"
 GLOBAL = "TypedText/ModuleText_Number1/" + MODULE_STREAM
 OTHER = "Прочие"
 # <folder>/<kind>_Number<n>[/WorkBook]/MD Programm text, as every module of base-for-test and Торговля+Склад.
@@ -43,6 +53,8 @@ PATH = re.compile(r"(\w+)/(\w+?)_Number(\d+)(/WorkBook)?/" + MODULE_STREAM + r"\
 FORMS = {"Document": "Форма", "Subconto": "ФормаЭлемента", "SubFolder": "ФормаГруппы",
          "SubList": "ФормаСписка", "Journal": "ФормаСписка", "Report": "Форма", "CalcVar": "Форма"}
 LISTS = ("SubList", "Journal")
+# Folders of the forms of an object, whose fields may be its attributes' (task 022).
+OBJECT_FORMS = ("Document", "Subconto", "SubFolder")
 IDENTIFIER = re.compile(r"[^\W\d]\w*\Z")
 
 
@@ -58,6 +70,24 @@ class Module:
     def public(self):
         return {"file": self.file, "path": self.path, "object": self.object, "module": self.module,
                 "sha256": sha256(self.raw)}
+
+
+@dataclass
+class Form:
+    file: str            # the description in the layout, with "/"
+    module_file: str     # the file of its module
+    path: str            # the Dialog Stream in 1Cv7.MD
+    module_path: str     # the stream of its module
+    entry_id: int
+    object: str | None   # as Module.object
+    module: str | None   # as Module.module
+    owner: tuple | None  # (class, name) of a document's or catalog's own form, whose fields may be attributes
+    payload: bytes       # the stream as stored
+    text: str            # the dialog text
+
+    def public(self):
+        return {"file": self.file, "path": self.path, "object": self.object, "module": self.module,
+                "dialog_sha256": sha256(self.text.encode("cp1251"))}
 
 
 def module_file(path, metadata):
@@ -107,20 +137,62 @@ def read_modules(compound, metadata):
     return modules
 
 
+def read_forms(compound, metadata):
+    """The forms of a 1Cv7.MD in directory order: each dialog is named by the module of its folder."""
+    paths = cfb_paths(compound)
+    forms = []
+    for entry in compound.directory_entries:
+        if entry.object_type != 2 or entry.name != DIALOG_STREAM or entry.entry_id not in paths:
+            continue
+        path = paths[entry.entry_id]
+        module_path = path[:-len(DIALOG_STREAM)] + MODULE_STREAM
+        named = module_file(module_path, metadata)
+        if named is None:
+            raise ErtError(f"Диалог {path}: в папке описания, а не формы")
+        file, owner, kind = named
+        match = PATH.match(module_path)
+        objects = (tuple(owner.split(".", 1)) if owner and match and match[1] == match[2]
+                   and match[2] in OBJECT_FORMS else None)
+        payload = compound.read_stream(entry)
+        try:
+            text = decode_dialog(payload)
+        except (ErtError, ValueError, UnicodeDecodeError) as error:
+            raise ErtError(f"Диалог {path} не читается: {error}") from None
+        forms.append(Form(file[:-len(SUFFIX)] + FORM_SUFFIX, file, path, module_path, entry.entry_id, owner, kind,
+                          objects, payload, text))
+    return forms
+
+
 def _open(data, path):
-    """(compound, metadata, modules) of a 1Cv7.MD."""
+    """(compound, metadata, modules, forms) of a 1Cv7.MD."""
     metadata = Metadata(data, path)
     compound = CompoundFile(data)
-    return compound, metadata, read_modules(compound, metadata)
+    return compound, metadata, read_modules(compound, metadata), read_forms(compound, metadata)
+
+
+def _describe(form, metadata):
+    """(description, None) of a form, or (None, reason) when its dialog does not rebuild losslessly."""
+    from .form77 import describe
+    try:
+        return describe(form.text, metadata), None
+    except ErtError as error:
+        return None, str(error)
 
 
 def extract(md, output):
-    """Every module of a 1Cv7.MD into a new directory, UTF-8, with the index modules.json."""
+    """Every module of a 1Cv7.MD into a new directory, UTF-8, the description of every form next to
+    its module, and the index modules.json."""
+    from .form77 import dumps, loads
     md, data = _input(md)
     output = _destination(output)
-    _, metadata, modules = _open(data, md)
-    index = {"schema_version": 1, "format": FORMAT, "md": metadata.public() | {"path": None},
-             "modules": [module.public() for module in modules]}
+    _, metadata, modules, forms = _open(data, md)
+    # A dialog a description would not rebuild losslessly gets none: its form stays the template's.
+    found = [(form, *_describe(form, metadata)) for form in forms]
+    descriptions = [(form, description) for form, description, _ in found if description is not None]
+    undescribed = [{"file": form.file, "path": form.path, "reason": reason} for form, _, reason in found if reason]
+    index = {"schema_version": INDEX_VERSION, "format": FORMAT, "md": metadata.public() | {"path": None},
+             "modules": [module.public() for module in modules],
+             "forms": [form.public() | {"described": reason is None} for form, _, reason in found]}
     staging = Path(tempfile.mkdtemp(dir=output.parent, prefix=".harness77-"))
     try:
         for module in modules:
@@ -128,11 +200,17 @@ def extract(md, output):
             target.parent.mkdir(parents=True, exist_ok=True)
             with open(target, "xb") as stream:
                 stream.write(module.raw.decode("cp1251").encode("utf-8"))
+        for form, description in descriptions:
+            with open(staging / form.file, "xb") as stream:
+                stream.write(dumps(description).encode("utf-8"))
         with open(staging / INDEX, "x", encoding="utf-8", newline="\n") as stream:
             json.dump(index, stream, ensure_ascii=False, indent=1)
         for module in modules:
             if (staging / module.file).read_bytes().decode("utf-8").encode("cp1251") != module.raw:
                 raise ErtError(f"Файл {module.file} после записи отличается от модуля")
+        for form, description in descriptions:
+            if loads((staging / form.file).read_bytes()) != description:
+                raise ErtError(f"Описание {form.file} после записи отличается от формы")
         _unchanged([(md, data)])
         os.rename(staging, output)
     except BaseException:
@@ -142,9 +220,9 @@ def extract(md, output):
         raise
     return {"schema_version": 1, "tool": "harness77", "operation": "md-extract", "status": "passed",
             "scope": "md_module_extract", "input": {"path": str(md), **metadata.public()},
-            "output": {"path": str(output), "modules": len(modules), "encoding": "utf-8",
+            "output": {"path": str(output), "modules": len(modules), "forms": len(descriptions), "encoding": "utf-8",
                        "index": INDEX, "index_sha256": sha256((output / INDEX).read_bytes())},
-            "inputs_unchanged": True, "platform_checked": False}
+            "forms_not_described": undescribed, "inputs_unchanged": True, "platform_checked": False}
 
 
 def _index(folder):
@@ -155,7 +233,7 @@ def _index(folder):
     raw = path.read_bytes()
     try:
         index = json.loads(raw.decode("utf-8"))
-        if index.get("format") != FORMAT or index.get("schema_version") != 1:
+        if index.get("format") != FORMAT or index.get("schema_version") not in INDEX_VERSIONS:
             raise ValueError("не индекс md-extract")
         recorded = {row["file"].casefold(): row["sha256"] for row in index["modules"]}
     except (UnicodeDecodeError, ValueError, KeyError, TypeError, AttributeError) as error:
@@ -199,8 +277,10 @@ def _changed(module, path, raw, recorded):
     return new, encoding
 
 
-def _verify(original, data, expected):
-    """The rebuilt 1Cv7.MD: the same directory, the expected modules, every other stream as it was."""
+def _verify(original, data, expected, dialogs=None):
+    """The rebuilt 1Cv7.MD: the same directory, the expected modules and dialogs ({entry id: stream
+    bytes}), every other stream as it was."""
+    dialogs = dialogs or {}
     check = CompoundFile(data)
     if len(check.directory_entries) != len(original.directory_entries):
         raise ErtError("Изменился состав каталога 1Cv7.MD")
@@ -215,53 +295,115 @@ def _verify(original, data, expected):
         if old.entry_id in expected:
             if decompress_module(content) != expected[old.entry_id]:
                 raise ErtError(f"Модуль {old.name} после обратного чтения отличается")
+        elif old.entry_id in dialogs:
+            if content != dialogs[old.entry_id]:
+                raise ErtError(f"Диалог {old.name} после обратного чтения отличается")
         elif content != original.read_stream(old):
             raise ErtError(f"Изменился посторонний поток: {old.name}")
     Metadata(data)
 
 
+def exports(text):
+    """Casefolded names of the exported procedures and functions of a global module's text."""
+    from .lint77 import Source, parse
+    parsed = parse(Source("ГлобальныйМодуль", "ГлобальныйМодуль", text, is_global=True))
+    return frozenset(key for key, symbol in parsed.symbols.items() if symbol.exported and not symbol.forward)
+
+
+def _form_change(form, relative, raw, metadata, module_text, global_exports):
+    """(form77.Rebuilt, Dialog Stream bytes) of a description, or None when it gives the template's dialog."""
+    from .form77 import FormContext, describe, dialog_payload, loads, rebuild
+    try:
+        description = loads(raw)
+        if description == describe(form.text, metadata, description["schema_version"]):
+            return None
+        # The configuration names and numbers the kinds of its own forms: it is both the target and the copy.
+        result = rebuild(form.text, description, module_text, metadata, metadata,
+                         FormContext.of(form.owner, metadata, global_exports()))
+        if result.text == form.text:
+            return None
+        payload = dialog_payload(result.text, form.payload)
+        if decode_dialog(payload) != result.text:
+            raise ErtError("диалог не читается обратно")
+    except ErtError as error:
+        raise ErtError(f"{relative}: {error}") from None
+    return result, payload
+
+
 def build(template, modules, output):
-    """A new 1Cv7.MD: the template with the modules whose files differ from it."""
+    """A new 1Cv7.MD: the template with the modules and the form dialogs whose files differ from it."""
     template, data = _input(template)
     folder = Path(modules).resolve(strict=True)
     if not folder.is_dir():
         raise ErtError(f"Модули задаются каталогом (раскладка md-extract): {folder}")
     output = _destination(output)
-    compound, metadata, found = _open(data, template)
+    compound, metadata, found, forms = _open(data, template)
     by_file = {module.file.casefold(): module for module in found}
+    by_form = {form.file.casefold(): form for form in forms}
     recorded, index = _index(folder)
-    inputs, changes, seen = [(template, data)], [], {}
+    inputs, changes, seen, described = [(template, data)], [], {}, []
     for relative in _files(folder):
         if relative == INDEX:
             continue
+        form = by_form.get(relative.casefold())
         module = by_file.get(relative.casefold())
-        if module is None:
-            raise ErtError(f"{relative}: в {template.name} нет такого модуля (новые модули не создаются; "
+        if module is None and form is None:
+            what = "такой формы" if relative.casefold().endswith(FORM_SUFFIX) else "такого модуля"
+            raise ErtError(f"{relative}: в {template.name} нет {what} (новые модули и формы не создаются; "
                            "имена файлов — как у md-extract)")
-        if module.file in seen:
-            raise ErtError(f"{relative} и {seen[module.file]}: один модуль {module.file}")
-        seen[module.file] = relative
+        file = module.file if module is not None else form.file
+        if file in seen:
+            raise ErtError(f"{relative} и {seen[file]}: один {'модуль' if module is not None else 'диалог'} {file}")
+        seen[file] = relative
         raw = (folder / relative).read_bytes()
         inputs.append((folder / relative, raw))
+        if form is not None:
+            described.append((form, relative, raw))
+            continue
         changed = _changed(module, relative, raw, recorded)
         if changed is not None:
             changes.append((module, *changed))
     expected = {module.entry_id: new for module, new, _ in changes}
-    rebuilt = compound.rebuild({key: compress_module(new) for key, new in expected.items()}) if expected else data
-    verify = lambda disk: _verify(compound, disk, expected)
+    # A formula and an identifier are checked against the modules as they will be in the build.
+    final = {module.file: expected.get(module.entry_id, module.raw).decode("cp1251") for module in found}
+    memo = {}
+
+    def global_exports():
+        if "exports" not in memo:
+            memo["exports"] = exports(final.get("ГлобальныйМодуль" + SUFFIX, ""))
+        return memo["exports"]
+
+    form_changes = []
+    for form, relative, raw in described:
+        changed = _form_change(form, relative, raw, metadata, final.get(form.module_file), global_exports)
+        if changed is not None:
+            form_changes.append((form, *changed))
+    dialogs = {form.entry_id: payload for form, _, payload in form_changes}
+    replacements = {key: compress_module(new) for key, new in expected.items()} | dialogs
+    rebuilt = compound.rebuild(replacements) if replacements else data
+    verify = lambda disk: _verify(compound, disk, expected, dialogs)
     verify(rebuilt)
     result = _publish(output, rebuilt, verify, inputs)
     return {"schema_version": 1, "tool": "harness77", "operation": "md-build", "status": "passed",
             "scope": "md_module_build", "template": {"path": str(template), **metadata.public()},
-            "modules": {"path": str(folder), "files": len(seen), "index": index},
-            "output": result, "rebuilt": bool(expected),
+            "modules": {"path": str(folder), "files": len(seen) - len(described), "forms": len(described),
+                        "index": index},
+            "output": result, "rebuilt": bool(replacements),
             "changed": [{"file": module.file, "path": module.path, "object": module.object, "module": module.module,
                          "encoding": encoding, "sha256_before": sha256(module.raw), "sha256_after": sha256(new),
                          "lines_before": module.raw.count(b"\n") + 1, "lines_after": new.count(b"\n") + 1}
                         for module, new, encoding in changes],
             "unchanged_modules": len(found) - len(changes),
-            "verification": {"disk_readback": True, "changed_modules": True, "other_streams": True,
-                             "directory_metadata": True, "metadata_stream": True, "inputs_unchanged": True},
+            "changed_forms": [{"file": form.file, "path": form.path, "object": form.object, "module": form.module,
+                               "module_file": form.module_file, "module_path": form.module_path,
+                               "dialog_sha256_before": sha256(form.text.encode("cp1251")),
+                               "dialog_sha256_after": sha256(rebuilt_form.text.encode("cp1251")),
+                               "changes": rebuilt_form.changes, "kinds": rebuilt_form.kinds}
+                              for form, rebuilt_form, _ in form_changes],
+            "unchanged_forms": len(forms) - len(form_changes),
+            "verification": {"disk_readback": True, "changed_modules": True, "changed_dialogs": True,
+                             "other_streams": True, "directory_metadata": True, "metadata_stream": True,
+                             "inputs_unchanged": True},
             "platform_checked": False}
 
 
@@ -279,8 +421,9 @@ def platform_module(name):
     parts = name.split(".")
     if len(parts) == 3 and parts[0] == "Документ" and parts[2] == "Модуль Документа":
         return f"Документ/{parts[1]}/МодульДокумента{SUFFIX}"
-    if len(parts) == 4 and parts[0] == "Документ" and parts[2:] == ["Форма", "Модуль"]:
-        return f"Документ/{parts[1]}/Форма{SUFFIX}"
+    # A processing's form: Обработка.<Имя>.Форма.Модуль (task 022, series 0).
+    if len(parts) == 4 and parts[0] in ("Документ", "Обработка") and parts[2:] == ["Форма", "Модуль"]:
+        return f"{parts[0]}/{parts[1]}/Форма{SUFFIX}"
     return None
 
 

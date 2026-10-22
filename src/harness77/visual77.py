@@ -535,6 +535,9 @@ def approve(config, run_dir, *, checks=None, approved_by, replace=False, now=Non
                   "approved": {"by": approved_by, "at": stamp, "run_id": report.get("run_id"),
                                "ert_sha256": (report.get("artifact") or {}).get("sha256"),
                                "form_sha256": form.get("sha256"),
+                               # A form of the configuration (task 022): the built 1Cv7.MD of the run.
+                               **({"configuration_sha256": report["configuration"].get("sha256")}
+                                  if report.get("configuration") else {}),
                                "tests": (stages.get("tests") or {}).get("status")},
                   "masks_at_approval": [dict(m) for m in check.masks], "replaces_sha256": previous}
         atomic_json(record_path, record)

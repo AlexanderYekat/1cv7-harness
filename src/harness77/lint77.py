@@ -19,14 +19,16 @@ from .ert_module import (DIALOG_STREAM, CompoundFile, ErtError, decode_dialog, d
                          dialog_controls, parse_dialog)
 from .moxcel77 import area_names, form_table, worksheets
 
-VERSION = '0.5.0'
+VERSION = '0.6.0'
 LIMITATIONS = [
     'Частичный разбор языка; отсутствие диагностик не означает успешную компиляцию 1С.',
     'Имена встроенных функций и методов — из каталога платформы 7.70.027; неизвестные вызовы '
     'по умолчанию — предупреждения.',
     'Типы, методы конфигурации, COM и внешних компонент, динамически исполняемый код не проверяются.',
     'Объявление переменных (L7711) проверяется только в модуле с известным контекстом: ERT, --dialog, '
-    'формы, модули документов и глобальный модуль 1Cv7.MD (кроме форм операций, проводок и плана счетов).',
+    'формы, модули документов и глобальный модуль 1Cv7.MD (кроме форм операций, проводок и плана счетов). '
+    'Ошибка — когда известен и глобальный модуль конфигурации (модули самого 1Cv7.MD, --globals 1Cv7.MD); '
+    'иначе предупреждение: глобальные имена неизвестной конфигурации не проверены.',
     'Имена объектов метаданных (L7712, L7713) проверяются только с метаданными базы: --metadata или '
     'модули самого 1Cv7.MD; имена форм, тексты запросов и строки вне аргументов функций — нет.',
     'Реквизиты (L7714) проверяются только у объекта, который переменная получает из '
@@ -524,17 +526,20 @@ def check_line_length(parsed: Parsed):
                 'размеры»), исполнение её принимает; разбейте выражение на несколько строк.'))
 
 
-def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict=False):
+def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict=False, complete=False):
     """L7708 reserved names declared; L7711 reads of names not declared at that point.
 
     1C 7.7 declares a local by its first assignment in the text of the procedure;
     a read before it, in another procedure, or in the module body is "Переменная
     не определена". Module and procedure Перем, parameters, loop counters, the form
     dialog, global module exports and the probed global names declare names.
+    complete: the configuration's global module is known too, so nothing else declares
+    a name and 1C refuses to compile the module (task 022, series 0; the owner's decision
+    of 22.10.2026): L7711 is an error.
     """
     tokens, dialog = parsed.tokens, parsed.source.dialog
     # The probed global names belong to one configuration: another may add more.
-    severity = 'error' if strict else 'warning'
+    severity = 'error' if strict or complete else 'warning'
 
     def reserved(token, role):
         if token.key in catalog.reserved:
@@ -594,7 +599,10 @@ def check_declarations(parsed: Parsed, catalog: Catalog, known: set[str], strict
                 reported.add(token.key)
                 parsed.report(token, 'L7711', f'Переменная не определена ({token.text}): не параметр, '
                               'не Перем, не присвоена выше в этой процедуре, не реквизит диалога '
-                              'и не глобальное имя. Глобальное имя конфигурации добавьте --allow/--globals.',
+                              'и не глобальное имя. '
+                              + ('Глобальный модуль конфигурации известен: 1С такой модуль не компилирует.'
+                                 if complete and not strict else
+                                 'Глобальное имя конфигурации добавьте --allow/--globals.'),
                               severity)
             prev, i = token, i + 1
 
@@ -1047,6 +1055,22 @@ def load_metadata(path: Path):
     return base_metadata(load(path))
 
 
+def global_module(path: Path) -> Source | None:
+    """The global module of a 1Cv7.MD alone, as the global context of other modules (task 022), or None."""
+    path = path.resolve()
+    compound = CompoundFile(path.read_bytes())
+    paths = cfb_paths(compound)
+    for entry in compound.directory_entries:
+        module = paths.get(entry.entry_id, '')
+        if entry.object_type == 2 and entry.name == 'MD Programm text' and module.startswith('TypedText/ModuleText_Number1/'):
+            try:
+                text = zlib.decompress(compound.read_stream(entry), -15).decode('cp1251')
+            except (zlib.error, UnicodeError) as exc:
+                raise ErtError(f'Не удалось прочитать глобальный модуль {path.name}: {exc}') from exc
+            return Source(str(path), module, text, True)
+    return None
+
+
 def collect_paths(inputs: list[str]) -> list[Path]:
     paths = set()
     for name in inputs:
@@ -1099,6 +1123,10 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
     global_vars = set().union(*(exported_variables(item) for item in external
                                 + [item for item in parsed if item.source.is_global]))
     known = catalog.readable | global_vars | set(external_symbols) | {name.casefold() for name in allow}
+    # The global module of a configuration (task 022): of a 1Cv7.MD given as the global context, or the
+    # module's own 1Cv7.MD. With it and the module's dialog or object the context of L7711 is complete.
+    configuration_globals = any(item.source.is_global for item in external)
+    own_global_paths = {item.source.path for item in parsed if item.source.is_global}
     diagnostics = []
     # Context that failed to parse must not silently produce a clean result.
     for item in external:
@@ -1108,7 +1136,9 @@ def analyze(sources: list[Source], global_sources=(), allow=(), strict=False) ->
         check_calls(item, visible_globals, builtins, strict)
         check_method_arity(item, catalog, strict)
         check_line_length(item)
-        check_declarations(item, catalog, known | set(visible_globals) | owner_names(item.source, catalog), strict)
+        complete = item.source.dialog is not None and (configuration_globals or item.source.path in own_global_paths)
+        check_declarations(item, catalog, known | set(visible_globals) | owner_names(item.source, catalog), strict,
+                           complete)
         check_metadata_names(item, catalog, set(visible_globals) | set(item.symbols), strict)
         check_attributes(item, catalog, set(visible_globals) | set(item.symbols), known | set(visible_globals), strict)
         diagnostics.extend(item.diagnostics)

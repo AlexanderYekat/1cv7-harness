@@ -252,6 +252,10 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(window.judge_captions(field, {"found": True, "controls": [
             {"id": window.window_ids(field)[4152], "text": "значение"}]}), [])
         self.assertEqual(window.judge_captions(DESCRIPTION, {"found": False}), [])
+        # A label with a formula shows the formula's value (task 022, f-doc of series 2).
+        computed = {"controls": [dict(DESCRIPTION["controls"][0], caption="", formula="глПредставлениеРасчСчета(Контекст)")]}
+        self.assertEqual(window.judge_captions(computed, {"found": True, "controls": [
+            {"id": window.window_ids(computed)[4152], "text": "Р/с № 40702810716110100220"}]}), [])
         item, _ = self.judge(self.adapter(inspection=self.inspection(controls=controls)), "open",
                              ["open-return:1", "loaded:harness77-form"])
         self.assertEqual(item["status"], "failed")
@@ -308,6 +312,100 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual([f["path"] for f in files], ["form/description.json", "form/form-window.json"])
         self.assertTrue(all(f["complete"] and len(f["sha256"]) == 64 for f in files))
         self.assertEqual(adapter.platform_status([{"status": "failed"}]), "passed")
+
+
+class ConfigurationFormTests(unittest.TestCase):
+    """Task 022: the controller opens a form of the configuration; its dialog comes from the opened base."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
+        import test_md77_forms as fixtures
+        self.fixtures = fixtures
+        self.temp = tempfile.TemporaryDirectory(prefix="h77-cform-")
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        (self.base / "1Cv7.MD").write_bytes(fixtures.forms_md())
+
+    def test_the_controller_opens_the_named_form(self):
+        self.assertEqual(form.controller_text({}), form.CONTROLLER)
+        text = form.controller_text({"form_object": "Обработка.ВводАдреса"})
+        self.assertIn('Открыта77 = ОткрытьФорму("Обработка.ВводАдреса", Контекст77);', text)
+        self.assertNotIn('"Отчет", Контекст77, Путь', text)
+        self.assertEqual(text.replace('"Обработка.ВводАдреса", Контекст77', '"Отчет", Контекст77, Путь'),
+                         form.CONTROLLER)
+
+    def test_parameters_are_checked(self):
+        for parameters, message in (({"form_object": "Справочник.Контрагенты"}, "form_object is"),
+                                    ({"form_object": "Обработка.Ввод Адреса"}, "form_object is"),
+                                    ({"form_object": 1}, "form_object is")):
+            with self.subTest(parameters=parameters), self.assertRaisesRegex(ValueError, message):
+                form.FormAdapter().commands(parameters, ["open"])
+
+    def test_the_expected_form_is_the_dialog_in_the_opened_base(self):
+        description, source = form.configuration_description(self.base / "1Cv7.MD", "обработка.вводадреса")
+        self.assertEqual(description, form77().describe(self.fixtures.DIALOG))
+        self.assertEqual((source["path"], source["file"]), (self.fixtures.PROCESSING, self.fixtures.PROCESSING_FORM))
+        document, _ = form.configuration_description(self.base / "1Cv7.MD", "Документ.Выписка")
+        self.assertEqual(document["browser"], {"position": 26, "columns": 1})
+        self.assertEqual({k: v for k, v in document.items() if k != "browser"},
+                         form77().describe(self.fixtures.DOCUMENT_TEXT))
+        with self.assertRaisesRegex(ValueError, "no form of Отчет.Нет"):
+            form.configuration_description(self.base / "1Cv7.MD", "Отчет.Нет")
+
+    def test_select_base(self):
+        from shutdown77 import PINNED
+        adapter = form.FormAdapter()
+        adapter.commands({"form_object": "Документ.Выписка"}, ["open"])
+        adapter.select_base(self.base, "f" * 64)
+        self.assertEqual(adapter.configuration, PINNED["1Cv7.MD"])
+        self.assertEqual(adapter.form[1]["path"], self.fixtures.DOCUMENT)
+        plain = form.FormAdapter()
+        plain.commands({}, ["open"])
+        plain.select_base(self.base)
+        self.assertIsNone(plain.form)
+        self.assertIsNone(launcher.Harness77Adapter().select_base(self.base))
+
+
+class TablePartWindowTests(unittest.TestCase):
+    """Task 022: window IDs of a form with a table part, and the border of a field's window."""
+
+    def test_window_ids_skip_the_columns_of_the_table_part(self):
+        # f-doc (series 1): 41 records, table part after 26 windows, 4 columns.
+        description = {"controls": [{"id": 4152 + i, "class": "STATIC"} for i in range(41)],
+                       "browser": {"position": 26, "columns": 4}}
+        ids = window.window_ids(description)
+        self.assertEqual(sorted(ids.values()), list(range(4152, 4178)) + list(range(4182, 4197)))
+        self.assertEqual((ids[4192], ids[4167], ids[4166], ids[4152]), (4152, 4177, 4182, 4196))
+        del description["browser"]
+        self.assertEqual(sorted(window.window_ids(description).values()), list(range(4152, 4193)))
+
+    def test_a_field_is_compared_without_its_border(self):
+        # f-elements (series 1): fields are one pixel larger on every side; buttons and labels are exact.
+        description = {"controls": [
+            {"id": 4152, "class": "BUTTON", "x": 7, "y": 142, "width": 54, "height": 13},
+            {"id": 4153, "class": "TABLE", "x": 7, "y": 19, "width": 314, "height": 120},
+            {"id": 4154, "class": "STATIC", "x": 7, "y": 161, "width": 55, "height": 8},
+            {"id": 4155, "class": "CHECKBOX", "x": 70, "y": 159, "width": 70, "height": 10},
+            {"id": 4156, "class": "1CEDIT", "x": 150, "y": 158, "width": 80, "height": 13},
+            {"id": 4157, "class": "BMASKED", "x": 240, "y": 158, "width": 60, "height": 13},
+            {"id": 4158, "class": "BMASKED", "x": 7, "y": 176, "width": 100, "height": 13},
+            {"id": 4159, "class": "BUTTON", "x": 120, "y": 176, "width": 54, "height": 13}]}
+        measured = {4159: (5, 206, 81, 21), 4158: (5, 7, 471, 195), 4157: (5, 237, 83, 13), 4156: (99, 234, 105, 16),
+                    4155: (218, 231, 122, 23), 4154: (353, 231, 92, 23), 4153: (4, 261, 152, 23),
+                    4152: (174, 262, 81, 21)}
+        expected = window.expected_geometry(description)
+        edged = window.edged_ids(description)
+        self.assertEqual(edged, {4153, 4154, 4155})
+        self.assertFalse(window.fit_units(expected, measured)["consistent"])
+        fit = window.fit_units(expected, measured, edged=edged)
+        self.assertTrue(fit["consistent"], fit)
+        self.assertLess(fit["max_residual_px"], 1)
+        self.assertEqual(fit["edged"], [4153, 4154, 4155])
+
+
+def form77():
+    from harness77 import form77 as module
+    return module
 
 
 if __name__ == "__main__":

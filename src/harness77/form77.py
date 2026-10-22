@@ -19,6 +19,7 @@ not here.
 
 import argparse
 import collections
+from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
@@ -99,6 +100,43 @@ CHECKBOX_TYPE = {"kind": "number", "length": 1}
 
 NAME = re.compile(r"[A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*\Z")
 CALL = re.compile(r"\s*([A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*)\s*\(.*\)\s*;?\s*\Z", re.DOTALL)
+# A form of a 1Cv7.MD (task 022): the table part of a document and the list of a list form are the
+# one Multicolumn record of the dialog's Browser section, 43 fields like a control (416 forms of
+# base-for-test, 334 of Торговля+Склад); a new or moved control must not cover it.
+BROWSER, MULTICOLUMN, TABLE_PART = "Browser", "Multicolumn", "табличная часть"
+DATA_CLASSES = ("1CEDIT", "BMASKED", "CHECKBOX")
+# Built-in attributes: their fields take the type from the object's properties, not from a record.
+BUILTIN = {"Документ": ("НомерДок", "ДатаДок", "ВремяДок"),
+           "Справочник": ("Код", "Наименование", "Родитель", "Владелец")}
+TABLE_FIELDS = "Table Fields"
+
+
+@dataclass(frozen=True)
+class FormContext:
+    """What a form of a 1Cv7.MD has beyond an ERT's (task 022).
+
+    owner: "Документ.Доверенность" for a document's form and a catalog's element or group form,
+    whose fields named after the object's attributes are those attributes' fields; attributes:
+    {casefolded name: metadata77.Attribute} of these, table: casefolded names of a document's
+    table part, builtin: of its built-in attributes; exports: casefolded exported procedures of
+    the configuration's global module, which a formula may call.
+    """
+    owner: str | None = None
+    attributes: dict = field(default_factory=dict)
+    table: frozenset = frozenset()
+    builtin: frozenset = frozenset()
+    exports: frozenset = frozenset()
+
+    @classmethod
+    def of(cls, owner, metadata, exports=frozenset()):
+        """The context of a form of owner = (class, name) or None; attributes only for an object form."""
+        if owner is None or owner[0] not in BUILTIN:
+            return cls(exports=frozenset(exports))
+        found = metadata.attributes(*owner) or {}
+        return cls(f"{owner[0]}.{owner[1]}",
+                   {key: a for key, a in found.items() if a.part != TABLE_FIELDS},
+                   frozenset(key for key, a in found.items() if a.part == TABLE_FIELDS),
+                   frozenset(name.casefold() for name in BUILTIN[owner[0]]), frozenset(exports))
 
 
 def sha256(data):
@@ -334,11 +372,12 @@ def _reserved():
 
 
 class _Changes:
-    def __init__(self, module_text, metadata=None, template=None):
+    def __init__(self, module_text, metadata=None, template=None, context=None):
         self.items = []
         self.module_text = module_text
         self.metadata = metadata
         self.template = template
+        self.context = context
         self._names = None
 
     def existing(self, data_type):
@@ -361,7 +400,8 @@ class _Changes:
         return self._names
 
     def procedures(self):
-        return self.module("формулы")[0] | platform_functions()
+        exports = self.context.exports if self.context is not None else frozenset()
+        return self.module("формулы")[0] | platform_functions() | exports
 
 
 def _caption(value, where):
@@ -382,8 +422,10 @@ def _formula(value, kind, where, changes):
     if not match:
         raise ErtError(f"{where}: формула элемента {kind} должна быть вызовом Имя(…), получено {value!r}")
     if match.group(1).casefold() not in changes.procedures():
-        raise ErtError(f"{where}: формула вызывает {match.group(1)}, которого нет ни в модуле, "
-                       "ни среди глобальных функций платформы")
+        configuration = changes.context is not None
+        raise ErtError(f"{where}: формула вызывает {match.group(1)}, которого нет ни в модуле"
+                       + (", ни среди экспортных процедур глобального модуля" if configuration else "")
+                       + ", ни среди глобальных функций платформы")
     return _caption(value, where)
 
 
@@ -449,17 +491,51 @@ def _grouped(a, b):
     return contains(a, b) or contains(b, a)
 
 
-def _placement(before, after, placed):
+def _browser(tree):
+    """The table part or list of a 1Cv7.MD form as an obstacle shaped like a control (task 022), or []."""
+    found = []
+    for section in tree[1:]:
+        if not isinstance(section, list) or section[:1] != [BROWSER]:
+            continue
+        for item in section[1:]:
+            if not isinstance(item, list) or item[:1] != [MULTICOLUMN]:
+                continue
+            record = item[1] if len(item) > 1 else None
+            if not isinstance(record, list) or len(record) <= LAYER or not all(isinstance(x, str) for x in record):
+                raise ErtError("Неизвестная структура табличной части формы (раздел Browser)")
+            where = "Табличная часть формы"
+            found.append({"id": TABLE_PART, "class": MULTICOLUMN, "layer": record[LAYER],
+                          **{key: _int(record[index], where) for key, index in GEOMETRY}})
+    return found
+
+
+def _table_position(tree, added, changes):
+    """Keep the table part among the template's controls in the order 1C creates the windows (task 022).
+
+    1C creates them from the last record, the table part after as many as the first number of the
+    Browser section says (f-doc: 26, the fields above the table part of Доверенность; the controls
+    above a table part are among them for 89% and 76% of the corpus controls). A new record is the
+    last one, so it is created first: the number grows by the new records.
+    """
+    for section in tree[1:]:
+        if isinstance(section, list) and section[:1] == [BROWSER]:
+            old = _int(section[1], "Табличная часть формы")
+            section[1] = str(old + added)
+            changes.items.append({"control": None, "property": "table_part_position", "from": old, "to": old + added})
+
+
+def _placement(before, after, placed, obstacles=()):
     """Refuse a new overlap of a new, moved or relayered control with a control of its layer.
 
     Real forms overlap (614 pairs in 135 corpus forms, mostly drop-down lists), so
     only overlaps the change creates are refused; a group box may contain a control.
+    The table part of a 1Cv7.MD form is an obstacle that never moves (task 022).
     """
-    old = {item["id"]: item for item in before}
+    old = {item["id"]: item for item in [*before, *obstacles]}
     for item in after:
         if item["id"] not in placed:
             continue
-        for other in after:
+        for other in [*after, *obstacles]:
             if other["id"] == item["id"] or other["layer"] != item["layer"] \
                     or not _overlap(_box(item), _box(other)) or _grouped(item, other):
                 continue
@@ -467,10 +543,12 @@ def _placement(before, after, placed):
             if all(was) and was[0]["layer"] == was[1]["layer"] and _overlap(_box(was[0]), _box(was[1])):
                 continue  # the template already overlapped them
             x0, y0, x1, y1 = _box(other)
+            table = other["id"] == TABLE_PART
             raise ErtError(f"Элемент {item['id']} ({item['x']}, {item['y']}, {item['width']}×{item['height']}) "
-                           f"накладывается на элемент {other['id']} ({x0}, {y0}, {x1 - x0}×{y1 - y0}) "
-                           f"слоя {item['layer']!r}; наложение допускается, только если рамка группы "
-                           "целиком содержит элемент")
+                           f"накладывается на {'табличную часть' if table else 'элемент ' + str(other['id'])} "
+                           f"({x0}, {y0}, {x1 - x0}×{y1 - y0}) слоя {item['layer']!r}; "
+                           + ("табличную часть формы не накрывает ни один элемент" if table else
+                              "наложение допускается, только если рамка группы целиком содержит элемент"))
 
 
 def _shown(data_type, changes):
@@ -555,23 +633,24 @@ def _numbered(records, pending, changes):
 Rebuilt = collections.namedtuple("Rebuilt", "text changes ert_metadata kinds")
 
 
-def apply(text, description, module_text=None, metadata=None, template=None):
+def apply(text, description, module_text=None, metadata=None, template=None, context=None):
     """New dialog text from the template text and a description; returns (text, changes)."""
-    return tuple(rebuild(text, description, module_text, metadata, template)[:2])
+    return tuple(rebuild(text, description, module_text, metadata, template, context)[:2])
 
 
-def rebuild(text, description, module_text=None, metadata=None, template=None):
+def rebuild(text, description, module_text=None, metadata=None, template=None, context=None):
     """The dialog of a description over the template text, as Rebuilt.
 
     metadata (metadata77.Metadata of the target base) is checked by the names of
     the kinds; template (the ERT's own copy) names and numbers them (task 013).
+    A form of a 1Cv7.MD (task 022) has its configuration as both and a FormContext.
     """
     tree, frame, section = _structure(text)
     current = describe(text, version=description["schema_version"])
     if description["template_dialog_sha256"] != current["template_dialog_sha256"]:
         raise ErtError("Описание сделано для другого шаблона: хеш диалога не совпадает")
     typed = description["schema_version"] >= 2
-    changes = _Changes(module_text, metadata, template)
+    changes = _Changes(module_text, metadata, template, context)
     form, old_form = description["form"], current["form"]
     if form["layers"] != old_form["layers"]:
         raise ErtError("Изменение слоёв формы не поддерживается")
@@ -668,10 +747,14 @@ def rebuild(text, description, module_text=None, metadata=None, template=None):
             else:
                 pending.append((record, data_type["code"], data_type["name"], change))
         changes.items.append(change)
+    if len(items) > len(records):
+        _table_position(tree, len(items) - len(records), changes)
     ert_metadata = _numbered(records, pending, changes)
+    touched ={(str(c["control"]), c.get("property", "added")) for c in changes.items if c["control"]}
+    if context is not None:
+        _object_fields(section, current, touched, changes)
     # Only what the description sets is validated: the template's own identifiers
     # and layers were accepted by 1C (a corpus form has the identifier "Дата").
-    touched = {(str(c["control"]), c.get("property", "added")) for c in changes.items if c["control"]}
     owners = {}
     for record in section[1:]:
         if record[IDENTIFIER]:
@@ -697,10 +780,64 @@ def rebuild(text, description, module_text=None, metadata=None, template=None):
                                    "модуля: имя неоднозначно")
                 raise ErtError(f"{where}: идентификатор {name!r} совпадает с переменной Перем модуля: 1С такой "
                                "модуль примет, но переменная перекроет реквизит формы, и модуль не увидит поле")
-    _placement(current["controls"], [_control(record) for record in section[1:]], placed)
+    _placement(current["controls"], [_control(record) for record in section[1:]], placed, _browser(tree))
     text = serialize_dialog(tree)
     return Rebuilt(text, changes.items, ert_metadata,
                    kinds(text, template if ert_metadata == "kept" else metadata, metadata))
+
+
+def _record_type(code, length, precision, number, metadata):
+    """A type of a record or an attribute in words, for a message."""
+    if code == "S":
+        return f"строка длины {length}"
+    if code == "N":
+        return f"число {length}.{precision}"
+    if code == "D":
+        return "дата"
+    if code in TYPES:
+        return type_name(code, number, metadata) or f"{TYPES[code]} № {number}"
+    return "неопределённый" if code == "U" else code
+
+
+def _object_fields(section, current, touched, changes):
+    """A field of an object's form named after its attribute is that attribute's field (task 022).
+
+    Its record carries a copy of the attribute's type (951 of 956 fields of base-for-test, 712 of 713
+    of Торговля+Склад; the rest are stale after a metadata change), so a new one takes exactly that
+    type. A table attribute is a column of the Browser section, a built-in attribute's type is the
+    object's property, and a changed identifier would rebind a field: these are refused.
+    """
+    context, metadata = changes.context, changes.metadata
+    old = {str(item["id"]): item["identifier"] for item in current["controls"]}
+    for record in section[1:]:
+        added, renamed = (record[ID], "added") in touched, (record[ID], "identifier") in touched
+        if not (added or renamed):
+            continue
+        where = f"Новый элемент {record[ID]} ({record[CLASS]})" if added else f"Элемент {record[ID]}"
+        for name in filter(None, (record[IDENTIFIER], old.get(record[ID]) if renamed else None)):
+            key = name.casefold()
+            if key in context.builtin:
+                raise ErtError(f"{where}: {name!r} — встроенный реквизит {context.owner}: его поле не добавляется "
+                               "и не переименовывается (тип задают свойства объекта)")
+            if key in context.table:
+                raise ErtError(f"{where}: {name!r} — реквизит табличной части {context.owner}: он выводится "
+                               "колонкой табличной части (раздел Browser диалога), а не полем формы")
+            if renamed and key in context.attributes:
+                raise ErtError(f"{where}: смена идентификатора {old[record[ID]]!r} на {record[IDENTIFIER]!r} меняет "
+                               f"привязку поля к реквизиту {context.owner}.{context.attributes[key].name}: "
+                               "не поддерживается")
+        attribute = context.attributes.get(record[IDENTIFIER].casefold()) if added and record[IDENTIFIER] else None
+        if attribute is None:
+            continue
+        if record[CLASS] not in DATA_CLASSES:
+            raise ErtError(f"{where}: {record[IDENTIFIER]!r} — реквизит {context.owner}, а элемент класса "
+                           f"{record[CLASS]} не поле: имя реквизита носит только его поле")
+        have = (record[TYPE], int(record[LENGTH]), int(record[PRECISION]), int(record[OBJECT]))
+        want = (attribute.code, attribute.length or 0, attribute.precision or 0, attribute.number)
+        if have != want:
+            raise ErtError(f"{where}: поле реквизита {context.owner}.{attribute.name} должно иметь тип реквизита "
+                           f"({_record_type(*want, metadata)}), в описании — {_record_type(*have, metadata)}")
+        changes.items[next(i for i, c in enumerate(changes.items) if c["control"] == int(record[ID]))]["attribute"] =             f"{context.owner}.{attribute.name}"
 
 
 def dialog_payload(text, old_payload):

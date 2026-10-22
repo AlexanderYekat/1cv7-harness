@@ -69,10 +69,15 @@ FORM_OBJECTS = {"Report": "Отчет", "CalcVar": "Обработка"}
 
 
 class Attribute:
-    """An attribute of a metadata object: its name, type code and the class and name of its kind, if any."""
+    """An attribute of a metadata object: its name, type code and the class and name of its kind, if any.
 
-    def __init__(self, name, code, kind):
+    length, precision and the number of its kind complete the type; part is the list it is in
+    ("Head Fields", "Table Fields", GENERAL, "Params"…), as a form field of it needs (task 022).
+    """
+
+    def __init__(self, name, code, kind, length=None, precision=None, number=0, part=None):
         self.name, self.code, self.kind = name, code, kind
+        self.length, self.precision, self.number, self.part = length, precision, number, part
 
     @property
     def target(self):
@@ -192,7 +197,7 @@ class Metadata:
         of another layout or a repeated name refuses them all, as objects() does.
         """
         if self._attributes is None:
-            general = [_attribute(record, GENERAL, self.names)
+            general = [_attribute(record, GENERAL, self.names, GENERAL)
                        for record in (_section(self._tree, GENERAL) or [None])[1:]]
             found = {}
             for cls, subsections in ATTRIBUTES.items():
@@ -203,7 +208,7 @@ class Metadata:
                              and item[0] in subsections]
                     if len({item[0] for item in items}) < len(items):
                         raise ErtError(f"Метаданные: в записи {where} повторяется список реквизитов")
-                    attributes = [_attribute(row, f"{where} {item[0]}", self.names)
+                    attributes = [_attribute(row, f"{where} {item[0]}", self.names, item[0])
                                   for item in items for row in item[1:]]
                     attributes += general if cls == "Документ" else []
                     names = {attribute.name.casefold(): attribute for attribute in attributes}
@@ -294,14 +299,17 @@ def _records(section, key):
         yield int(record[0]), name
 
 
-def _attribute(record, where, names):
-    """An Attribute of a record {"<number>", "<name>", "", "", "<type code>", "", "", "<kind number>", …}."""
+def _attribute(record, where, names, part=None):
+    """An Attribute of a record {"<number>", "<name>", "", "", "<type code>", "<length>", "<precision>",
+    "<kind number>", …}."""
     if (not isinstance(record, list) or len(record) < 8 or not all(isinstance(x, str) for x in record[:8])
             or not NUMBER.match(record[0]) or not record[1] or record[4] not in ATTRIBUTE_TYPES
             or not record[7].isdigit()):
         raise ErtError(f"Метаданные: неизвестная запись реквизита в разделе {where}: {str(record)[:80]}")
     number = int(record[7])
-    return Attribute(record[1], record[4], names.get((record[4], number)) if number else None)
+    length, precision = (int(x) if x.isdigit() else None for x in record[5:7])
+    return Attribute(record[1], record[4], names.get((record[4], number)) if number else None,
+                     length, precision, number, part)
 
 
 def _payload(compound):

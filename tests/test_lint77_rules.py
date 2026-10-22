@@ -188,9 +188,15 @@ class DeclarationTests(unittest.TestCase):
     def test_global_context_variables_allow_and_severity(self):
         text = procedure('Сообщить(глВерсия);', 'Сообщить(глСкрытая);')
         self.assertEqual(self.reported(text), [(2, 'warning'), (3, 'warning')])
-        # Exported variables of the supplied global module are visible, private ones are not.
+        # Exported variables of the supplied global module are visible, private ones are not. It is the
+        # configuration's global module: the context is complete, and 1C does not compile the read (task 022).
         self.assertEqual(self.reported(text, globals_text='Перем глВерсия Экспорт;\nПерем глСкрытая;'),
-                         [(3, 'warning')])
+                         [(3, 'error')])
+        # A text of other global names (not a configuration's global module) leaves the context open.
+        source = lint77.Source('test.1s', '', text, dialog=frozenset(self.DIALOG))
+        other = lint77.Source('names.1s', '', 'Перем глВерсия Экспорт;\nПерем глСкрытая;')
+        self.assertEqual([(d['line'], d['severity']) for d in lint77.analyze([source], [other])['diagnostics']
+                          if d['rule'] == 'L7711'], [(3, 'warning')])
         self.assertEqual(self.reported(text, strict=True), [(2, 'error'), (3, 'error')])
         source = lint77.Source('test.1s', '', text, dialog=frozenset(self.DIALOG))
         report = lint77.analyze([source], allow=['глВерсия', 'глСкрытая'])
@@ -245,7 +251,7 @@ class FormContextTests(unittest.TestCase):
     def test_report_names_the_catalog(self):
         report = analyze('А = 1;')
         self.assertEqual(report['catalog']['platform_version'], '7.70.027')
-        self.assertEqual(report['version'], '0.5.0')
+        self.assertEqual(report['version'], '0.6.0')
 
 
 class RunStaticContextTests(unittest.TestCase):

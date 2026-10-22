@@ -204,6 +204,10 @@ class Harness77Adapter:
     def preflight(self, base, exe, cdb, helper, drive):
         preflight(base, exe, cdb, helper, drive)
 
+    def select_base(self, base, configuration_sha256=None):
+        """The base the session opens, after its preflight: the stand base or this run's copy with the
+        built 1Cv7.MD (task 021); an adapter may read it before 1C starts (task 022)."""
+
     def operation(self, command, lines, actual, row):
         """Judge one command from the controller's response; return an issue or None."""
         loaded = ("loaded:" + IDENTITY) in lines
@@ -390,6 +394,7 @@ def main(argv=None, adapter=None):
             preflight_copy(base, exe, cdb, helper, drive, configuration_sha256=built_md)
         else:
             adapter.preflight(base, exe, cdb, helper, drive)
+        adapter.select_base(base, built_md)
         pinned = pinned_for(built_md)
         drive.mkdir(parents=True, exist_ok=False)
         manifest, shutdown_manifest, ert_target = scaffold(drive, built, args.run_id, adapter, commands, parameters,

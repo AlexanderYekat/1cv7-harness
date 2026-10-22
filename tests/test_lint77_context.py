@@ -243,6 +243,20 @@ class MdContextTests(unittest.TestCase):
         self.assertEqual([(folder, line) for folder, line, _, _ in found], [("TypedText", 3)])
         self.assertEqual(report["md_context_modules"], 1)
 
+    def test_l7711_is_an_error_with_the_configurations_global_module(self):
+        # Task 022 (series 0; the owner's decision of 22.10.2026): with the global module of its own 1Cv7.MD the
+        # context is complete — 1C does not compile the module; without it the read stays a warning.
+        form = "Процедура П()\r\nХ = Нет77;\r\nКонецПроцедуры"
+        levels = lambda report: [(d["module"].split("/")[0], d["severity"]) for d in report["diagnostics"]
+                                 if d["rule"] == "L7711"]
+        _, report, _ = self.lint_md(Document__Document_Number238__WorkBook=form,
+                                    TypedText__ModuleText_Number1="Перем глВерсия Экспорт;")
+        self.assertEqual(levels(report), [("Document", "error")])
+        self.assertIn("1С такой модуль не компилирует", next(d["message"] for d in report["diagnostics"]
+                                                              if d["rule"] == "L7711"))
+        _, report, _ = self.lint_md(Document__Document_Number238__WorkBook=form)
+        self.assertEqual(levels(report), [("Document", "warning")])
+
     def test_reference_attributes_of_the_owner_lead_on(self):
         _, _, found = self.lint_md(
             TypedText__Transact_Number238="Процедура П()\r\nХ = Сотрудник.Должность + Автор.Нет;\r\n"

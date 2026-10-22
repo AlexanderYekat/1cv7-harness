@@ -250,6 +250,19 @@ class RunStageTests(VisualRunCase):
         self.assertEqual(result["baseline"]["approved"]["by"], "tester")
         self.assertTrue(all(f["complete"] for f in rows[0]["files"].values()))
 
+    def test_the_approval_names_the_built_configuration(self):
+        # Task 022: a form of the configuration is checked on the run's built 1Cv7.MD.
+        report = self.approved()
+        record = json.loads((self.baselines / "form-open.json").read_text(encoding="utf-8"))
+        self.assertNotIn("configuration_sha256", record["approved"])
+        path = Path(report["run_dir"]) / "run.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["configuration"] = {"sha256": "c" * 64}
+        path.write_text(json.dumps(data), encoding="utf-8")
+        visual.approve(load_project(self.project).visual, report["run_dir"], approved_by="tester", replace=True)
+        record = json.loads((self.baselines / "form-open.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["approved"]["configuration_sha256"], "c" * 64)
+
     def test_moved_button_fails_and_keeps_the_baseline(self):
         self.approved()
         before = {p.name: p.read_bytes() for p in self.baselines.iterdir()}

@@ -78,14 +78,22 @@ def _configuration_stage(project, stand, run_dir):
     stage.finish(PASSED, evidence=[evidence], template_sha256=report["template"]["sha256"],
                  configuration=report["template"]["configuration"], md_sha256=report["output"]["sha256"],
                  rebuilt=report["rebuilt"], changed=report["changed"],
-                 unchanged_modules=report["unchanged_modules"], index=report["modules"]["index"])
+                 unchanged_modules=report["unchanged_modules"], changed_forms=report["changed_forms"],
+                 unchanged_forms=report["unchanged_forms"], index=report["modules"]["index"])
+    # The module of a changed form runs in its new dialog (task 022): it is checked and its compile
+    # errors are this run's, as a changed module's.
+    rows = report["changed"] + [{"file": row["module_file"], "path": row["module_path"], "object": row["object"],
+                                 "module": row["module"], "form": row["file"]}
+                                for row in report["changed_forms"]
+                                if row["module_path"] not in {changed["path"] for changed in report["changed"]}]
     return stage, {"path": output, "sha256": report["output"]["sha256"], "template": template,
-                   "changed": [row["path"] for row in report["changed"]], "rows": report["changed"]}
+                   "changed": [row["path"] for row in rows], "rows": rows}
 
 
 def _static_stage(project, stand=None, configuration=None):
     from .ert_module import CompoundFile, ErtError
     from .lint77 import analyze, collect_paths, ert_dialog, load_metadata, load_sources
+    from .lint77 import global_module as lint_global_module
     stage = Stage("static", required=True, scope=STAGE_SCOPES["static"])
     # The base the module runs on names the objects of L7712/L7713 (task 018): the
     # project's [build] metadata, otherwise the stand base's 1Cv7.MD when there is one;
@@ -119,6 +127,20 @@ def _static_stage(project, stand=None, configuration=None):
                 source.metadata = metadata
         globals_sources = [s for path in project.globals
                            for s in load_sources(Path(path), own_metadata_names=False)]
+        # The global module of the base the module runs on, from the same 1Cv7.MD (task 022, the owner's
+        # decision of 22.10.2026): with it the context of L7711 is complete — an undeclared read is an
+        # error, as 1C does not compile the module. [analysis] globals with a 1Cv7.MD give their own.
+        global_module = "globals" if any(s.is_global for s in globals_sources) else None
+        global_module_error = None
+        if global_module is None and configuration is None and metadata_path is not None:
+            # An unreadable global module leaves the context open (L7711 a warning) and is said, not fatal.
+            try:
+                own = lint_global_module(metadata_path)
+            except (OSError, ErtError) as error:
+                own, global_module_error = None, f"{type(error).__name__}: {error}"
+            if own is not None:
+                globals_sources.append(own)
+                global_module = metadata_source
         changed = md_sources = ()
         base_globals = list(globals_sources)
         if configuration is not None:
@@ -128,6 +150,7 @@ def _static_stage(project, stand=None, configuration=None):
             changed = set(configuration["changed"])
             md_sources = [s for s in built if s.module in changed or s.is_global]
             globals_sources += [s for s in built if s.is_global]
+            global_module = global_module or "configuration"
         report = analyze(sources + list(md_sources), globals_sources, project.allow, project.strict)
         diagnostics, preexisting = report["diagnostics"], 0
         if configuration is not None:
@@ -147,6 +170,8 @@ def _static_stage(project, stand=None, configuration=None):
                         errors=errors, warnings=sum(row["severity"] == "warning" for row in diagnostics),
                         metadata=({"sha256": metadata.sha256, "configuration": metadata.configuration,
                                    "source": metadata_source} if metadata is not None else None),
+                        global_module=global_module,
+                        **({"global_module_error": global_module_error} if global_module_error else {}),
                         **({"configuration_modules": sorted(changed), "configuration_preexisting": preexisting}
                            if configuration is not None else {}))
 

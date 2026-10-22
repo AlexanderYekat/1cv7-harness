@@ -1,4 +1,4 @@
-# Формы ERT в настоящей 1С 7.7 (задачи 008, 010–013)
+# Формы ERT и 1Cv7.MD в настоящей 1С 7.7 (задачи 008, 010–013, 022)
 
 Исследовательская часть [задачи 008](../../docs/tasks/008-form-description.md):
 открыть форму собранной ERT видимой в своём сеансе 1С, сверить окна элементов
@@ -26,6 +26,19 @@
   `ВыполняемыйМодуль` с сохранением протокола: так получен текст ошибки,
   когда `Compile()` клиента вернул только 0.
 - `verify_corpus77.py` — обратное преобразование всех форм локального корпуса.
+
+Задача 022 ([формы `1Cv7.MD`](../../docs/tasks/022-md-forms.md)):
+
+- `form_launcher77.py` — `[platform.parameters] form_object = "Обработка.<Имя>"` (или `Документ.<Имя>`,
+  `Отчет.<Имя>`): контроллер открывает форму конфигурации, ожидаемый диалог берётся из `1Cv7.MD`
+  открытой базы (копии прогона) вместе с местом табличной части (`browser`); окружение снимка —
+  конфигурация базы стенда.
+- `form_window77.py` — ID окон формы с табличной частью (окна идут с последней записи, табличная
+  часть — после первых `B` окон, её колонки занимают `C` номеров); поля `1CEDIT`/`BMASKED`
+  сравниваются без рамки в 1 px; в ANSI-окно поля символ уходит байтом Windows-1251
+  (`SendMessageTimeoutA`), а не по раскладке потока 1С; надпись с формулой с подписью не сверяется.
+- `probe_md_forms77.py` — серии проб: модуль формы с протоколом проб, изменённое описание,
+  один `harness77 run` с `[configuration]` на случай; `--dry-run` собирает конфигурации без 1С.
 
 Задача 010 ([визуальные тесты](../../docs/tasks/010-visual-form-tests.md)):
 
@@ -188,4 +201,14 @@ python -B research/forms/verify_kinds77.py --runs .artifacts/runs --series .loca
 python -B research/forms/prepare_elements77.py --stand .local/stage10-native/series/stand.toml --output .local/stage11-native/NEW
 python -m harness77 run --project .local/stage11-native/NEW/e-elements.toml --stand .local/stage11-native/NEW/stand.toml --output-root .artifacts/runs
 python -B research/forms/verify_elements77.py --runs .artifacts/runs --series .local/stage11-native/series --output .artifacts/forms/elements-acceptance-NEW.json
+```
+
+Формы `1Cv7.MD` (задача 022; профиль стенда задачи 021 с `copy_path`; эталоны визуальных случаев —
+вне каталога серии):
+
+```powershell
+python -B research/forms/probe_md_forms77.py --stand .local/stage21-native/stand.toml --work .local/stage22-native/NEW `
+  --evidence .artifacts/stage22-md-forms-YYYYMMDD-N.json [--case f-doc ...] [--baselines .local/stage22-native/baselines]
+python -m harness77 visual approve --project .local/stage22-native/NEW/cases/v-first/project.toml `
+  --run .artifacts/runs/<run_id> --by "<кто>"
 ```

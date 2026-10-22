@@ -25,6 +25,10 @@ FIRST_WINDOW_ID = 4152
 CAPTIONED = ("BUTTON", "STATIC", "CHECKBOX", "1CGROUPBOX")
 SMTO_ABORTIFHUNG = 0x0002
 TOLERANCE_PX = 2
+# A field's window is one pixel wider than its record on every side (its border): width and height
+# +2.0 and +1.9 px, left −0.5…−1.0 px for all 14 fields of task 011 E1 and task 022 f-elements; the
+# fit takes the inner rectangle of these classes.
+EDGED, EDGE_PX = ("1CEDIT", "BMASKED"), 1
 SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
 GWL_STYLE = -16
 WS_VISIBLE = 0x10000000
@@ -52,19 +56,36 @@ def inside(rect, client_size):
 
 
 def window_ids(description):
-    """Record ID → window ID: 1C gives the window of record i of N the ID 4152 + N − 1 − i (F0)."""
+    """Record ID → window ID: 1C gives the window of record i of N the ID 4152 + N − 1 − i (F0).
+
+    It creates the windows from the last record; a form of a 1Cv7.MD with a table part (task 022)
+    gets it after the first ``browser.position`` windows, and its ``browser.columns`` columns take
+    as many IDs (f-doc: 26 and 4, windows 4152…4177 and 4182…4196).
+    """
     count = len(description["controls"])
-    return {item["id"]: FIRST_WINDOW_ID + count - 1 - index for index, item in enumerate(description["controls"])}
+    browser = description.get("browser") or {}
+    position, columns = browser.get("position", count), browser.get("columns", 0)
+    return {item["id"]: FIRST_WINDOW_ID + k + (columns if k >= position else 0)
+            for item, k in ((item, count - 1 - index) for index, item in enumerate(description["controls"]))}
 
 
-def fit_units(expected, measured, tolerance=TOLERANCE_PX):
+def edged_ids(description):
+    """Window IDs of the controls whose window has the one-pixel border of a field."""
+    ids = window_ids(description)
+    return {ids[item["id"]] for item in description["controls"] if item.get("class") in EDGED}
+
+
+def fit_units(expected, measured, tolerance=TOLERANCE_PX, edged=()):
     """One linear mapping of form numbers to pixels for all controls.
 
     ``expected``: {window id: (x, y, width, height)} from the description;
     ``measured``: {window id: (left, top, width, height)} in pixels of the parent's
     client area. Scale and offset are fitted from the positions; every control's
-    position and size must agree with them within ``tolerance`` pixels.
+    position and size must agree with them within ``tolerance`` pixels. The windows
+    in ``edged`` are fields: their rectangle without the border is compared.
     """
+    measured = {i: ((r[0] + EDGE_PX, r[1] + EDGE_PX, r[2] - 2 * EDGE_PX, r[3] - 2 * EDGE_PX) if i in edged else r)
+                for i, r in measured.items()}
     ids = sorted(set(expected) & set(measured))
     if not ids:
         return {"consistent": False, "reason": "no common controls", "controls": 0}
@@ -81,6 +102,7 @@ def fit_units(expected, measured, tolerance=TOLERANCE_PX):
     worst = max(residuals.values())
     pixels = abs(scale_x - 1) < 0.02 and abs(scale_y - 1) < 0.02
     return {"consistent": worst <= tolerance, "tolerance_px": tolerance, "controls": len(ids),
+            "edged": sorted(set(edged) & set(ids)),
             "scale_x": round(scale_x, 4), "scale_y": round(scale_y, 4),
             "offset_x": round(offset_x, 2), "offset_y": round(offset_y, 2),
             "units": "pixels" if pixels else "scaled", "max_residual_px": worst,
@@ -112,6 +134,8 @@ def judge_captions(description, inspection):
     ids, issues = window_ids(description), []
     for item in description["controls"]:
         window = ids[item["id"]]
+        if item.get("class") == "STATIC" and item.get("formula"):
+            continue  # a label with a formula shows its value (task 022: «Р/с № …» of Доверенность, record 4189)
         if item.get("class") in CAPTIONED and window in texts and texts[window] != item["caption"]:
             issues.append(f"control {item['id']} ({item['class']}) shows {texts[window]!r}, "
                           f"described {item['caption']!r}")
@@ -221,6 +245,10 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         from win32_modal77 import OwnedModal
         self.modal = OwnedModal(handle, server, tid, desktop, run_id)
         user = self.user = self.modal.user
+        user.SendMessageTimeoutA.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM, W.UINT, W.UINT,
+                                             C.POINTER(C.c_size_t)]
+        user.SendMessageTimeoutA.restype = W.LPARAM
+        user.IsWindowUnicode.argtypes = [W.HWND]
         user.GetParent.argtypes = [W.HWND]
         user.GetParent.restype = W.HWND
         user.GetWindowRect.argtypes = [W.HWND, C.POINTER(RECT)]
@@ -351,13 +379,19 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         summary = {"owned_windows": len(windows),
                    "top_level": [{k: w[k] for k in ("hwnd", "class", "text", "visible", "enabled")}
                                  for w in windows if w["parent"] is None]}
+        by_handle = {w["hwnd"]: w for w in windows}
         if len(candidates) != 1:
-            return dict(summary, found=False,
+            # The child IDs of the windows with most children tell how 1C numbered a form (task 022).
+            parents = sorted(children.items(), key=lambda pair: -len(pair[1]))[:10]
+            return dict(summary, found=False, expected_ids=sorted(expected_ids),
+                        parents=[{"hwnd": parent, "class": by_handle.get(parent, {}).get("class"),
+                                  "text": by_handle.get(parent, {}).get("text"),
+                                  "ids": sorted(w["id"] for w in items),
+                                  "classes": sorted({w["class"] for w in items})} for parent, items in parents],
                         reason="no window holds every expected control ID" if not candidates
                         else f"{len(candidates)} windows hold the expected control IDs")
         parent = candidates[0]
         chain, cursor = [], parent
-        by_handle = {w["hwnd"]: w for w in windows}
         while cursor:
             window = by_handle.get(cursor)
             if window is None:
@@ -376,15 +410,15 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                              "children": inner})
         return dict(summary, found=True, parent=chain[0], chain=chain, controls=controls)
 
-    def send(self, hwnd, message, wparam=0, lparam=0, timeout_ms=10000):
-        """``SendMessageTimeoutW`` to an owned window after rechecking the server identity."""
+    def send(self, hwnd, message, wparam=0, lparam=0, timeout_ms=10000, ansi=False):
+        """``SendMessageTimeoutW`` (``A`` with ``ansi``) to an owned window after rechecking the server identity."""
         self.modal.verify()
         if self.modal.owner(hwnd) != (self.modal.server["pid"], self.modal.tid):
             raise RuntimeError("window is not on the verified server thread")
         result = C.c_size_t()
         C.set_last_error(0)
-        returned = self.user.SendMessageTimeoutW(hwnd, message, wparam, lparam, SMTO_ABORTIFHUNG,
-                                                 timeout_ms, C.byref(result))
+        function = self.user.SendMessageTimeoutA if ansi else self.user.SendMessageTimeoutW
+        returned = function(hwnd, message, wparam, lparam, SMTO_ABORTIFHUNG, timeout_ms, C.byref(result))
         return bool(returned), result.value, C.get_last_error() if not returned else 0
 
     def text(self, hwnd):
@@ -427,12 +461,18 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         target = editor(field)
         started = time.monotonic()
         before, sent, error = self.text(target["hwnd"]), 0, 0
+        # A Unicode WM_CHAR to an ANSI window is converted by the input language of 1C's thread,
+        # which follows the user's current layout: Cyrillic became "????" under the English one
+        # (task 022, f-elements). The window of a 7.7 field gets the Windows-1251 byte instead.
+        ansi = not self.user.IsWindowUnicode(target["hwnd"])
         for character in text:
-            returned, _, error = self.send(target["hwnd"], WM_CHAR, ord(character), 1, timeout_ms)
+            code = character.encode("cp1251")[0] if ansi else ord(character)
+            returned, _, error = self.send(target["hwnd"], WM_CHAR, code, 1, timeout_ms, ansi=ansi)
             if not returned:
                 break
             sent += 1
         return {"control_id": control_id, "found": True, "requested": True, "message": "WM_CHAR",
+                "encoding": "cp1251" if ansi else "utf-16",
                 "returned": sent == len(text), "characters_sent": sent, "last_error": error, "text": text,
                 "text_before": before, "text_after": self.text(target["hwnd"]),
                 "target": {k: target.get(k) for k in ("hwnd", "class", "id")},
