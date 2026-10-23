@@ -17,7 +17,7 @@ from harness77 import ert_module as ert
 from harness77 import form77, md77
 
 from test_ert_dialog import DIALOG
-from test_md77 import MODULES, md_bytes, streams_of
+from test_md77 import MODULES, TEXT, md_bytes, streams_of
 
 DOCUMENT = "Document/Document_Number238/WorkBook/Dialog Stream"
 ELEMENT = "Subconto/Subconto_Number133/WorkBook/Dialog Stream"
@@ -208,7 +208,7 @@ class MdFormTests(unittest.TestCase):
         # Series 0: «{Обработка.ВыводТаблицыЗначений.Форма.Модуль(10)}» in the copy's event log.
         self.assertEqual(md77.platform_module("Обработка.ВыводТаблицыЗначений.Форма.Модуль"),
                          "Обработка/ВыводТаблицыЗначений/Форма.1s")
-        self.assertIsNone(md77.platform_module("Отчет.Анализ.Форма.Модуль"))
+        self.assertIsNone(md77.platform_module("Обработка.ВыводТаблицыЗначений.Модуль"))
         row, = md77.configuration_diagnostics(
             [{"event": "GrbgSyntaxErr", "time": "09:25:58",
               "text": "Х = Флажок77<<?>>; : {Обработка.ВводАдреса.Форма.Модуль(10)}: Переменная не определена (Флажок77)"}],
@@ -270,6 +270,106 @@ class FormRunTests(unittest.TestCase):
                  and "выбДатаНач" in d["message"]]
         self.assertEqual(found, [("L7711", 2)])
         self.assertEqual(basecopy77.listing(base), before)
+
+
+GROUP = "SubFolder/SubFolder_Number133/WorkBook/Dialog Stream"
+GROUP_FORM = "Справочник/Контрагенты/ФормаГруппы.json"
+LIST = "SubList/SubList_Number132/WorkBook/Dialog Stream"
+JOURNAL = "Journal/Journal_Number479/WorkBook/Dialog Stream"
+
+
+def used(number, name, element, group):
+    """A catalog attribute record (string 10) with its use: fields 11 and 12, as 1Cv7.MD has them."""
+    fields = [str(number), name, "", "", "S", "10", "0", "0", "0", "0", "0", str(int(element)), str(int(group)),
+              "0", "1", "0", "0"]
+    return "{" + ",".join(f'"{x}"' for x in fields) + "}"
+
+
+def catalog_md(edit="1"):
+    """The configuration of forms_md with the use of Контрагенты's attributes, the way it is edited (field 11
+    of its record) and a group form; Контрагенты's list form and Банк's journal form have a list (task 023)."""
+    from test_lint77_attributes import record
+    text = TEXT.replace(record(66, "ИНН", size=17),
+                        used(66, "ИНН", True, False) + ",\r\n" + used(9071, "Группа77", False, True)).replace(
+        '{"133","Контрагенты","","","0",', '{"133","Контрагенты","","","0","8","1","1","2","30","1","' + edit + '",')
+    dialogs = {DOCUMENT: DOCUMENT_TEXT, ELEMENT: DIALOG, PROCESSING: DIALOG, GROUP: DIALOG,
+               LIST: with_table(DIALOG), JOURNAL: with_table(DIALOG)}
+    modules = dict(MODULES, **{"SubFolder/SubFolder_Number133/WorkBook": "// группа\r\n"})
+    return md_bytes(text=text, modules=modules, extra={path: ert.encode_dialog(t) for path, t in dialogs.items()})
+
+
+class CatalogFormTests(unittest.TestCase):
+    """Task 023: the forms of catalogs and journals — the use of an attribute, the catalog's record, 1C's names."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="h77-mdc-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.md = self.root / "1Cv7.MD"
+        self.md.write_bytes(catalog_md())
+        md77.extract(self.md, self.root / "x")
+        self.count = 0
+
+    def build(self, file, *controls):
+        self.count += 1
+        description = json.loads((self.root / "x" / file).read_text(encoding="utf-8"))
+        description["controls"] += list(controls)
+        folder = self.root / f"changes{self.count}"
+        (folder / file).parent.mkdir(parents=True)
+        (folder / file).write_text(json.dumps(description, ensure_ascii=False), encoding="utf-8")
+        return md77.build(self.md, folder, self.root / f"out{self.count}.MD")
+
+    def test_the_use_of_a_catalog_attribute(self):
+        from harness77.metadata77 import Metadata
+        attributes = Metadata(self.md.read_bytes()).attributes("Справочник", "Контрагенты")
+        self.assertEqual((attributes["инн"].use, attributes["группа77"].use, attributes["основнойдоговор"].use),
+                         (("element",), ("group",), None))
+
+    def test_an_element_form_shows_attributes_for_elements_and_a_group_form_for_groups(self):
+        field = lambda name: added(**{"class": "1CEDIT", "identifier": name, "type": {"kind": "string", "length": 10}})
+        report = self.build(ELEMENT_FORM, field("ИНН"))
+        self.assertEqual(report["changed_forms"][0]["changes"][0]["attribute"], "Справочник.Контрагенты.ИНН")
+        report = self.build(GROUP_FORM, field("Группа77"))
+        self.assertEqual(report["changed_forms"][0]["changes"][0]["attribute"], "Справочник.Контрагенты.Группа77")
+        with self.assertRaisesRegex(ert.ErtError, r"ФормаЭлемента\.json: .*'Группа77' — реквизит "
+                                                  r"Справочник\.Контрагенты\.Группа77 для групп: на форме элемента"):
+            self.build(ELEMENT_FORM, field("Группа77"))
+        with self.assertRaisesRegex(ert.ErtError, r"ФормаГруппы\.json: .*'инн' — реквизит Справочник\.Контрагенты"
+                                                  r"\.ИНН для элементов: на форме группы его поле не выводится"):
+            self.build(GROUP_FORM, field("инн"))
+        # An attribute of unknown use (fields 11 and 12 both 0) is on either form, as in task 022.
+        report = self.build(GROUP_FORM, added(**{"class": "BMASKED", "identifier": "ОсновнойДоговор",
+                                                 "type": {"kind": "reference", "object": "Справочник.Договоры"}}))
+        self.assertEqual(report["changed_forms"][0]["changes"][0]["attribute"],
+                         "Справочник.Контрагенты.ОсновнойДоговор")
+
+    def test_the_owner_and_the_way_a_catalog_is_edited(self):
+        from harness77.metadata77 import Metadata
+        for edit, way in (("0", "list"), ("1", "dialog"), ("2", "both"), ("7", None)):
+            metadata = Metadata(catalog_md(edit))
+            self.assertEqual(metadata.catalog("контрагенты"), {"owner": None, "edit": way})
+        self.assertEqual(metadata.catalog("Договоры"), {"owner": "Контрагенты", "edit": None})
+        with self.assertRaisesRegex(ert.ErtError, "нет справочника 'Нет'"):
+            metadata.catalog("Нет")
+
+    def test_the_platform_names_the_forms_of_catalogs_journals_and_reports(self):
+        # Series 0 and 1 of task 023: the names in the copy's event log.
+        for name, file in (("Справочник.Банки.Форма.Модуль", "Справочник/Банки/ФормаЭлемента.1s"),
+                           ("Справочник.Банки.Форма группы.Модуль", "Справочник/Банки/ФормаГруппы.1s"),
+                           ("Справочник.Банки.ФормаСписка.Основная.Модуль", "Справочник/Банки/ФормаСписка.Основная.1s"),
+                           ("Журнал.Доверенности.Форма.ФормаСписка.Модуль",
+                            "Журнал/Доверенности/ФормаСписка.ФормаСписка.1s"),
+                           ("Журнал.ЗаработнаяПлата.Форма.Основная.Модуль", "Журнал/ЗаработнаяПлата/ФормаСписка.Основная.1s"),
+                           ("Отчет.КурсыВалют.Форма.Модуль", "Отчет/КурсыВалют/Форма.1s")):
+            self.assertEqual(md77.platform_module(name), file)
+        for name in ("Справочник.Банки.ФормаЭлемента.Модуль", "Справочник.Банки.ФормаСписка.Модуль",
+                     "Журнал.Доверенности.Форма.Модуль", "Справочник.Банки.Форма.Основная.Модуль"):
+            self.assertIsNone(md77.platform_module(name), name)
+        row, = md77.configuration_diagnostics(
+            [{"event": "GrbgSyntaxErr", "time": "14:59:01",
+              "text": "Х77 = 1 +<<?>>; : {Справочник.Контрагенты.Форма группы.Модуль(14)}: Ошибка в выражении"}],
+            [{"file": "Справочник/Контрагенты/ФормаГруппы.1s", "object": "Справочник.Контрагенты"}])
+        self.assertEqual((row["file"], row["line"], row["changed"]), ("Справочник/Контрагенты/ФормаГруппы.1s", 14, True))
 
 
 class GlobalModuleRunTests(unittest.TestCase):

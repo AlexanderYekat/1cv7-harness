@@ -109,6 +109,9 @@ DATA_CLASSES = ("1CEDIT", "BMASKED", "CHECKBOX")
 BUILTIN = {"Документ": ("НомерДок", "ДатаДок", "ВремяДок"),
            "Справочник": ("Код", "Наименование", "Родитель", "Владелец")}
 TABLE_FIELDS = "Table Fields"
+# The forms of a catalog and the use of an attribute they show (metadata77.Attribute.use, task 023).
+CATALOG_FORMS = {"ФормаЭлемента": "element", "ФормаГруппы": "group"}
+USE_NAMES = {"element": "для элементов", "group": "для групп"}
 
 
 @dataclass(frozen=True)
@@ -119,24 +122,34 @@ class FormContext:
     whose fields named after the object's attributes are those attributes' fields; attributes:
     {casefolded name: metadata77.Attribute} of these, table: casefolded names of a document's
     table part, builtin: of its built-in attributes; exports: casefolded exported procedures of
-    the configuration's global module, which a formula may call.
+    the configuration's global module, which a formula may call. elsewhere: {casefolded name:
+    attribute} of a catalog's attributes for the other kind of its forms (task 023): an element
+    form shows only the attributes for elements, a group form only those for groups.
     """
     owner: str | None = None
     attributes: dict = field(default_factory=dict)
     table: frozenset = frozenset()
     builtin: frozenset = frozenset()
     exports: frozenset = frozenset()
+    form: str | None = None
+    elsewhere: dict = field(default_factory=dict)
 
     @classmethod
-    def of(cls, owner, metadata, exports=frozenset()):
-        """The context of a form of owner = (class, name) or None; attributes only for an object form."""
+    def of(cls, owner, metadata, exports=frozenset(), form=None):
+        """The context of a form of owner = (class, name) or None; attributes only for an object form.
+
+        form is the module of a catalog's form, ФормаЭлемента or ФормаГруппы (task 023).
+        """
         if owner is None or owner[0] not in BUILTIN:
             return cls(exports=frozenset(exports))
         found = metadata.attributes(*owner) or {}
-        return cls(f"{owner[0]}.{owner[1]}",
-                   {key: a for key, a in found.items() if a.part != TABLE_FIELDS},
+        use = CATALOG_FORMS.get(form) if owner[0] == "Справочник" else None
+        shown = {key: a for key, a in found.items() if a.part != TABLE_FIELDS}
+        elsewhere = {key: a for key, a in shown.items() if use and a.use is not None and use not in a.use}
+        return cls(f"{owner[0]}.{owner[1]}", {key: a for key, a in shown.items() if key not in elsewhere},
                    frozenset(key for key, a in found.items() if a.part == TABLE_FIELDS),
-                   frozenset(name.casefold() for name in BUILTIN[owner[0]]), frozenset(exports))
+                   frozenset(name.casefold() for name in BUILTIN[owner[0]]), frozenset(exports),
+                   form if use else None, elsewhere)
 
 
 def sha256(data):
@@ -826,6 +839,12 @@ def _object_fields(section, current, touched, changes):
                 raise ErtError(f"{where}: смена идентификатора {old[record[ID]]!r} на {record[IDENTIFIER]!r} меняет "
                                f"привязку поля к реквизиту {context.owner}.{context.attributes[key].name}: "
                                "не поддерживается")
+            if key in context.elsewhere and name == record[IDENTIFIER]:
+                attribute = context.elsewhere[key]
+                uses = " и ".join(USE_NAMES[use] for use in attribute.use)
+                raise ErtError(f"{where}: {name!r} — реквизит {context.owner}.{attribute.name} {uses}: на форме "
+                               f"{'группы' if context.form == 'ФормаГруппы' else 'элемента'} его поле не выводится "
+                               "(использование реквизита в метаданных)")
         attribute = context.attributes.get(record[IDENTIFIER].casefold()) if added and record[IDENTIFIER] else None
         if attribute is None:
             continue

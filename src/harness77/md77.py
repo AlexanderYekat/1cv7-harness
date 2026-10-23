@@ -319,7 +319,7 @@ def _form_change(form, relative, raw, metadata, module_text, global_exports):
             return None
         # The configuration names and numbers the kinds of its own forms: it is both the target and the copy.
         result = rebuild(form.text, description, module_text, metadata, metadata,
-                         FormContext.of(form.owner, metadata, global_exports()))
+                         FormContext.of(form.owner, metadata, global_exports(), form.module))
         if result.text == form.text:
             return None
         payload = dialog_payload(result.text, form.payload)
@@ -414,6 +414,17 @@ COMPILE_ERROR = re.compile(r"(?P<source>.*) : \{(?P<module>[^{}]+)\((?P<line>\d+
 CLASSES = ("Справочник", "Документ", "Журнал", "Отчет", "Обработка")
 
 
+# How 1C names the module of a form in a compile error, (class, the words between the object and
+# «Модуль») -> the form's module in the layout; "*" is the name of a list form. A processing's form
+# (task 022, series 0); a catalog's element, group and list forms, a journal's form and a report's form
+# (task 023, series 0: Справочник.Банки.Форма.Модуль, …Форма группы.Модуль, …ФормаСписка.Основная.Модуль,
+# Журнал.Доверенности.Форма.ФормаСписка.Модуль, Отчет.КурсыВалют.Форма.Модуль).
+PLATFORM_FORMS = {("Документ", ("Форма",)): "Форма", ("Обработка", ("Форма",)): "Форма",
+                  ("Отчет", ("Форма",)): "Форма", ("Справочник", ("Форма",)): "ФормаЭлемента",
+                  ("Справочник", ("Форма группы",)): "ФормаГруппы",
+                  ("Справочник", ("ФормаСписка", "*")): "ФормаСписка.*", ("Журнал", ("Форма", "*")): "ФормаСписка.*"}
+
+
 def platform_module(name):
     """The file in the layout of a module as 1C names it in a compile error, or None."""
     if name == "Глобальный модуль":
@@ -421,10 +432,14 @@ def platform_module(name):
     parts = name.split(".")
     if len(parts) == 3 and parts[0] == "Документ" and parts[2] == "Модуль Документа":
         return f"Документ/{parts[1]}/МодульДокумента{SUFFIX}"
-    # A processing's form: Обработка.<Имя>.Форма.Модуль (task 022, series 0).
-    if len(parts) == 4 and parts[0] in ("Документ", "Обработка") and parts[2:] == ["Форма", "Модуль"]:
-        return f"{parts[0]}/{parts[1]}/Форма{SUFFIX}"
-    return None
+    if len(parts) < 4 or parts[-1] != "Модуль":
+        return None
+    words = parts[2:-1]
+    named = words[-1] if len(words) == 2 and IDENTIFIER.match(words[-1]) else None
+    module = PLATFORM_FORMS.get((parts[0], tuple(words if named is None else (*words[:-1], "*"))))
+    if module is None:
+        return None
+    return f"{parts[0]}/{parts[1]}/{module.replace('*', named or '*')}{SUFFIX}"
 
 
 def configuration_diagnostics(entries, changed, texts=None):
@@ -432,7 +447,7 @@ def configuration_diagnostics(entries, changed, texts=None):
 
     changed: the rows of md-build's "changed"; texts: {file: built text} to place the error's column
     on the module's own line (1C shows the line without its indent). A module 1C names but the
-    layout does not map (a catalog's form, say) counts as changed when its object's module was.
+    layout does not map (a form name not seen in tasks 022–023, say) counts as changed when its object's module was.
     """
     files = {row["file"] for row in changed}
     objects = {row["object"] for row in changed if row.get("object")}

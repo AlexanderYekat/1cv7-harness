@@ -184,12 +184,29 @@ def at_start(lines, header, statement):
     return lines[:found[0] + 1] + statement.splitlines() + lines[found[0] + 1:]
 
 
+def _first_procedure(lines):
+    """Where the protocol goes: before the module's first procedure, else before its first statement.
+
+    A module without procedures (the empty forms of task 023) gets it after its variables and comments.
+    """
+    for n, line in enumerate(lines):
+        if re.match(r"\s*(Процедура|Функция)\s", line, re.I):
+            return n
+    for n, line in enumerate(lines):
+        if line.strip() and not line.strip().startswith("//") and not re.match(r"\s*Перем\s", line, re.I):
+            raise ValueError("a module with statements but no procedures: the protocol has no place")
+    return len(lines)
+
+
 def probe_module(case, original):
     """The form module with the protocol: Перем first, the procedures before the module's own."""
     lines = original.splitlines()
-    first = next(n for n, line in enumerate(lines) if re.match(r"\s*(Процедура|Функция)\s", line, re.I))
+    first = _first_procedure(lines)
     protocol = (PROTOCOL.replace("{procedures}", case.get("procedures", "")).replace("{values}", case["values"])
                 + (BROKEN if case.get("broken") else ""))
+    if not any(line.strip().casefold().startswith(OPENING.casefold()) for line in lines):
+        # A form without its own ПриОткрытии (task 023): the probe's is the only one.
+        protocol += "\n" + OPENING + "\nКонецПроцедуры\n"
     lines = ["Перем Нажатий77;"] + lines[:first] + protocol.splitlines() + [""] + lines[first:]
     lines = at_start(lines, OPENING, case["opening"])
     if case.get("closing"):
@@ -197,8 +214,13 @@ def probe_module(case, original):
     return "\r\n".join(lines) + "\r\n"
 
 
+def case_object(case):
+    """The form_object of a case: its own (task 023) or its form's in task 022."""
+    return case.get("object") or OBJECTS[case["form"]]
+
+
 def project_text(case, modules, baselines=None):
-    parameters = [f"form_object = {json.dumps(OBJECTS[case['form']], ensure_ascii=False)}"]
+    parameters = [f"form_object = {json.dumps(case_object(case), ensure_ascii=False)}"]
     if case.get("actions"):
         parameters.append(f"actions = {json.dumps(case['actions'], ensure_ascii=False)}")
     result = ["[[platform.tests]]", 'name = "form-result"', 'command = "result"', f'expect = "{case["result"]}"']
@@ -223,7 +245,11 @@ def prepare(case, extraction, folder, baselines=None):
     target = modules / (case["form"] + md77.SUFFIX)
     target.parent.mkdir(parents=True)
     original = (extraction / (case["form"] + md77.SUFFIX)).read_bytes().decode("utf-8")
-    target.write_bytes(probe_module(case, original).encode("utf-8"))
+    text = probe_module(case, original)
+    target.write_bytes(text.encode("utf-8"))
+    if case.get("broken"):
+        # The line 1C names in its compile error (task 023 compares it, not only the module).
+        case["broken_line"] = text.split("\r\n").index(BROKEN.splitlines()[2]) + 1
     if case.get("change"):
         description = json.loads((extraction / (case["form"] + md77.FORM_SUFFIX)).read_text(encoding="utf-8"))
         case["change"](description)
@@ -280,9 +306,14 @@ def observe(run_dir):
 
 
 def judge(case, observed):
+    if case.get("blocked"):
+        # Refused before 1C opens the form (task 023): the run is blocked with this reason.
+        return "confirmed" if observed["run_status"] == "blocked" and case["blocked"] in (
+            observed["platform_reason"] or "") else "contradicted"
     if case.get("reason"):
+        reason = case["reason"].format(line=case.get("broken_line"))
         return "confirmed" if observed["run_status"] == "failed" and (observed["platform_reason"] or "").startswith(
-            case["reason"]) else "contradicted"
+            reason) else "contradicted"
     if case["value"] == "?":
         return "observed"
     tests = {row["name"]: row for row in observed["tests"]}
@@ -301,7 +332,10 @@ def judge(case, observed):
     return "confirmed" if met and observed["run_status"] == "passed" else "contradicted"
 
 
-def run_series(cases, args):
+SCOPE = "task 022: forms of 1Cv7.MD by description on a copy of the base"
+
+
+def run_series(cases, args, scope=SCOPE):
     stand = load_stand(args.stand)
     base = Path(stand.base)
     work = args.work.resolve()
@@ -333,14 +367,15 @@ def run_series(cases, args):
             continue
         observed = observe(Path(summary["run_dir"]))
         verdict = judge(case, observed)
-        rows.append({"id": case["id"], "form_object": OBJECTS[case["form"]], "expected_value": case["value"],
-                     "expected_reason": case.get("reason"), "verdict": verdict, "observed": observed,
+        rows.append({"id": case["id"], "form_object": case_object(case), "expected_value": case["value"],
+                     "expected_reason": case.get("reason", "").format(line=case.get("broken_line")) or None,
+                     "verdict": verdict, "observed": observed,
                      "run_id": summary["run_id"], "project_sha256": sha256(project),
                      "run_json_sha256": sha256(Path(summary["run_dir"]) / "run.json")})
         print(case["id"], verdict, observed["run_status"], observed["platform_reason"], observed["tests"],
               observed["inspection"]["found"], observed["inspection"]["reason"], file=sys.stderr, flush=True)
     after = {"base_unchanged": basecopy77.listing(base) == listing, "base_list_unchanged": base_titles_fingerprint() == titles}
-    evidence = {"schema_version": 1, "scope": "task 022: forms of 1Cv7.MD by description on a copy of the base",
+    evidence = {"schema_version": 1, "scope": scope,
                 "generated": datetime.datetime.now().astimezone().isoformat(),
                 "stand": "local-7.70.027 (base-for-test, pinned)", "metadata_sha256": sha256(base / "1Cv7.MD"),
                 "template_sha256": sha256(TEMPLATE), "series": after, "cases": rows}

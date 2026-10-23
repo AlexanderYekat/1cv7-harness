@@ -66,6 +66,12 @@ MODULE_OWNERS = {"Document": "O", "Transact": "O", "Subconto": "B", "SubFolder":
 LIST_FORMS = {"SubList": ("SbCnts", "Справочник"), "Journal": ("Journalisters", "Журнал")}
 # Folders of the form modules of reports and processings, numbered as their records (task 021).
 FORM_OBJECTS = {"Report": "Отчет", "CalcVar": "Обработка"}
+# The forms of a catalog an attribute may be on, as Attribute.use names them (task 023).
+USE = ("element", "group")
+# Fields of a catalog's record (task 023): 4 — the number of its owner catalog, 0 without one;
+# 11 — how it is edited, by the element forms of base-for-test and Торговля+Склад 9.2.
+CATALOG_OWNER, CATALOG_EDIT = 4, 11
+CATALOG_EDITS = {"0": "list", "1": "dialog", "2": "both"}
 
 
 class Attribute:
@@ -73,11 +79,13 @@ class Attribute:
 
     length, precision and the number of its kind complete the type; part is the list it is in
     ("Head Fields", "Table Fields", GENERAL, "Params"…), as a form field of it needs (task 022).
+    use is ("element", "group"), the forms of a catalog's attribute (task 023), or None when unknown.
     """
 
-    def __init__(self, name, code, kind, length=None, precision=None, number=0, part=None):
+    def __init__(self, name, code, kind, length=None, precision=None, number=0, part=None, use=None):
         self.name, self.code, self.kind = name, code, kind
         self.length, self.precision, self.number, self.part = length, precision, number, part
+        self.use = use
 
     @property
     def target(self):
@@ -261,6 +269,27 @@ class Metadata:
                         return cls, record[1], form[1] if len(form) > 1 and isinstance(form[1], str) else None
         return None
 
+    def catalog(self, kind):
+        """{"owner": name or None, "edit": "list" | "dialog" | "both" | None} of catalog ``kind`` (task 023).
+
+        Field 4 of its record is the owner's number (Договоры → Контрагенты in base-for-test; 9 of 58
+        catalogs there, 16 of 60 in Торговля+Склад 9.2, each a catalog). Field 11 is how it is edited:
+        every catalog with 1 or 2 has its own element form (26 and 35), most with 0 an empty one, and
+        1C opens no element form of two with 0 (task 023, e-attribute and e-in-list). Refuses an
+        unknown catalog or owner.
+        """
+        for record in (self._section("SbCnts") or [None])[1:]:
+            if not (isinstance(record, list) and len(record) > CATALOG_OWNER and isinstance(record[1], str)
+                    and record[1].casefold() == kind.casefold()):
+                continue
+            owner = record[CATALOG_OWNER]
+            if owner != "0" and (not (isinstance(owner, str) and NUMBER.match(owner))
+                                 or ("B", int(owner)) not in self.names):
+                raise ErtError(f"Метаданные: у справочника {record[1]!r} неизвестный владелец {owner!r}")
+            edit = record[CATALOG_EDIT] if len(record) > CATALOG_EDIT and isinstance(record[CATALOG_EDIT], str) else None
+            return {"owner": None if owner == "0" else self.names["B", int(owner)], "edit": CATALOG_EDITS.get(edit)}
+        raise ErtError(f"Метаданные: нет справочника {kind!r}")
+
     def number(self, code, kind):
         """The number of a kind by its name, as 1C finds it (letter case aside), or None."""
         return self.numbers.get((code, kind.casefold()))
@@ -299,6 +328,19 @@ def _records(section, key):
         yield int(record[0]), name
 
 
+def _use(record, part):
+    """The forms a catalog's attribute is for: fields 11 and 12 of its Params record (task 023).
+
+    Element forms show only attributes with field 11 = 1, group forms only with field 12 = 1: every
+    such field of base-for-test, all but one of the 240 of Торговля+Склад 9.2; no attribute of the
+    two has neither. A record without them gives None: unknown, not refused.
+    """
+    flags = record[11:13] if part == "Params" else []
+    if len(flags) != 2 or not all(flag in ("0", "1") for flag in flags) or flags == ["0", "0"]:
+        return None
+    return tuple(form for form, flag in zip(USE, flags) if flag == "1")
+
+
 def _attribute(record, where, names, part=None):
     """An Attribute of a record {"<number>", "<name>", "", "", "<type code>", "<length>", "<precision>",
     "<kind number>", …}."""
@@ -309,7 +351,7 @@ def _attribute(record, where, names, part=None):
     number = int(record[7])
     length, precision = (int(x) if x.isdigit() else None for x in record[5:7])
     return Attribute(record[1], record[4], names.get((record[4], number)) if number else None,
-                     length, precision, number, part)
+                     length, precision, number, part, _use(record, part))
 
 
 def _payload(compound):

@@ -334,8 +334,49 @@ class ConfigurationFormTests(unittest.TestCase):
         self.assertEqual(text.replace('"Обработка.ВводАдреса", Контекст77', '"Отчет", Контекст77, Путь'),
                          form.CONTROLLER)
 
+    def test_the_controller_opens_the_forms_of_catalogs_and_journals(self):
+        # Task 023: the syntax helper's calls, a new element or group as a new document in task 022.
+        for name, call in (("Справочник.Банки.ФормаЭлемента", '"Элемент.Банки", Контекст77'),
+                           ("справочник.банки.формагруппы", '"Элемент.банки", Контекст77, , 1'),
+                           ("Справочник.Банки.ФормаСписка.Основная", '"Справочник.Банки.Основная", Контекст77'),
+                           ("Журнал.Доверенности.ФормаСписка.ФормаСписка", '"Журнал.Доверенности.ФормаСписка", Контекст77'),
+                           ("Отчет.КурсыВалют", '"Отчет.КурсыВалют", Контекст77')):
+            with self.subTest(name=name):
+                self.assertIn(f"Открыта77 = ОткрытьФорму({call});", form.controller_text({"form_object": name}))
+        self.assertEqual(form.form_target("Справочник.Банки.ФормаГруппы")[:2], ("Справочник.Банки", "ФормаГруппы"))
+        self.assertEqual(form.form_target("Журнал.Банк.ФормаСписка.Основная")[:2], ("Журнал.Банк", "ФормаСписка.Основная"))
+
+    def test_the_expected_form_of_a_catalog_or_a_journal(self):
+        (self.base / "1Cv7.MD").write_bytes(self.fixtures.catalog_md())
+        element, source = form.configuration_description(self.base / "1Cv7.MD", "Справочник.Контрагенты.ФормаЭлемента")
+        self.assertEqual((source["file"], element.get("browser")), (self.fixtures.ELEMENT_FORM, None))
+        group, source = form.configuration_description(self.base / "1Cv7.MD", "Справочник.Контрагенты.ФормаГруппы")
+        self.assertEqual(source["file"], self.fixtures.GROUP_FORM)
+        listed, source = form.configuration_description(self.base / "1Cv7.MD",
+                                                        "Справочник.Контрагенты.ФормаСписка.ФормаСписка")
+        self.assertEqual((source["path"], listed["browser"]), (self.fixtures.LIST, {"position": 26, "columns": 1}))
+        journal, source = form.configuration_description(self.base / "1Cv7.MD", "Журнал.Банк.ФормаСписка.ФормаСписка")
+        self.assertEqual((source["path"], journal["browser"]), (self.fixtures.JOURNAL, {"position": 26, "columns": 1}))
+
+    def test_a_subordinate_catalog_and_a_catalog_edited_in_its_list_are_refused(self):
+        md = self.base / "1Cv7.MD"
+        md.write_bytes(self.fixtures.catalog_md(edit="0"))
+        with self.assertRaisesRegex(ValueError, "edited in its list; 1C opens no element form"):
+            form.configuration_description(md, "Справочник.Контрагенты.ФормаЭлемента")
+        # Its group form is not refused: no probe opened the group form of a catalog edited in its list.
+        form.configuration_description(md, "Справочник.Контрагенты.ФормаГруппы")
+        md.write_bytes(self.fixtures.catalog_md(edit="0").replace(
+            "Subconto_Number133".encode("utf-16-le"), "Subconto_Number112".encode("utf-16-le")))
+        with self.assertRaisesRegex(ValueError, r"the catalog has an owner \(Контрагенты\)"):
+            form.configuration_description(md, "Справочник.Договоры.ФормаЭлемента")
+        with self.assertRaisesRegex(ValueError, "no form of Справочник.Контрагенты.ФормаЭлемента"):
+            form.configuration_description(md, "Справочник.Контрагенты.ФормаЭлемента")
+
     def test_parameters_are_checked(self):
         for parameters, message in (({"form_object": "Справочник.Контрагенты"}, "form_object is"),
+                                    ({"form_object": "Справочник.Контрагенты.Форма"}, "form_object is"),
+                                    ({"form_object": "Справочник.Контрагенты.ФормаСписка"}, "form_object is"),
+                                    ({"form_object": "Журнал.Банк.ФормаЭлемента"}, "form_object is"),
                                     ({"form_object": "Обработка.Ввод Адреса"}, "form_object is"),
                                     ({"form_object": 1}, "form_object is")):
             with self.subTest(parameters=parameters), self.assertRaisesRegex(ValueError, message):
@@ -379,6 +420,32 @@ class TablePartWindowTests(unittest.TestCase):
         del description["browser"]
         self.assertEqual(sorted(window.window_ids(description).values()), list(range(4152, 4193)))
 
+    def test_the_tree_of_groups_of_a_list_form(self):
+        # Task 023, l-button: new button, tree, then the list's 5 columns; the tree's window is 4679.
+        description = {"controls": [{"id": 4152 + i, "class": "BUTTON"} for i in range(3)]
+                       + [{"id": 4155, "class": "SysTreeView32"}, {"id": 4156, "class": "BUTTON"}],
+                       "browser": {"position": 2, "columns": 5}}
+        self.assertEqual(window.window_ids(description), {4156: 4152, 4155: 4679, 4154: 4159, 4153: 4160, 4152: 4161})
+        # l-tree-third: two new buttons first, the tree third.
+        description = {"controls": [{"id": 4152 + i, "class": "BUTTON"} for i in range(3)]
+                       + [{"id": 4155, "class": "SysTreeView32"}, {"id": 4156, "class": "BUTTON"},
+                          {"id": 4157, "class": "BUTTON"}], "browser": {"position": 3, "columns": 4}}
+        self.assertEqual(sorted(window.window_ids(description).values()), [4152, 4153, 4159, 4160, 4161, 4679])
+        # Without a list (an ERT) the class means nothing to the numbering.
+        del description["browser"]
+        self.assertEqual(sorted(window.window_ids(description).values()), list(range(4152, 4158)))
+
+    def test_the_scale_comes_from_the_positions_and_the_sizes(self):
+        # l-tree (run a761025b): two distinct x positions; the positions alone gave 1.4912 and 2.63 px.
+        expected = {4157: (7, 163, 300, 26), 4158: (7, 191, 54, 13), 4159: (64, 191, 159, 13),
+                    4679: (7, 19, 92, 141)}
+        measured = {4157: (5, 241, 450, 42), 4158: (5, 286, 81, 21), 4159: (90, 286, 239, 21),
+                    4679: (5, 7, 138, 229)}
+        fit = window.fit_units(expected, measured)
+        self.assertTrue(fit["consistent"], fit)
+        self.assertAlmostEqual(fit["scale_x"], 1.5, delta=0.003)
+        self.assertLess(fit["max_residual_px"], 1)
+
     def test_a_field_is_compared_without_its_border(self):
         # f-elements (series 1): fields are one pixel larger on every side; buttons and labels are exact.
         description = {"controls": [
@@ -396,7 +463,10 @@ class TablePartWindowTests(unittest.TestCase):
         expected = window.expected_geometry(description)
         edged = window.edged_ids(description)
         self.assertEqual(edged, {4153, 4154, 4155})
-        self.assertFalse(window.fit_units(expected, measured)["consistent"])
+        # Without the border every field is ~2 px off (the fit of positions and sizes, task 023, keeps it just
+        # inside the tolerance here; the fit of positions alone did not).
+        plain = window.fit_units(expected, measured)
+        self.assertTrue(all(plain["residuals_px"][str(i)] > 1.8 for i in edged), plain)
         fit = window.fit_units(expected, measured, edged=edged)
         self.assertTrue(fit["consistent"], fit)
         self.assertLess(fit["max_residual_px"], 1)

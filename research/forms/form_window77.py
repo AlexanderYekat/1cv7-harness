@@ -20,6 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "platform77"))
 
 BM_CLICK, BM_GETCHECK, WM_CHAR, WM_GETTEXT = 0x00F5, 0x00F0, 0x0102, 0x000D
 FIRST_WINDOW_ID = 4152
+# The tree of groups of a catalog's list form: the last record of 26 list forms of base-for-test and
+# 20 of Торговля+Склад, one per form; 1C gives its window this ID (task 023, l-button).
+TREE, TREE_WINDOW_ID = "SysTreeView32", 4679
 # Classes whose window text is the caption of the description (task 011); a
 # field's window text is its value instead.
 CAPTIONED = ("BUTTON", "STATIC", "CHECKBOX", "1CGROUPBOX")
@@ -37,15 +40,19 @@ DESKTOP_ACCESS = 0x0001 | 0x0002 | 0x0040 | 0x0080  # read/create windows, enume
 
 
 def _line(points, sizes):
-    """Scale and offset of pixel = offset + scale × unit: least squares over positions,
-    or the size ratio when every control shares one position."""
-    units = [u for u, _ in points]
-    if len(set(units)) > 1:
-        mean_u, mean_p = statistics.fmean(units), statistics.fmean(p for _, p in points)
-        scale = (sum((u - mean_u) * (p - mean_p) for u, p in points)
-                 / sum((u - mean_u) ** 2 for u in units))
-    else:
-        scale = sum(p for _, p in sizes) / max(1, sum(u for u, _ in sizes))
+    """Scale and offset of pixel = offset + scale × unit: least squares over the positions and the
+    sizes together (a size is scale × units, without the offset), then the median offset.
+
+    Positions alone gave a scale 0.6% off on a list form with two distinct x positions (task 023,
+    l-tree: 1.4912 for 1.5), 2.6 px over a label 300 units wide; the sizes carry the scale as well.
+    """
+    count = len(points)
+    sum_u, sum_p = sum(u for u, _ in points), sum(p for _, p in points)
+    sum_uu = sum(u * u for u, _ in points) + sum(w * w for w, _ in sizes)
+    sum_up = sum(u * p for u, p in points) + sum(w * s for w, s in sizes)
+    determinant = count * sum_uu - sum_u * sum_u
+    scale = ((count * sum_up - sum_u * sum_p) / determinant if determinant
+             else sum(s for _, s in sizes) / max(1, sum(w for w, _ in sizes)))
     return scale, statistics.median(p - scale * u for u, p in points)
 
 
@@ -60,12 +67,15 @@ def window_ids(description):
 
     It creates the windows from the last record; a form of a 1Cv7.MD with a table part (task 022)
     gets it after the first ``browser.position`` windows, and its ``browser.columns`` columns take
-    as many IDs (f-doc: 26 and 4, windows 4152…4177 and 4182…4196).
+    as many IDs (f-doc: 26 and 4, windows 4152…4177 and 4182…4196). A list form is numbered the
+    same (task 023), but the tree of a catalog's groups (``SysTreeView32``) gets the window ID 4679
+    and keeps its place in the order (l-button: new button 4152, tree 4679, 4153 unused).
     """
     count = len(description["controls"])
     browser = description.get("browser") or {}
     position, columns = browser.get("position", count), browser.get("columns", 0)
-    return {item["id"]: FIRST_WINDOW_ID + k + (columns if k >= position else 0)
+    return {item["id"]: TREE_WINDOW_ID if browser and item.get("class") == TREE else
+            FIRST_WINDOW_ID + k + (columns if k >= position else 0)
             for item, k in ((item, count - 1 - index) for index, item in enumerate(description["controls"]))}
 
 

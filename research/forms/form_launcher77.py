@@ -38,7 +38,11 @@ the run's ERT, and the expected controls are its dialog in the 1Cv7.MD of the ba
 session opens (the run's copy with the built configuration), with the place of its table part
 among the windows. ``Форма.Закрыть(0)`` closes a new document the form modified without asking
 to write it (f-doc-close). The capture environment then names the stand base's configuration,
-not the built one, so a baseline outlives the change under test.
+not the built one, so a baseline outlives the change under test. Task 023 adds the forms of
+catalogs and journals, named as their module files: ``Справочник.<Вид>.ФормаЭлемента`` and
+``…ФормаГруппы`` open a new element or group, ``Справочник.<Вид>.ФормаСписка.<Форма>`` and
+``Журнал.<Имя>.ФормаСписка.<Форма>`` a list form, whose list is placed among the windows as a
+document's table part.
 
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
@@ -77,8 +81,13 @@ WINDOWS = ("form", "dialog")
 STABLE_ATTEMPTS = 6
 STABLE_PAUSE_S = 0.35  # between the captures of one stability series
 PLATFORM_VERSION = "7.70.027"
-# Forms of the configuration the controller opens by name (task 022): their own dialog, «Форма».
-FORM_OBJECT = re.compile(r"(Документ|Обработка|Отчет)\.([^\W\d]\w*)\Z")
+# Forms of the configuration the controller opens by name (task 022): their own dialog, «Форма»;
+# a catalog's element, group and list forms and a journal's list form (task 023), named as their
+# module files in the md-extract layout.
+NAME = r"[^\W\d]\w*"
+FORM_OBJECT = re.compile(rf"(?:(?P<own>(?:Документ|Обработка|Отчет)\.{NAME})"
+                         rf"|(?P<catalog>Справочник\.(?P<kind>{NAME}))\.(?P<form>ФормаЭлемента|ФормаГруппы|ФормаСписка\.{NAME})"
+                         rf"|(?P<journal>Журнал\.{NAME})\.(?P<list>ФормаСписка\.{NAME}))\Z", re.IGNORECASE)
 OPEN_ERT = '            Открыта77 = ОткрытьФорму("Отчет", Контекст77, Путь);\n'
 
 CONTROLLER = """Перем Параметры77Формы;
@@ -203,9 +212,31 @@ def form_object(parameters):
     if value is None:
         return None
     if not isinstance(value, str) or not FORM_OBJECT.match(value):
-        raise ValueError("[platform.parameters] form_object is Документ.<Имя>, Обработка.<Имя> or Отчет.<Имя>, "
-                         f"got {value!r}")
+        raise ValueError("[platform.parameters] form_object is Документ.<Имя>, Обработка.<Имя>, Отчет.<Имя>, "
+                         "Справочник.<Вид>.ФормаЭлемента|ФормаГруппы|ФормаСписка.<Форма> or "
+                         f"Журнал.<Имя>.ФормаСписка.<Форма>, got {value!r}")
     return value
+
+
+def form_target(name):
+    """(object, module, the arguments of ОткрытьФорму) of a form_object.
+
+    The syntax helper of 7.70.027 (1cv7Lang.als): a new element is «Элемент.<Вид>» with the parent
+    group, the group flag (1 — a new group) and the owner; a list form is «Справочник.<Вид>.<Форма>»,
+    a journal's form «Журнал.<Имя>.<Форма>». The controller opens a new element or group, as a new
+    document in task 022.
+    """
+    match = FORM_OBJECT.match(name)
+    if match["own"]:
+        return match["own"], "Форма", f'"{name}", Контекст77'
+    if match["journal"]:
+        return match["journal"], match["list"], f'"{match["journal"]}.{match["list"].split(".", 1)[1]}", Контекст77'
+    catalog, form = match["catalog"], match["form"]
+    if form.casefold() == "формаэлемента":
+        return catalog, "ФормаЭлемента", f'"Элемент.{match["kind"]}", Контекст77'
+    if form.casefold() == "формагруппы":
+        return catalog, "ФормаГруппы", f'"Элемент.{match["kind"]}", Контекст77, , 1'
+    return catalog, form, f'"{catalog}.{form.split(".", 1)[1]}", Контекст77'
 
 
 def controller_text(parameters):
@@ -215,7 +246,7 @@ def controller_text(parameters):
         return CONTROLLER
     if CONTROLLER.count(OPEN_ERT) != 1:
         raise ValueError("unexpected controller layout")
-    return CONTROLLER.replace(OPEN_ERT, OPEN_ERT.replace('"Отчет", Контекст77, Путь', f'"{name}", Контекст77'))
+    return CONTROLLER.replace(OPEN_ERT, OPEN_ERT.replace('"Отчет", Контекст77, Путь', form_target(name)[2]))
 
 
 def browser(text):
@@ -238,11 +269,21 @@ def configuration_description(md_path, name):
     from harness77.metadata77 import Metadata
     data = Path(md_path).read_bytes()
     metadata = Metadata(data)
+    owner, module, _ = form_target(name)
     found = [form for form in read_forms(CompoundFile(data), metadata)
-             if (form.object or "").casefold() == name.casefold() and form.module == "Форма"]
+             if (form.object or "").casefold() == owner.casefold() and (form.module or "").casefold() == module.casefold()]
     if len(found) != 1:
         raise ValueError(f"the configuration has no form of {name}")
     form = found[0]
+    if module in ("ФормаЭлемента", "ФормаГруппы"):
+        catalog = metadata.catalog(owner.split(".", 1)[1])
+        if catalog["owner"]:
+            # A new element of a subordinate catalog needs its owner (ЭлементВладелец): not opened (task 023).
+            raise ValueError(f"{name}: the catalog has an owner ({catalog['owner']}); "
+                             "a new element or group of a subordinate catalog is not opened")
+        if module == "ФормаЭлемента" and catalog["edit"] == "list":
+            # ОткрытьФорму("Элемент.<Вид>") returned no value and opened nothing (e-attribute, e-in-list).
+            raise ValueError(f"{name}: the catalog is edited in its list; 1C opens no element form of it")
     description = describe(form.text, metadata)
     table = browser(form.text)
     if table is not None:
