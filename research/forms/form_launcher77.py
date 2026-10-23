@@ -44,6 +44,14 @@ catalogs and journals, named as their module files: ``Справочник.<Ви
 ``Журнал.<Имя>.ФормаСписка.<Форма>`` a list form, whose list is placed among the windows as a
 document's table part.
 
+Task 024 adds ``fixture_setup``: an ordinary 1C function body returning a saved
+reference, run once before ``check`` and only on the product's verified base copy.
+``fixture_mode = "existing"`` opens that reference; ``owner`` supplies it as the
+owner of a new subordinate catalog element. ``fixture_verify`` is a function body
+with argument ``Объект77`` (the prepared reference), run as the declared ``verify``
+test after the form closes. It returns one string for ``expect_value``. See
+examples/test-data for the complete create/open/change/write/read-back example.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -60,6 +68,8 @@ import re
 import sys
 import threading
 import time
+
+import fixture77
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "platform77"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -239,14 +249,21 @@ def form_target(name):
     return catalog, form, f'"{catalog}.{form.split(".", 1)[1]}", Контекст77'
 
 
-def controller_text(parameters):
+def controller_text(parameters, fixture_context=None):
     """The controller module: it opens the run's ERT, or the configuration form of form_object."""
     name = form_object(parameters)
+    settings = fixture77.options(parameters, name)
     if name is None:
         return CONTROLLER
     if CONTROLLER.count(OPEN_ERT) != 1:
         raise ValueError("unexpected controller layout")
-    return CONTROLLER.replace(OPEN_ERT, OPEN_ERT.replace('"Отчет", Контекст77, Путь', form_target(name)[2]))
+    arguments = fixture77.open_arguments(name, settings) if settings else form_target(name)[2]
+    text = CONTROLLER.replace(OPEN_ERT, OPEN_ERT.replace('"Отчет", Контекст77, Путь', arguments))
+    if settings:
+        if fixture_context is None:
+            raise ValueError("fixture controller requires the verified copy's metadata")
+        text = fixture77.controller(text, settings, fixture_context)
+    return text
 
 
 def browser(text):
@@ -261,7 +278,7 @@ def browser(text):
     return None
 
 
-def configuration_description(md_path, name):
+def configuration_description(md_path, name, fixture=None):
     """(description, source) of the form ``name`` of a 1Cv7.MD: its own dialog, as md-extract describes it."""
     from harness77.ert_module import CompoundFile
     from harness77.form77 import describe
@@ -277,7 +294,7 @@ def configuration_description(md_path, name):
     form = found[0]
     if module in ("ФормаЭлемента", "ФормаГруппы"):
         catalog = metadata.catalog(owner.split(".", 1)[1])
-        if catalog["owner"]:
+        if catalog["owner"] and fixture is None:
             # A new element of a subordinate catalog needs its owner (ЭлементВладелец): not opened (task 023).
             raise ValueError(f"{name}: the catalog has an owner ({catalog['owner']}); "
                              "a new element or group of a subordinate catalog is not opened")
@@ -572,6 +589,7 @@ class FormAdapter(launcher.Harness77Adapter):
         self.requests = []
         self.configuration = None
         self.form = None  # (description, source) of a configuration form (task 022)
+        self.fixture_context = None
 
     def request_captures(self, requests):
         self.requests = capture_requests(requests)
@@ -581,25 +599,35 @@ class FormAdapter(launcher.Harness77Adapter):
         self.configuration = sha256(base / "1Cv7.MD")
 
     def select_base(self, base, configuration_sha256=None):
+        name = form_object(self.parameters)
+        settings = fixture77.options(self.parameters, name)
+        if settings and not configuration_sha256:
+            raise ValueError("fixtures require [configuration] and the run's verified base copy")
         if configuration_sha256:
             # A copy with the built configuration: a baseline names the stand base's (task 022).
             from shutdown77 import PINNED
             self.configuration = PINNED["1Cv7.MD"]
-        name = form_object(self.parameters)
         if name is not None:
-            self.form = configuration_description(base / "1Cv7.MD", name)
+            self.form = configuration_description(base / "1Cv7.MD", name, fixture=settings)
+        if settings:
+            from harness77.metadata77 import Metadata
+            self.fixture_context = fixture77.context(name, settings, Metadata((base / "1Cv7.MD").read_bytes()))
 
     def commands(self, parameters, requested):
         actions(parameters)
-        controller_text(parameters)
+        name = form_object(parameters)
+        settings = fixture77.options(parameters, name)
         self.parameters = dict(parameters)
-        unknown = [command for command in requested if command not in COMMANDS]
+        commands = list(COMMANDS) + (["verify"] if settings and settings["verify"] is not None else [])
+        if "verify" in commands and "verify" not in requested:
+            raise ValueError("fixture_verify requires a declared platform test with command verify")
+        unknown = [command for command in requested if command not in commands]
         if unknown:
             raise ValueError("unknown form command: " + ", ".join(unknown))
-        return list(COMMANDS)
+        return commands
 
     def controller(self, parameters):
-        return controller_text(parameters)
+        return controller_text(parameters, self.fixture_context)
 
     def client(self, text):
         if text.count(CALL) != 1:
@@ -648,6 +676,9 @@ class FormAdapter(launcher.Harness77Adapter):
 
     def operation(self, command, lines, actual, row):
         from form_window77 import judge_captions, judge_layout
+        handled, issue = fixture77.operation(command, lines, row)
+        if handled:
+            return issue
         if "open-error:" in actual or not any(line == "loaded:" + IDENTITY for line in lines):
             if row["diagnostics"]:
                 row["status"] = "failed"

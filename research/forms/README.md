@@ -230,3 +230,17 @@ python -B research/forms/probe_md_forms77.py --stand .local/stage21-native/stand
 python -m harness77 visual approve --project .local/stage22-native/NEW/cases/v-first/project.toml `
   --run .artifacts/runs/<run_id> --by "<кто>"
 ```
+
+Тестовые данные и существующие объекты (задача 024):
+
+```powershell
+python -B research/forms/probe_test_data77.py --stand .local/stage21-native/stand.toml --work .local/stage24-native/NEW `
+  --evidence .artifacts/stage24-test-data-YYYYMMDD-N.json
+```
+
+`--case` выбирает отдельный случай; `--dry-run` только готовит исходники и собирает MD.
+Подготовка выполняется один раз в копии; существующий объект открывается по возвращённой
+ссылке, в режиме `owner` возвращается владелец нового подчинённого элемента. `verify` после
+закрытия формы читает записанное значение. Ошибки подготовки и несовместимые ссылки не
+открывают форму. Случаи и ожидания — в [задании](../../docs/tasks/024-test-data.md),
+короткий пример — в [examples/test-data](../../examples/test-data/README.md).

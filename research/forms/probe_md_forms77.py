@@ -223,6 +223,8 @@ def project_text(case, modules, baselines=None):
     parameters = [f"form_object = {json.dumps(case_object(case), ensure_ascii=False)}"]
     if case.get("actions"):
         parameters.append(f"actions = {json.dumps(case['actions'], ensure_ascii=False)}")
+    parameters += [f"{key} = {json.dumps(value, ensure_ascii=False)}"
+                   for key, value in case.get("parameters", {}).items()]
     result = ["[[platform.tests]]", 'name = "form-result"', 'command = "result"', f'expect = "{case["result"]}"']
     if case["value"] not in (None, "?"):
         result.append(f"expect_value = {json.dumps(case['value'], ensure_ascii=False)}")
@@ -233,6 +235,11 @@ def project_text(case, modules, baselines=None):
         "[platform.parameters]", *parameters, "",
         "[[platform.tests]]", 'name = "form-open"', 'command = "open"', f'expect = "{case["open"]}"',
         *(['expect_value = "1"'] if case["open"] == "passed" else []), "", *result, "",
+        *(['[[platform.tests]]', 'name = "data-verify"', 'command = "verify"',
+           f'expect = "{case.get("verify_expect", "passed")}"',
+           *([f"expect_value = {json.dumps(case['verify_value'], ensure_ascii=False)}"]
+             if case["verify_value"] is not None else []), ""]
+          if "verify_value" in case else []),
         *([f"[visual]", f"baselines = {json.dumps(Path(baselines).as_posix())}", "", "[[visual.checks]]",
            'name = "md-open"', 'state = "open"', 'window = "form"', ""] if case.get("visual") else []),
         "[deadlines]", "open_timeout_s = 120", "calculation_timeout_s = 120", "cancel_timeout_s = 15",
@@ -306,6 +313,10 @@ def observe(run_dir):
 
 
 def judge(case, observed):
+    if case.get("verify_error"):
+        operations = observed["operations"]
+        return "confirmed" if observed["run_status"] == "failed" and operations.get("verify", {}).get("status") == "failed" \
+            and all(operations.get(name, {}).get("status") == "passed" for name in ("check", "open", "result")) else "contradicted"
     if case.get("blocked"):
         # Refused before 1C opens the form (task 023): the run is blocked with this reason.
         return "confirmed" if observed["run_status"] == "blocked" and case["blocked"] in (
@@ -317,7 +328,14 @@ def judge(case, observed):
     if case["value"] == "?":
         return "observed"
     tests = {row["name"]: row for row in observed["tests"]}
-    met = all(row.get("expectation_met") for row in tests.values()) and len(tests) == 2
+    met = all(row.get("expectation_met") for row in tests.values()) and len(tests) == (3 if "verify_value" in case else 2)
+    for record, expected in case.get("fields_open", {}).items():
+        field = ((observed["inspection"]["fields_open"] or {}).get(str(record)) or {}).get("text")
+        met = met and (field or "").strip() == expected
+    if case.get("wrong_expectation"):
+        verification = tests.get("data-verify", {})
+        return "confirmed" if observed["run_status"] == "failed" and verification.get("expectation_met") is False \
+            and all(tests.get(name, {}).get("expectation_met") for name in ("form-open", "form-result")) else "contradicted"
     if case.get("visual"):
         # The tests pass whatever the appearance; the run's status is the visual stage's.
         statuses = [row["status"] for row in observed["visual"]]
