@@ -52,6 +52,18 @@ def _resolve(base_dir, value, where):
     return path if path.is_absolute() else (base_dir / path)
 
 
+SCALAR = (str, int, float, bool)
+
+
+def _parameter(value):
+    """A launcher parameter: a scalar, or an array of scalars or of tables of scalars (task 025, steps)."""
+    if isinstance(value, SCALAR):
+        return True
+    return isinstance(value, list) and all(
+        isinstance(item, SCALAR) or isinstance(item, dict) and all(isinstance(v, SCALAR) for v in item.values())
+        for item in value)
+
+
 def path_tag(path):
     """Role-free, reversible-free identifier for a local path in the report."""
     text = str(path)
@@ -164,9 +176,9 @@ def load_project(path) -> ProjectProfile:
             test["expect_value"] = str(item["expect_value"])
         tests.append(test)
     parameters = platform.get("parameters", {})
-    if not isinstance(parameters, dict) or not all(
-            isinstance(value, (str, int, float, bool)) for value in parameters.values()):
-        raise ConfigError(f"{path}: [platform.parameters] допускает только строки, числа и логические значения")
+    if not isinstance(parameters, dict) or not all(_parameter(value) for value in parameters.values()):
+        raise ConfigError(f"{path}: [platform.parameters] допускает строки, числа, логические значения "
+                          "и массивы из них или из таблиц таких значений")
     visual = None
     if "visual" in data:
         from .visual77 import VisualError, parse_config

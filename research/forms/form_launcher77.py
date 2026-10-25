@@ -52,6 +52,13 @@ with argument ``Объект77`` (the prepared reference), run as the declared `
 test after the form closes. It returns one string for ``expect_value``. See
 examples/test-data for the complete create/open/change/write/read-back example.
 
+Task 025 adds ``steps`` (scenario77): a readable scenario instead of ``actions``. Its elements are
+named by identifier or caption; after each step the client calls the controller once (messages,
+an attribute's value), then the windows are read and the step judged. The form needs no harness
+protocol: ``ОткрытьФорму() = 1`` and the found window confirm it, a 1C error of any command fails
+it, and ``result`` passes when every step passed and the form is closed (by the controller or a
+step declared ``closes``). See examples/form-steps.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -70,6 +77,7 @@ import threading
 import time
 
 import fixture77
+import scenario77
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "platform77"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -85,6 +93,7 @@ CONTROL_LINES = ("selected:", "open-return:", "open-error:", "loaded:", "closed:
 # Handler lines with data-dependent text, kept apart from the value (task 012).
 REPRESENTATION = "repr:"
 CLICK_WAIT_S = 60
+STEP_WAIT_S = 30  # the watcher's wait for the client's answer to one step (task 025)
 # Visual captures (task 010): states around the click, windows of the form.
 STATES = ("open", "clicked")
 WINDOWS = ("form", "dialog")
@@ -342,12 +351,13 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     """After ``open`` returns: inspect the owned form, run the actions, then release the client."""
 
     def __init__(self, out, lifecycle, desktop, description, actions, evidence_dir, visual_probe=False,
-                 captures=(), configuration=None):
+                 captures=(), configuration=None, steps=None):
         super().__init__(name="harness77-form-watcher", daemon=True)
         self.out, self.lifecycle, self.desktop = out, lifecycle, desktop
         self.description, self.actions, self.evidence_dir = description, list(actions), evidence_dir
         self.visual_probe = visual_probe
         self.captures, self.configuration = list(captures), configuration
+        self.steps = steps  # resolved steps of task 025, or None
         self.stopped = threading.Event()
 
     def run(self):
@@ -411,7 +421,11 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     captures += self.shoot(form, inspection, "open", shown)
                 if inspection["found"]:
                     inspection["fields_open"] = self.fields(form, inspection)
-                if self.actions:
+                if self.steps and inspection["found"]:
+                    inspection["steps"] = self.run_steps(form, inspection)
+                    if form.alive(inspection["chain"][0]["hwnd"]):
+                        inspection["fields_after"] = self.fields(form, inspection)
+                elif self.actions:
                     done = self.act(form, inspection)
                     if inspection["found"]:
                         inspection["fields_after"] = self.fields(form, inspection)
@@ -452,6 +466,88 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if clicks:
             inspection["click"] = clicks[-1]
         return done
+
+    def run_steps(self, form, inspection):
+        """Every step in order (task 025): action, one round trip through 1C, the windows; stop at a failure."""
+        from form_window77 import window_ids
+        ids, dialog = window_ids(self.description), inspection["chain"][0]["hwnd"]
+        windows = {c["id"]: c for c in inspection["controls"]}
+        records, pending = [], []
+        for step in self.steps:
+            record = dict(step)
+            control = windows.get(ids[step["record_id"]]) if "record_id" in step else None
+            try:
+                if "record_id" in step and control is None:
+                    raise RuntimeError(f"no window of element {step['record_id']} in the form")
+                if step["kind"] in scenario77.ACTIONS:
+                    shown = form.element_state(control)
+                    if "error" in shown or not shown["enabled"] or not shown["visible"]:
+                        record["action"] = {"refused": shown.get("error") or ("the element is disabled" if not
+                                                                              shown["enabled"] else "the element is hidden"),
+                                            "state": shown}
+                    elif step["kind"] == "click":
+                        record["action"] = form.click(inspection, control["id"])
+                    else:
+                        record["action"] = form.enter_text(inspection, control["id"], step["text"],
+                                                           self.leave_to(form, step, ids, windows))
+                if not (record.get("action") or {}).get("refused") and (
+                        step["kind"] not in scenario77.ACTIONS or record["action"].get("returned")):
+                    record["round_trip"] = self.round_trip(step["index"])
+                    if step["kind"] in scenario77.ACTIONS:
+                        pending = []
+                    pending = pending + record["round_trip"].get("messages", [])
+                    record["form_open"] = form.alive(dialog)
+                    if control is not None and record["form_open"]:
+                        record["state"] = form.element_state(control, checkbox=step.get("element_class") == "CHECKBOX")
+                record["issue"] = scenario77.judge(step, record, pending, record.get("form_open", True))
+            except (OSError, RuntimeError, ValueError) as error:
+                record["issue"] = f"step {step['index']} ({step['kind']} {step['target']!r}): {type(error).__name__}: {error}"
+            record["status"] = "failed" if record["issue"] else "passed"
+            records.append(record)
+            if record["issue"]:
+                break
+        return records
+
+    def leave_to(self, form, step, ids, windows):
+        """The window that takes the focus after a field: the next element of the description, as Tab moves.
+
+        A field, button or check box after the field's record, from the start again past the last one, enabled
+        and with its own WS_VISIBLE; None when there is no such element.
+        """
+        records = self.description["controls"]
+        position = next(n for n, item in enumerate(records) if item["id"] == step["record_id"])
+        for item in records[position + 1:] + records[:position]:
+            window = windows.get(ids[item["id"]])
+            if item["class"] in ("1CEDIT", "BMASKED", "BUTTON", "CHECKBOX") and window is not None:
+                shown = form.element_state(window)
+                if shown.get("enabled") and shown.get("visible"):
+                    return window
+        return None
+
+    def round_trip(self, number):
+        """One controller call by the client after a step: its answer, the step's messages and 1C errors."""
+        run_id = self.lifecycle["run_id"]
+        request = self.out / scenario77.REQUEST
+        temporary = self.out / (scenario77.REQUEST + ".tmp")
+        temporary.write_text(f"{run_id}:{number}", encoding="ascii")
+        temporary.replace(request)
+        done = self.out / f"form-step-{number}-done"
+        started = time.monotonic()
+        while not done.exists():
+            if self.stopped.wait(0.02):
+                return {"returned": False, "error": "the session ended"}
+            if time.monotonic() - started > STEP_WAIT_S:
+                return {"returned": False, "error": f"no answer in {STEP_WAIT_S} s"}
+        record = {"returned": True, "elapsed_s": round(time.monotonic() - started, 3)}
+        record.update(scenario77.answer(done.read_text(encoding="utf-16")))
+        try:
+            data = (self.out / launcher.PROTOCOL_DIRECTORY / f"step-{number}.txt").read_bytes()
+            protocol = data.decode("utf-16" if data.startswith(b"\xff\xfe") else "cp1251")
+        except (OSError, UnicodeError) as error:
+            return dict(record, complete=False, error=f"step protocol: {error}")
+        record["messages"], record["complete"] = scenario77.messages(protocol, f"{run_id}:step:{number}")
+        record["diagnostics"] = launcher.protocol_diagnostics(protocol)
+        return record
 
     def fields(self, form, inspection):
         """Text of the field windows and the state of the check boxes, by record ID."""
@@ -614,6 +710,7 @@ class FormAdapter(launcher.Harness77Adapter):
             self.fixture_context = fixture77.context(name, settings, Metadata((base / "1Cv7.MD").read_bytes()))
 
     def commands(self, parameters, requested):
+        scenario77.steps(parameters)
         actions(parameters)
         name = form_object(parameters)
         settings = fixture77.options(parameters, name)
@@ -627,15 +724,21 @@ class FormAdapter(launcher.Harness77Adapter):
         return commands
 
     def controller(self, parameters):
-        return controller_text(parameters, self.fixture_context)
+        text = controller_text(parameters, self.fixture_context)
+        steps = scenario77.steps(parameters)
+        return text if steps is None else scenario77.controller(text, steps)
 
     def client(self, text):
         if text.count(CALL) != 1:
             raise ValueError("unexpected client layout: the ERT call is not found once")
         text = text.replace(CALL, '    If command = "result" Then AwaitClick\n' + CALL)
+        if scenario77.steps(self.parameters) is not None:
+            return text + scenario77.client(DONE, CLICK_WAIT_S * 1000)
         return text + AWAIT.replace("__DONE__", DONE).replace("__WAIT_MS__", str(CLICK_WAIT_S * 1000))
 
     def prepare(self, run_dir, parameters):
+        if any(r["state"] == "clicked" for r in self.requests) and scenario77.steps(parameters) is not None:
+            raise ValueError("the clicked state is not captured after steps; capture the open state")
         if any(r["state"] == "clicked" for r in self.requests) and not actions(parameters):
             raise ValueError("the clicked state needs [platform.parameters] click_id or actions")
         self.run_dir, self.parameters = run_dir, dict(parameters)
@@ -656,12 +759,17 @@ class FormAdapter(launcher.Harness77Adapter):
         else:
             description = built_description(out / "Тестовые обработки" / "Обработка проверки.ert")
         atomic_json(self.run_dir / "form" / "description.json", description)
+        steps = scenario77.steps(self.parameters)
+        if steps is not None:
+            # Every element resolves in the form's description before 1C starts (task 025).
+            steps = scenario77.resolve(steps, description)
+            atomic_json(self.run_dir / "form" / "steps.json", steps)
 
         @contextlib.contextmanager
         def watching():
             watcher = FormWatcher(out, lifecycle, desktop, description, actions(self.parameters),
                                   self.run_dir / "form", visual_probe=self.parameters.get("visual_probe") is True,
-                                  captures=self.requests, configuration=self.configuration)
+                                  captures=self.requests, configuration=self.configuration, steps=steps)
             watcher.start()
             try:
                 yield
@@ -679,12 +787,18 @@ class FormAdapter(launcher.Harness77Adapter):
         handled, issue = fixture77.operation(command, lines, row)
         if handled:
             return issue
-        if "open-error:" in actual or not any(line == "loaded:" + IDENTITY for line in lines):
+        steps = scenario77.steps(self.parameters)
+        # With steps the form needs no harness protocol (task 025): ОткрытьФорму and the window confirm it.
+        if "open-error:" in actual or (steps is None and not any(line == "loaded:" + IDENTITY for line in lines)):
             if row["diagnostics"]:
                 row["status"] = "failed"
                 return None
             row["status"] = "blocked"
             return "no form loaded marker and no diagnostic: " + command
+        if steps is not None and row["diagnostics"]:
+            row["status"] = "failed"
+            row["form_issues"] = ["1C reported an error: line {line}: {message}".format(**row["diagnostics"][0])]
+            return None
         inspection, description = self.evidence()
         if command == "check":
             row["value"] = next((ln.split(":", 1)[1] for ln in lines if ln.startswith("open-return:")), None)
@@ -710,6 +824,17 @@ class FormAdapter(launcher.Harness77Adapter):
         if shown:
             row["representations"] = dict(line[len(REPRESENTATION):].partition("=")[::2] for line in shown)
         row["value"] = ";".join(line for line in handlers if not line.startswith(REPRESENTATION)) or None
+        if steps is not None:
+            records = (inspection or {}).get("steps")
+            row["steps"] = records or []
+            issues = scenario77.judge_result(steps, records, "closed:1" in lines)
+            if inspection is None:
+                issues.insert(0, "no form inspection evidence")
+            elif inspection.get("error") or not inspection.get("found"):
+                issues.insert(0, "inspection: " + str(inspection.get("error") or inspection.get("reason")))
+            row["form_issues"] = issues
+            row["status"] = "failed" if issues else "passed"
+            return None
         issues = [] if "closed:1" in lines else ["the form was not closed"]
         requested = actions(self.parameters)
         if requested:

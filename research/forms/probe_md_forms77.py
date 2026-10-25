@@ -280,7 +280,7 @@ def observe(run_dir):
     result = load(run_dir / "platform-result.json") or {}
     inspection = load(run_dir / "form" / "form-window.json") or {}
     operations = {op.get("name"): {key: op.get(key) for key in ("status", "value", "form_issues", "representations",
-                                                                  "actions", "diagnostics")}
+                                                                  "actions", "diagnostics", "steps")}
                   for op in result.get("operations", [])}
     copy_ = platform.get("base_copy") or {}
     return {"run_status": report.get("status"), "exit_code": report.get("exit_code"), "reason": report.get("reason"),
@@ -353,7 +353,9 @@ def judge(case, observed):
 SCOPE = "task 022: forms of 1Cv7.MD by description on a copy of the base"
 
 
-def run_series(cases, args, scope=SCOPE):
+def run_series(cases, args, scope=SCOPE, prepare_case=None, judge_case=None):
+    """Every case is one `harness77 run`; task 025 passes its own preparation and judgement."""
+    prepare_case, judge_case = prepare_case or prepare, judge_case or judge
     stand = load_stand(args.stand)
     base = Path(stand.base)
     work = args.work.resolve()
@@ -373,7 +375,7 @@ def run_series(cases, args, scope=SCOPE):
         folder = work / "cases" / case["id"]
         folder.mkdir(parents=True)
         # A relative path in a project profile is the profile's directory's: the baselines are one absolute place.
-        project = prepare(case, extraction, folder, args.baselines.resolve() if args.baselines else None)
+        project = prepare_case(case, extraction, folder, args.baselines.resolve() if args.baselines else None)
         completed = subprocess.run([sys.executable, "-m", "harness77", "run", "--project", str(project),
                                     "--stand", str(work / "stand.toml"), "--output-root", str(args.output_root.resolve())],
                                    capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
@@ -384,7 +386,7 @@ def run_series(cases, args, scope=SCOPE):
             print(case["id"], "blocked: no run summary", completed.stderr[-500:], file=sys.stderr)
             continue
         observed = observe(Path(summary["run_dir"]))
-        verdict = judge(case, observed)
+        verdict = judge_case(case, observed)
         rows.append({"id": case["id"], "form_object": case_object(case), "expected_value": case["value"],
                      "expected_reason": case.get("reason", "").format(line=case.get("broken_line")) or None,
                      "verdict": verdict, "observed": observed,

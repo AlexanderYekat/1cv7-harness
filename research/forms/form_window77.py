@@ -19,6 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "platform77"))
 
 BM_CLICK, BM_GETCHECK, WM_CHAR, WM_GETTEXT = 0x00F5, 0x00F0, 0x0102, 0x000D
+# Steps (task 025): the dialog moves the focus as on Tab or a click into the field; the field's text is selected
+# and replaced; VK_BACK as a character clears the selection for an empty text.
+WM_NEXTDLGCTL, EM_SETSEL, VK_BACK = 0x0028, 0x00B1, 0x08
 FIRST_WINDOW_ID = 4152
 # The tree of groups of a catalog's list form: the last record of 26 list forms of base-for-test and
 # 20 of Торговля+Склад, one per form; 1C gives its window this ID (task 023, l-button).
@@ -488,6 +491,90 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                 "target": {k: target.get(k) for k in ("hwnd", "class", "id")},
                 "elapsed_s": round(time.monotonic() - started, 3), "identity_rechecked": True,
                 "field": {k: field[k] for k in ("hwnd", "class", "visible", "enabled", "rect", "inside_client")}}
+
+    def focused(self):
+        """The window with the server thread's keyboard focus: hwnd, ID and its parent's ID, or None."""
+        self.user.GetGUIThreadInfo.argtypes = [W.DWORD, C.POINTER(GUITHREADINFO)]
+
+        def read():
+            info = GUITHREADINFO(cbSize=C.sizeof(GUITHREADINFO))
+            if not self.user.GetGUIThreadInfo(self.modal.tid, C.byref(info)):
+                raise C.WinError(C.get_last_error())
+            return info.hwndFocus
+        hwnd = on_desktop(self.modal.desktop, read)
+        if not hwnd:
+            return None
+        parent = self.user.GetParent(hwnd)
+        return {"hwnd": hwnd, "id": self.user.GetDlgCtrlID(hwnd), "parent_id": self.user.GetDlgCtrlID(parent)
+                if parent else None}
+
+    def enter_text(self, inspection, control_id, text, leave_to, timeout_ms=10000):
+        """Go to the field, replace its text and leave it, as the user does with the keyboard (task 025).
+
+        ``WM_NEXTDLGCTL`` to the dialog gives the field's editor the focus in 1C's own thread, ``EM_SETSEL``
+        selects its text, ``WM_CHAR`` per character replaces it (``VK_BACK`` clears it for an empty text),
+        and ``WM_NEXTDLGCTL`` to ``leave_to`` (the next element that takes the focus) leaves the field, so 1C
+        takes the value. ``WM_NEXTDLGCTL(0, 0)`` kept the focus in the editor, a grandchild of the dialog, and
+        the attribute stayed empty (s-input, series 0); ``GetNextDlgTabItem`` returned the field itself
+        (series 0b): the caller names the next control from the form's description.
+        """
+        field = next((c for c in inspection.get("controls", []) if c["id"] == control_id), None)
+        if field is None:
+            return {"control_id": control_id, "found": False, "requested": False}
+        target, dialog = editor(field), inspection["chain"][0]["hwnd"]
+        record = {"control_id": control_id, "found": True, "requested": True, "message": "WM_CHAR",
+                  "target": {k: target.get(k) for k in ("hwnd", "class", "id")}, "text": text}
+        started = time.monotonic()
+        record["text_before"] = self.text(target["hwnd"])
+        stages = [("focus", dialog, WM_NEXTDLGCTL, target["hwnd"], 1, False),
+                  ("select", target["hwnd"], EM_SETSEL, 0, -1, False)]
+        ansi = not self.user.IsWindowUnicode(target["hwnd"])
+        record["encoding"] = "cp1251" if ansi else "utf-16"
+        characters = [character.encode("cp1251")[0] if ansi else ord(character) for character in text] or [VK_BACK]
+        stages += [("type", target["hwnd"], WM_CHAR, code, 1, ansi) for code in characters]
+        sent = []
+        for name, hwnd, message, wparam, lparam, as_ansi in stages:
+            returned, _, error = self.send(hwnd, message, wparam, lparam, timeout_ms, ansi=as_ansi)
+            if not returned:
+                record.update(returned=False, failed_stage=name, last_error=error)
+                break
+            if name == "focus":
+                record["focus"] = self.focused()
+            sent.append(name)
+        else:
+            record["text_typed"] = self.text(target["hwnd"])
+            record["next_control"] = {k: leave_to[k] for k in ("hwnd", "id", "class")} if leave_to else None
+            if not leave_to:
+                record.update(returned=False, failed_stage="leave", reason="no other element takes the focus")
+            else:
+                returned, _, error = self.send(dialog, WM_NEXTDLGCTL, leave_to["hwnd"], 1, timeout_ms)
+                focus = self.focused() if returned else None
+                left = returned and (focus is None or focus["hwnd"] not in (target["hwnd"], field["hwnd"]))
+                record.update(returned=left, last_error=error, focus_after=focus)
+                if not left:
+                    record.update(failed_stage="leave", reason="the field kept the focus")
+        record.update(characters_sent=sent.count("type"), elapsed_s=round(time.monotonic() - started, 3),
+                      identity_rechecked=True)
+        return record
+
+    def alive(self, hwnd):
+        """The window still exists on the verified server thread (the form was not closed)."""
+        self.modal.verify()
+        self.user.IsWindow.argtypes = [W.HWND]
+        return bool(self.user.IsWindow(hwnd)) and self.modal.owner(hwnd) == (self.modal.server["pid"], self.modal.tid)
+
+    def element_state(self, control, checkbox=False):
+        """What a control's window shows now: text (a field's editor), enabled, own WS_VISIBLE, check state."""
+        hwnd = control["hwnd"]
+        if not self.alive(hwnd):
+            return {"error": "the element's window no longer exists"}
+        self.user.IsWindowEnabled.argtypes = [W.HWND]
+        state = {"text": self.text(editor(control)["hwnd"]), "enabled": bool(self.user.IsWindowEnabled(hwnd)),
+                 "visible": self.state(hwnd)["ws_visible"]}
+        if checkbox:
+            value = self.checked(hwnd)
+            state["checked"] = {0: False, 1: True}.get(value, value)
+        return state
 
 
 class BITMAPINFOHEADER(C.Structure):

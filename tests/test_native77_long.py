@@ -181,6 +181,22 @@ class ProfileAndEvidenceTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_project(path)
 
+    def test_parameters_take_arrays_of_scalars_and_flat_tables(self):
+        # Task 025: the form launcher's steps are an array of tables; anything deeper is refused.
+        path = write_project(self.root, tests=[("result", "passed")])
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text + '[platform.parameters]\nnames = ["a", "b"]\n'
+                        'steps = [{ click = "ОК", closes = true }, { input = "Код", text = "1" }]\n'
+                        '[[platform.parameters.more]]\nvalue = "x"\n', encoding="utf-8")
+        self.assertEqual(load_project(path).parameters, {
+            "names": ["a", "b"], "steps": [{"click": "ОК", "closes": True}, {"input": "Код", "text": "1"}],
+            "more": [{"value": "x"}]})
+        for deeper in ('steps = [{ click = ["a"] }]\n', 'steps = [["a"]]\n', 'steps = [{ at = { x = 1 } }]\n',
+                       'when = 2026-10-25\n', 'steps = [{ at = 2026-10-25 }]\n'):
+            path.write_text(text + "[platform.parameters]\n" + deeper, encoding="utf-8")
+            with self.assertRaises(ConfigError, msg=deeper):
+                load_project(path)
+
     def test_large_result_evidence_is_streamed(self):
         payload = b"0123456789abcdef" * 200_000  # 3.2 MB
         path = self.root / "big.csv"
