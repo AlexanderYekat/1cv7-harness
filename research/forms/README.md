@@ -1,4 +1,4 @@
-# Формы ERT и 1Cv7.MD в настоящей 1С 7.7 (задачи 008, 010–013, 022–025)
+# Формы ERT и 1Cv7.MD в настоящей 1С 7.7 (задачи 008, 010–013, 022–026)
 
 Исследовательская часть [задачи 008](../../docs/tasks/008-form-description.md):
 открыть форму собранной ERT видимой в своём сеансе 1С, сверить окна элементов
@@ -40,6 +40,19 @@
 - `steps_module77.1s` — модуль FIO.ERT без протокола harness77 для случая `s-ert`.
 - `probe_scenario77.py` — серии проб 025 поверх `probe_md_forms77.run_series` (свои подготовка и
   оценка); `scripts/verify_form_steps77.py` — сводная проверка.
+
+Задача 026 ([модальные окна в шагах](../../docs/tasks/026-modal-dialogs.md)):
+
+- `scenario77.py` — шаг `dialog` и порядок цепочки «действие → окна», выбор кнопки и поля окна,
+  безопасный ответ, номера и объединение вызовов 1С цепочки, оценка.
+- `form_window77.py` — `Pending` (последнее сообщение действия из своего потока), `click_pending`,
+  `enter_text` с отложенным выходом из поля и `left`, `top_windows`, `modal_window`, `window_record`,
+  `await_action`, `answer` (ввод в поле окна и `WM_COMMAND` от кнопки).
+- `form_launcher77.py` — `Chain`: действие и его окна; после возврата действия вызов 1С и поиск окна,
+  которое открыло поставленное в очередь (`settle`); закрытие окон провалившегося шага (`dismiss`).
+- `modal_module77.1s` — модуль FIO.ERT с вопросом в «Очистить» для случая `m-ert`.
+- `probe_modal77.py` — серии проб 026 (подготовка и оценка — `probe_scenario77`);
+  `scripts/verify_modal_dialogs77.py` — сводная проверка.
 
 Задача 023 ([формы справочников и журналов](../../docs/tasks/023-catalog-journal-forms.md)):
 
@@ -192,6 +205,15 @@ python -B research/forms/probe_md_catalogs77.py --stand .local/stage21-native/st
   (`Контекст.Код`); отсутствующий реквизит перехватывается `Попытка`. `Форма.<Элемент>.Доступность(0)`
   снимает `IsWindowEnabled`, `Видимость(0)` — собственный `WS_VISIBLE`. Один вызов 1С после
   шага — 0,08–0,35 с.
+- **Задача 026:** `Предупреждение`, `Вопрос` и вопрос самой 1С «Сохранить изменения?» — окна
+  `#32770` с заголовком «1С:Предприятие», текстом в `Static` 65535 и стандартными ID кнопок:
+  «OK» латиницей — 2, «&Да» — 6, «&Нет» — 7, «Отмена» — 2. `ВвестиСтроку`, `ВвестиЧисло`,
+  `ВвестиДату` — `#32770` с подсказкой в заголовке, полем `1CEDIT`/`BMASKED` (ID 4146) с вложенным
+  `1CEDITSPR`, кнопками «OK» (1), «Отмена» (2), «Помощь» (57670) и рамкой `BS_GROUPBOX`. Окно пустой
+  даты сразу показывает текущую дату. Владелец модального окна выключен. Окно появляется через
+  0,05–0,06 с после `BM_CLICK`, действие возвращается через 0,02–0,03 с после `WM_COMMAND`
+  от кнопки. `#Закрыть` возвращается сразу, вопрос о сохранении появляется позже, во время
+  следующего вызова 1С: вызов обслуживается в цикле окна.
 - В 7.7 сравнения вокруг `ИЛИ` нужно брать в скобки: без них контроллер
   не компилируется («Неправильное использование арифметической или строковой
   операции»). Переменные модуля (`Перем`) в `ВыполняемыйМодуль` допустимы.
@@ -284,3 +306,16 @@ python -B scripts/verify_form_steps77.py --evidence .artifacts/stage25-form-step
 
 Случаи и ожидания — в [задании](../../docs/tasks/025-form-steps.md), сценарий на неизменённой
 форме — в [examples/form-steps](../../examples/form-steps/README.md).
+
+Модальные окна в шагах (задача 026; профиль стенда задачи 021, каждый случай — на копии базы):
+
+```powershell
+python -B research/forms/probe_modal77.py --stand .local/stage21-native/stand.toml --work .local/stage26-native/NEW `
+  --evidence .artifacts/stage26-modal-dialogs-YYYYMMDD-N.json [--case m-save ...] [--dry-run]
+python -B scripts/verify_modal_dialogs77.py --evidence .artifacts/stage26-modal-dialogs-YYYYMMDD-1.json `
+  --example-run <run_id> --example-run <run_id> --regression 025=<run_id> --regression 024=<run_id> `
+  --regression 022=<run_id> --output .artifacts/stage26-acceptance-NEW.json
+```
+
+Случаи и ожидания — в [задании](../../docs/tasks/026-modal-dialogs.md), вопрос 1С на неизменённой
+форме — в [examples/modal-dialogs](../../examples/modal-dialogs/README.md).

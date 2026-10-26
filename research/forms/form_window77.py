@@ -6,6 +6,10 @@ read; the identity of the process is rechecked immediately before every message
 button window, typing is ``WM_CHAR`` messages to the field window: no input
 injection, no foreground activation, no desktop switch. ``fit_units``,
 ``judge_layout`` and ``judge_captions`` are portable and tested.
+
+Task 026: the last message of a step's action is sent from a thread of its own (``Pending``),
+so the modal window its handler opens is found among the server thread's top-level windows,
+read and answered by ``WM_COMMAND`` from its button, as the warning of task 002.
 """
 
 import ctypes as C
@@ -22,6 +26,10 @@ BM_CLICK, BM_GETCHECK, WM_CHAR, WM_GETTEXT = 0x00F5, 0x00F0, 0x0102, 0x000D
 # Steps (task 025): the dialog moves the focus as on Tab or a click into the field; the field's text is selected
 # and replaced; VK_BACK as a character clears the selection for an empty text.
 WM_NEXTDLGCTL, EM_SETSEL, VK_BACK = 0x0028, 0x00B1, 0x08
+# Modal windows (task 026): a button of the window is pressed as WM_COMMAND/BN_CLICKED (task 002); the last
+# message of an action waits in its own thread while the windows its handler opens are answered.
+WM_COMMAND, GW_OWNER = 0x0111, 4
+PENDING_TIMEOUT_MS = 300000
 FIRST_WINDOW_ID = 4152
 # The tree of groups of a catalog's list form: the last record of 26 list forms of base-for-test and
 # 20 of Торговля+Склад, one per form; 1C gives its window this ID (task 023, l-button).
@@ -247,6 +255,33 @@ def environment(window, configuration_sha256, platform_version):  # pragma: no c
                        "oem_cp": kernel32.GetOEMCP()},
             "capture": {"method": "PrintWindow", "flags": PW_RENDERFULLCONTENT, "desktop": "private",
                         "main_window": "SW_SHOWNOACTIVATE"}}
+
+
+class Pending:  # pragma: no cover - native, verified on the stand
+    """One message to an owned window, sent from a thread of its own (task 026).
+
+    1C's window procedure does not return while a modal window its handler opened is open, so the
+    watcher reads and answers the windows meanwhile. ``outcome`` is {returned, last_error, elapsed_s}
+    once the message returned or ``timeout_ms`` passed.
+    """
+
+    def __init__(self, form, hwnd, message, wparam=0, lparam=0, timeout_ms=PENDING_TIMEOUT_MS):
+        self.message, self.outcome, self.started = message, None, time.monotonic()
+        self.thread = threading.Thread(target=self._send, args=(form, hwnd, message, wparam, lparam, timeout_ms),
+                                       name="harness77-action", daemon=True)
+        self.thread.start()
+
+    def _send(self, form, hwnd, message, wparam, lparam, timeout_ms):
+        try:
+            returned, _, error = form.send(hwnd, message, wparam, lparam, timeout_ms)
+            outcome = {"returned": returned, "last_error": error}
+        except (OSError, RuntimeError) as error:
+            outcome = {"returned": False, "last_error": f"{type(error).__name__}: {error}"}
+        self.outcome = dict(outcome, elapsed_s=round(time.monotonic() - self.started, 3))
+
+    def done(self, wait_s=0):
+        self.thread.join(wait_s)
+        return not self.thread.is_alive()
 
 
 class OwnedForm:  # pragma: no cover - native, verified on the stand
@@ -508,6 +543,21 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         return {"hwnd": hwnd, "id": self.user.GetDlgCtrlID(hwnd), "parent_id": self.user.GetDlgCtrlID(parent)
                 if parent else None}
 
+    def click_pending(self, inspection, control_id):
+        """``BM_CLICK`` to a button from a thread of its own (task 026): (record, Pending), or (record, None).
+
+        The handler may open a modal window; the message returns when the handler does. The record is
+        completed when the message returned (``returned``, ``last_error``).
+        """
+        button = next((c for c in inspection.get("controls", []) if c["id"] == control_id), None)
+        if button is None:
+            return {"control_id": control_id, "found": False, "requested": False, "returned": False}, None
+        record = {"control_id": control_id, "found": True, "requested": True, "message": "BM_CLICK",
+                  "identity_rechecked": True,
+                  "button": {k: button[k] for k in ("hwnd", "class", "text", "visible", "enabled", "rect",
+                                                    "inside_client")}}
+        return record, Pending(self, button["hwnd"], BM_CLICK)
+
     def enter_text(self, inspection, control_id, text, leave_to, timeout_ms=10000):
         """Go to the field, replace its text and leave it, as the user does with the keyboard (task 025).
 
@@ -517,13 +567,18 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         takes the value. ``WM_NEXTDLGCTL(0, 0)`` kept the focus in the editor, a grandchild of the dialog, and
         the attribute stayed empty (s-input, series 0); ``GetNextDlgTabItem`` returned the field itself
         (series 0b): the caller names the next control from the form's description.
+
+        The leave runs the field's formula, which may open a modal window (task 026): it is returned as a
+        Pending with the record, (record, Pending), and ``left`` completes the record when it returned;
+        (record, None) when the text did not get that far.
         """
         field = next((c for c in inspection.get("controls", []) if c["id"] == control_id), None)
         if field is None:
-            return {"control_id": control_id, "found": False, "requested": False}
+            return {"control_id": control_id, "found": False, "requested": False, "returned": False}, None
         target, dialog = editor(field), inspection["chain"][0]["hwnd"]
         record = {"control_id": control_id, "found": True, "requested": True, "message": "WM_CHAR",
-                  "target": {k: target.get(k) for k in ("hwnd", "class", "id")}, "text": text}
+                  "target": {k: target.get(k) for k in ("hwnd", "class", "id")}, "field": {"hwnd": field["hwnd"]},
+                  "text": text}
         started = time.monotonic()
         record["text_before"] = self.text(target["hwnd"])
         stages = [("focus", dialog, WM_NEXTDLGCTL, target["hwnd"], 1, False),
@@ -532,7 +587,7 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         record["encoding"] = "cp1251" if ansi else "utf-16"
         characters = [character.encode("cp1251")[0] if ansi else ord(character) for character in text] or [VK_BACK]
         stages += [("type", target["hwnd"], WM_CHAR, code, 1, ansi) for code in characters]
-        sent = []
+        sent, pending = [], None
         for name, hwnd, message, wparam, lparam, as_ansi in stages:
             returned, _, error = self.send(hwnd, message, wparam, lparam, timeout_ms, ansi=as_ansi)
             if not returned:
@@ -547,14 +602,109 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
             if not leave_to:
                 record.update(returned=False, failed_stage="leave", reason="no other element takes the focus")
             else:
-                returned, _, error = self.send(dialog, WM_NEXTDLGCTL, leave_to["hwnd"], 1, timeout_ms)
-                focus = self.focused() if returned else None
-                left = returned and (focus is None or focus["hwnd"] not in (target["hwnd"], field["hwnd"]))
-                record.update(returned=left, last_error=error, focus_after=focus)
-                if not left:
-                    record.update(failed_stage="leave", reason="the field kept the focus")
+                pending = Pending(self, dialog, WM_NEXTDLGCTL, leave_to["hwnd"], 1)
         record.update(characters_sent=sent.count("type"), elapsed_s=round(time.monotonic() - started, 3),
                       identity_rechecked=True)
+        return record, pending
+
+    def left(self, record, outcome):
+        """Complete an input's record when its leave returned (or did not): the focus left the field."""
+        returned = bool(outcome.get("returned"))
+        focus = self.focused() if returned else None
+        left = returned and (focus is None or focus["hwnd"] not in (record["target"]["hwnd"], record["field"]["hwnd"]))
+        record.update(returned=left, last_error=outcome.get("last_error"), focus_after=focus)
+        if not left:
+            record.update(failed_stage="leave",
+                          reason="the field kept the focus" if returned else "the message did not return")
+
+    def style(self, hwnd):
+        self.user.GetWindowLongW.argtypes = [W.HWND, C.c_int]
+        return self.user.GetWindowLongW(hwnd, GWL_STYLE) & 0xFFFFFFFF
+
+    def top_windows(self):
+        """The top-level windows of the server thread now: none of them is the modal window of a later action."""
+        self.modal.verify()
+        mine = (self.modal.server["pid"], self.modal.tid)
+        return {hwnd for hwnd in self.modal.enumerate() if self.modal.owner(hwnd) == mine}
+
+    def modal_window(self, seen):
+        """A visible top-level window of the server thread not in ``seen`` that disabled its owner, or a new
+        dialog box (``#32770``): its record (``window_record``), or None (task 026)."""
+        self.modal.verify()
+        mine = (self.modal.server["pid"], self.modal.tid)
+        name = C.create_unicode_buffer(256)
+        for hwnd in self.modal.enumerate():
+            if hwnd in seen or self.modal.owner(hwnd) != mine or not self.user.IsWindowVisible(hwnd):
+                continue
+            owner = self.user.GetWindow(hwnd, GW_OWNER)
+            self.user.GetClassNameW(hwnd, name, len(name))
+            if (owner and not self.user.IsWindowEnabled(owner)) or name.value == "#32770":
+                return self.window_record(hwnd)
+        return None
+
+    def window_record(self, hwnd):
+        """A modal window: class, title, owner, style and every descendant with its parent, ID, text and style."""
+        until = time.monotonic() + 2
+        record = self.modal.info(hwnd, until)
+        owner = self.user.GetWindow(hwnd, GW_OWNER)
+        record.update(owner=owner or None, owner_enabled=bool(self.user.IsWindowEnabled(owner)) if owner else None,
+                      style=self.style(hwnd))
+        record["children"] = [dict(self.modal.info(child, until), parent=self.user.GetParent(child) or None,
+                                   style=self.style(child)) for child in self.descendants(hwnd)]
+        return record
+
+    def await_action(self, pending, seen, budget_s, poll_s=0.05):
+        """Until the pending message returns or a modal window opens (task 026).
+
+        {returned, last_error, elapsed_s, waited_s} when it returned, {window, waited_s} when a window not in
+        ``seen`` opened first, {timeout, waited_s} after ``budget_s`` without either. The time a window was
+        open before is not in the budget: the wait starts again after every answer.
+        """
+        started = time.monotonic()
+        while not pending.done(poll_s):
+            window = self.modal_window(seen)
+            if window is not None:
+                return {"window": window, "waited_s": round(time.monotonic() - started, 3)}
+            if time.monotonic() - started > budget_s:
+                return {"timeout": True, "waited_s": round(time.monotonic() - started, 3)}
+        return dict(pending.outcome, waited_s=round(time.monotonic() - started, 3))
+
+    def answer(self, window, button, field=None, text=None, timeout_ms=10000):
+        """Answer a modal window: ``text`` into its field, then ``button`` pressed (task 026).
+
+        The text goes as into a form's field (task 025): the focus to the field's editor, its text selected
+        and replaced, then the focus to the button. The button is pressed as the warning of task 002 was
+        closed: ``WM_COMMAND``/``BN_CLICKED`` from it, posted to the window, once the window and the button
+        are found again on the verified server thread.
+        """
+        dialog = window["hwnd"]
+        record = {"button": {k: button.get(k) for k in ("hwnd", "id", "text")}, "requested": False}
+        if field is not None:
+            inner = [c for c in window["children"] if c.get("parent") == field["hwnd"]]
+            target = inner[0] if len(inner) == 1 else field
+            ansi = not self.user.IsWindowUnicode(target["hwnd"])
+            record.update(field={k: target.get(k) for k in ("hwnd", "class", "id")}, text=text,
+                          encoding="cp1251" if ansi else "utf-16", text_before=self.text(target["hwnd"]))
+            codes = [character.encode("cp1251")[0] if ansi else ord(character) for character in text] or [VK_BACK]
+            stages = ([("focus", dialog, WM_NEXTDLGCTL, target["hwnd"], 1, False),
+                       ("select", target["hwnd"], EM_SETSEL, 0, -1, False)]
+                      + [("type", target["hwnd"], WM_CHAR, code, 1, ansi) for code in codes]
+                      + [("leave", dialog, WM_NEXTDLGCTL, button["hwnd"], 1, False)])
+            for name, hwnd, message, wparam, lparam, as_ansi in stages:
+                returned, _, error = self.send(hwnd, message, wparam, lparam, timeout_ms, ansi=as_ansi)
+                if not returned:
+                    record.update(error=f"{name} did not return", last_error=error)
+                    return record
+            record["text_after"] = self.text(target["hwnd"])
+        current = self.window_record(dialog)
+        found = next((c for c in current["children"] if c["hwnd"] == button["hwnd"] and c["id"] == button["id"]), None)
+        if found is None or not found["enabled"] or not found["visible"]:
+            record["error"] = "the button is gone, disabled or hidden"
+            return record
+        self.modal.verify()
+        if not self.user.PostMessageW(dialog, WM_COMMAND, button["id"] & 0xFFFF, button["hwnd"]):
+            raise C.WinError(C.get_last_error())
+        record.update(requested=True, message="WM_COMMAND/BN_CLICKED", identity_rechecked=True)
         return record
 
     def alive(self, hwnd):

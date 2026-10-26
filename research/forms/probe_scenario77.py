@@ -211,7 +211,9 @@ def project_text(case, modules):
         tests.append(("data-verify", "verify", "passed", case["verify_value"]))
     lines = ["schema_version = 1", "", "[project]", f'id = "form-steps-{case["id"]}"', "", "[build]",
              f"template = {toml(base.TEMPLATE.as_posix())}",
-             f"source = {toml((ERT_SOURCE if case.get('ert') else base.SOURCE).as_posix())}", 'encoding = "utf-8"', ""]
+             # Task 026 gives an ERT case its own module (source).
+             f"source = {toml((case.get('source') or (ERT_SOURCE if case.get('ert') else base.SOURCE)).as_posix())}",
+             'encoding = "utf-8"', ""]
     if modules is not None:
         lines += ["[configuration]", f"modules = {toml(modules.as_posix())}", ""]
     lines += ["[platform.parameters]", *parameters, ""]

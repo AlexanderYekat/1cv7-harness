@@ -59,6 +59,11 @@ protocol: ``ОткрытьФорму() = 1`` and the found window confirm it, a 
 it, and ``result`` passes when every step passed and the form is closed (by the controller or a
 step declared ``closes``). See examples/form-steps.
 
+Task 026 adds ``dialog`` steps: the last message of an action is sent from a thread of its own, and a
+modal window its handler opens (``Предупреждение``, ``Вопрос``, ``ВвестиСтроку``…) is read and answered
+by the dialog steps after the action. The round trip follows the last of them. A window no step
+expects fails the step and, like the window of any failed step, is closed with the safest answer.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -94,6 +99,10 @@ CONTROL_LINES = ("selected:", "open-return:", "open-error:", "loaded:", "closed:
 REPRESENTATION = "repr:"
 CLICK_WAIT_S = 60
 STEP_WAIT_S = 30  # the watcher's wait for the client's answer to one step (task 025)
+# An action returns or opens a modal window within this (the message timeout of task 025); a failed step
+# closes at most this many windows before it leaves the rest to the session's deadlines (task 026).
+ACTION_WAIT_S = 10
+DISMISS_LIMIT = 5
 # Visual captures (task 010): states around the click, windows of the form.
 STATES = ("open", "clicked")
 WINDOWS = ("form", "dialog")
@@ -347,6 +356,36 @@ def load_json(path):
         return None
 
 
+def finish_click(record, outcome):
+    """Complete a click's record when its message returned (or did not in ACTION_WAIT_S)."""
+    record.update(returned=bool(outcome.get("returned")), last_error=outcome.get("last_error"))
+    if outcome.get("timeout"):
+        record["reason"] = f"no return in {ACTION_WAIT_S} s"
+
+
+class Chain:  # pragma: no cover - native, verified on the stand
+    """An action whose last message is pending, and the modal windows its handler opens (task 026).
+
+    ``window`` is the window the action waits in now, or None once it returned (or did not, in
+    ACTION_WAIT_S without a window); ``seen`` are the top-level windows that are not a new modal one:
+    those before the action and every window answered since; ``trips`` are the chain's calls to 1C.
+    """
+
+    def __init__(self, form, record, pending, seen, finish):
+        self.form, self.record, self.pending, self.finish = form, record, pending, finish
+        self.seen, self.window, self.trips = set(seen), None, []
+
+    def wait(self):
+        outcome = self.form.await_action(self.pending, self.seen, ACTION_WAIT_S)
+        self.window = outcome.pop("window", None)
+        self.record.setdefault("waits", []).append(dict(outcome, window=self.window["hwnd"] if self.window else None))
+        if self.window is not None:
+            self.seen.add(self.window["hwnd"])
+        else:
+            self.finish(self.record, outcome)
+        return self.window
+
+
 class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on the stand
     """After ``open`` returns: inspect the owned form, run the actions, then release the client."""
 
@@ -468,11 +507,18 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         return done
 
     def run_steps(self, form, inspection):
-        """Every step in order (task 025): action, one round trip through 1C, the windows; stop at a failure."""
+        """Every step in order (task 025): action, one round trip through 1C, the windows; stop at a failure.
+
+        An action whose handler opens a modal window is answered by the dialog steps after it (task 026).
+        Once the action returned, 1C is asked, and a window it opened meanwhile continues the chain; the
+        chain's calls to 1C are judged together with its last step. A window no step answers fails its
+        step; a failed step's window is closed with the safest answer, so the session ends as usual.
+        """
         from form_window77 import window_ids
         ids, dialog = window_ids(self.description), inspection["chain"][0]["hwnd"]
         windows = {c["id"]: c for c in inspection["controls"]}
-        records, pending = [], []
+        records, pending, chain = [], [], None
+        self.calls = {}
         for step in self.steps:
             record = dict(step)
             control = windows.get(ids[step["record_id"]]) if "record_id" in step else None
@@ -485,28 +531,111 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                         record["action"] = {"refused": shown.get("error") or ("the element is disabled" if not
                                                                               shown["enabled"] else "the element is hidden"),
                                             "state": shown}
-                    elif step["kind"] == "click":
-                        record["action"] = form.click(inspection, control["id"])
                     else:
-                        record["action"] = form.enter_text(inspection, control["id"], step["text"],
-                                                           self.leave_to(form, step, ids, windows))
-                if not (record.get("action") or {}).get("refused") and (
-                        step["kind"] not in scenario77.ACTIONS or record["action"].get("returned")):
+                        chain = self.begin(form, inspection, step, control, ids, windows)
+                        record["action"] = chain.record
+                        self.settle(form, chain, step)
+                        record["calls"] = list(chain.trips)
+                        self.opened(step, record, chain)
+                elif step["kind"] == "dialog":
+                    record["window"] = chain.window if chain is not None else None
+                    if record["window"] is not None:
+                        first = len(chain.trips)
+                        button, field, refusal = scenario77.answer_plan(step, chain.window)
+                        record["answer"] = ({"refused": refusal} if refusal else
+                                            form.answer(chain.window, button, field, step.get("text")))
+                        if record["answer"].get("requested"):
+                            chain.wait()
+                            self.settle(form, chain, step)
+                            record["calls"] = chain.trips[first:]
+                            self.opened(step, record, chain)
+                            if step["last"] and chain.window is None:
+                                record["action"] = chain.record
+                if step["kind"] not in scenario77.ACTIONS + ("dialog",):
                     record["round_trip"] = self.round_trip(step["index"])
-                    if step["kind"] in scenario77.ACTIONS:
-                        pending = []
                     pending = pending + record["round_trip"].get("messages", [])
+                elif chain is not None and chain.window is None and record.get("action") is chain.record \
+                        and chain.record.get("returned") and chain.trips:
+                    # The step ended its action: every call of the chain, every message since the action.
+                    record["round_trip"] = scenario77.merge_trips(chain.trips)
+                    pending = list(record["round_trip"]["messages"])
+                if "round_trip" in record:
                     record["form_open"] = form.alive(dialog)
                     if control is not None and record["form_open"]:
                         record["state"] = form.element_state(control, checkbox=step.get("element_class") == "CHECKBOX")
                 record["issue"] = scenario77.judge(step, record, pending, record.get("form_open", True))
-            except (OSError, RuntimeError, ValueError) as error:
+            except Exception as error:  # noqa: BLE001 - a failed step still closes its window (series 0b)
                 record["issue"] = f"step {step['index']} ({step['kind']} {step['target']!r}): {type(error).__name__}: {error}"
+            if record["issue"] and chain is not None and chain.window is not None:
+                record["dismissed"] = self.dismiss(form, chain, step)
             record["status"] = "failed" if record["issue"] else "passed"
             records.append(record)
             if record["issue"]:
                 break
         return records
+
+    def settle(self, form, chain, step):
+        """Once the action's message returned: ask 1C, then look for a window the action opened meanwhile.
+
+        What the action posted (``#Закрыть`` of a form) runs in 1C's queue before the call, and a window it
+        opens serves the call in its own loop (m-close, series 0c): the window is open when the call returns.
+        """
+        if chain.window is not None or not chain.record.get("returned"):
+            return
+        count = self.calls.get(step["index"], 0)
+        self.calls[step["index"]] = count + 1
+        number = scenario77.trip_number(step["index"], count)
+        chain.trips.append(dict(self.round_trip(number), number=number))
+        window = form.modal_window(chain.seen)
+        if window is not None:
+            chain.window = dict(window, after_return=True)
+            chain.seen.add(window["hwnd"])
+
+    def begin(self, form, inspection, step, control, ids, windows):
+        """The action of a step with its last message pending: the Chain after its return or first window."""
+        seen = form.top_windows()
+        if step["kind"] == "click":
+            record, pending = form.click_pending(inspection, control["id"])
+            finish = finish_click
+        else:
+            record, pending = form.enter_text(inspection, control["id"], step["text"],
+                                              self.leave_to(form, step, ids, windows))
+            finish = form.left
+        chain = Chain(form, record, pending, seen, finish)
+        if pending is not None:
+            chain.wait()
+        return chain
+
+    @staticmethod
+    def opened(step, record, chain):
+        """Record the window the chain waits in: the next dialog step's, or one no step expects."""
+        if chain.window is not None:
+            expected = step.get("dialogs", 0) > 0 if step["kind"] in scenario77.ACTIONS else not step["last"]
+            record["modal" if expected else "unexpected"] = chain.window
+
+    def dismiss(self, form, chain, step):
+        """Close the open windows of a failed step with the safest answer until its action ends (task 026)."""
+        closed = []
+        for _ in range(DISMISS_LIMIT):
+            window = chain.window
+            if window is None:
+                break
+            entry = {"hwnd": window["hwnd"], "text": scenario77.dialog_text(window)}
+            closed.append(entry)
+            button = scenario77.safe_button(window)
+            if button is None:
+                entry["error"] = "no button closes the window"
+                break
+            try:
+                entry["answer"] = form.answer(window, button)
+                if not entry["answer"].get("requested"):
+                    break
+                chain.wait()
+                self.settle(form, chain, step)
+            except Exception as error:  # noqa: BLE001 - the evidence names what kept the window open
+                entry["error"] = f"{type(error).__name__}: {error}"
+                break
+        return {"windows": closed, "open": chain.window is not None, "action_returned": chain.record.get("returned")}
 
     def leave_to(self, form, step, ids, windows):
         """The window that takes the focus after a field: the next element of the description, as Tab moves.

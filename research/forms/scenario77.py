@@ -15,14 +15,19 @@ controller once (``Harness77Step``): it saves the messages since the previous ca
 requested attribute and, being a call through 1C's message queue, comes after what the action
 posted. Then the windows are read and the step judged. Everything here is portable; the windows
 and the round trip are in form_launcher77 and form_window77.
+
+Task 026 adds ``{ dialog = "<text>", button = "…", text = "…", closes = true }``: the modal window
+an action opened (``Предупреждение``, ``Вопрос``, ``ВвестиСтроку``…), its text, the answer. Dialog
+steps follow the action that opens the window, or another dialog step; the chain is one action,
+and its messages, errors and closing belong to its last step.
 """
 
 import re
 
-KINDS = ("click", "input", "check", "value", "message", "no_message")
+KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
-           "message": {}, "no_message": {}}
+           "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool}}
 ACTIONS = ("click", "input")
 # Classes of the description a step accepts; a text check reads any window.
 CLASSES = {"click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
@@ -30,6 +35,14 @@ NAME = re.compile(r"[^\W\d]\w*\Z")
 STEP_MARKER = "HARNESS77-STEP:"
 REQUEST = "form-step-request"
 VALUE, VALUE_ERROR = "value:", "value-error:"
+# A modal window (task 026): its message is in static children, its answers are push buttons, its input
+# field is an edit of Windows or of 1C. A failed scenario closes the window with the safest answer.
+FIELD_CLASSES = ("edit", "1cedit", "bmasked")
+PUSH_STYLES = (0, 1)  # BS_PUSHBUTTON, BS_DEFPUSHBUTTON: the low four bits of a button's style
+SAFE_ANSWERS = (("отмена", "cancel"), ("нет", "no"))
+IDCANCEL = 2
+# A button's caption compares as it looks: the «OK» of 1C's warning is Latin (task 002), a scenario writes «ОК».
+LOOKALIKES = str.maketrans("abcehkmoptxy", "авсенкмортху")
 
 
 def _text(value, where, empty=True):
@@ -70,6 +83,10 @@ def steps(parameters):
                 step[key] = _text(item[key], f"{where} {key}") if expected is str else item[key]
         if kind in ("input", "value") and "text" not in step:
             raise ValueError(f"{where} ({kind}): text is required")
+        if kind == "dialog" and "button" in step:
+            if not step["button"].strip():
+                raise ValueError(f"{where} (dialog): button is the caption of a button of the window")
+            step["button"] = step["button"].strip()
         if kind == "check":
             expectations = [key for key in OPTIONS["check"] if key in step]
             if len(expectations) != 1:
@@ -77,6 +94,21 @@ def steps(parameters):
             step["expect"] = expectations[0]
         if kind == "value" and not NAME.match(step["target"]):
             raise ValueError(f"{where} (value): an attribute name, got {step['target']!r}")
+        if kind == "dialog":
+            previous = result[-1] if result else None
+            if previous is None or previous["kind"] not in ACTIONS + ("dialog",):
+                raise ValueError(f"{where} (dialog): follows the click or input that opens the window, "
+                                 "or another dialog step")
+            if previous.get("closes"):
+                raise ValueError(f"step {previous['index']} ({previous['kind']}): the form closes after the window; "
+                                 "put closes on the last dialog step")
+            step["chain"] = previous.get("chain", previous["index"])
+            if previous["kind"] == "dialog":
+                previous["last"] = False
+            else:
+                previous["dialogs"] = 0
+            result[step["chain"] - 1]["dialogs"] += 1
+            step["last"] = True
         if closed is not None and kind not in ("message", "no_message"):
             raise ValueError(f"{where} ({kind}): the form is closed at step {closed}; only message steps follow")
         if step.get("closes"):
@@ -112,6 +144,82 @@ def resolve(items, description):
             step.update(record_id=control["id"], element_class=control["class"])
         resolved.append(step)
     return resolved
+
+
+def normalized(text):
+    """Text with every run of spaces and line breaks as one space: a window wraps its message itself."""
+    return " ".join((text or "").split())
+
+
+def _children(window, classes):
+    return [c for c in window.get("children") or []
+            if c.get("parent") in (None, window.get("hwnd")) and (c.get("class") or "").casefold() in classes]
+
+
+def buttons(window):
+    """The push buttons of a modal window, in its order (check boxes and radio buttons are buttons too)."""
+    return [c for c in _children(window, ("button",)) if c.get("visible", True)
+            and (c.get("style") is None or c["style"] & 0x0F in PUSH_STYLES)]
+
+
+def dialog_text(window):
+    """What a modal window shows: its message (the texts of its static children), else its title."""
+    message = normalized(" ".join(c.get("text") or "" for c in _children(window, ("static",))))
+    return message or normalized(window.get("text"))
+
+
+def describe_window(window):
+    """The window for a reason: its text and the captions of its buttons."""
+    return f"{dialog_text(window)!r} with buttons {[_caption_shown(b) for b in buttons(window)]}"
+
+
+def _caption_shown(button):
+    return (button.get("text") or "").replace("&", "")
+
+
+def _button(text):
+    return _caption(text).translate(LOOKALIKES)
+
+
+def answer_plan(step, window):
+    """(button, field, issue) of a dialog step in its window: the button to press, the field for ``text``.
+
+    The window matches by its message or its title; the button by caption without ``&``, case-insensitive,
+    Latin and Cyrillic lookalikes alike, or the only one; the field is the window's single input field.
+    ``issue`` says why the step fails.
+    """
+    wanted = normalized(step["target"])
+    if wanted not in (dialog_text(window), normalized(window.get("text"))):
+        return None, None, f"the window shows {describe_window(window)}"
+    choices = buttons(window)
+    if "button" in step:
+        found = [b for b in choices if _button(b.get("text")) == _button(step["button"])]
+        if len(found) != 1:
+            return None, None, (f"{len(found)} buttons {step['button']!r}" if found else
+                                f"no button {step['button']!r} among {[_caption_shown(b) for b in choices]}")
+    elif len(choices) != 1:
+        return None, None, f"the window has buttons {[_caption_shown(b) for b in choices]}; name one with button"
+    else:
+        found = choices
+    field = None
+    if "text" in step:
+        fields = _children(window, FIELD_CLASSES)
+        if len(fields) != 1:
+            return None, None, f"the window has {len(fields)} input fields, text needs one"
+        field = fields[0]
+    return found[0], field, None
+
+
+def safe_button(window):
+    """The answer that closes a window a scenario did not expect: «Отмена», else «Нет», else the only button."""
+    choices = buttons(window)
+    for captions in SAFE_ANSWERS:
+        found = [b for b in choices if _button(b.get("text")) in {_button(c) for c in captions}]
+        if found:
+            return found[0]
+    if len(choices) == 1:
+        return choices[0]
+    return next((b for b in choices if b.get("id") == IDCANCEL), None)
 
 
 def step_function(items):
@@ -220,6 +328,28 @@ def _unescape(text):
     return "".join(out)
 
 
+def trip_number(index, count):
+    """The number of the ``count``-th call to 1C of step ``index`` (from 0): the step's own number first.
+
+    A chain asks 1C after its action returned and again after every window answered then (task 026);
+    each call saves its own protocol and answer, and only the step's own number reads a value.
+    """
+    return index + 1000 * count
+
+
+def merge_trips(trips):
+    """The calls to 1C of one chain as one: all returned and complete, their messages and errors in order."""
+    if not trips:
+        return {"returned": False, "error": "1C was not asked"}
+    merged = {"returned": all(t.get("returned") for t in trips), "complete": all(t.get("complete") for t in trips),
+              "messages": [line for t in trips for line in t.get("messages") or []],
+              "diagnostics": [d for t in trips for d in t.get("diagnostics") or []], "calls": len(trips)}
+    error = next((t["error"] for t in trips if t.get("error")), None)
+    if error:
+        merged["error"] = error
+    return merged
+
+
 def messages(protocol, marker):
     """(lines, complete) of a step's saved messages: everything before its own marker line."""
     lines = protocol.splitlines()
@@ -236,10 +366,27 @@ def judge(step, record, pending, form_open):
     action = record.get("action") or {}
     if action.get("refused"):
         return f"{name}: {action['refused']}"
-    if step["kind"] in ACTIONS and not action.get("returned"):
-        if action.get("failed_stage"):
-            return f"{name}: {action['failed_stage']} failed: {action.get('reason') or 'the message did not return'}"
-        return f"{name}: {action.get('message') or 'the message'} did not return"
+    if record.get("unexpected"):
+        return f"{name}: an unexpected modal window {describe_window(record['unexpected'])}"
+    if step["kind"] == "dialog":
+        if record.get("window") is None:
+            return f"{name}: no modal window opened"
+        answer = record.get("answer") or {}
+        if answer.get("refused"):
+            return f"{name}: {answer['refused']}"
+        if not answer.get("requested"):
+            return f"{name}: the window was not answered: {answer.get('error') or 'no answer'}"
+        if not step["last"]:
+            return None  # the next dialog step judges the next window
+    elif record.get("modal") is not None:
+        return None  # the action opened the window its dialog steps answer; they judge the rest
+    if step["kind"] in ACTIONS or step["kind"] == "dialog":
+        if not action.get("returned"):
+            after = " after the window closed" if step["kind"] == "dialog" else ""
+            if action.get("failed_stage"):
+                return (f"{name}: {action['failed_stage']} failed{after}: "
+                        + (action.get("reason") or "the message did not return"))
+            return f"{name}: {action.get('message') or 'the message'} did not return{after}"
     trip = record.get("round_trip") or {}
     if not trip.get("returned"):
         return f"{name}: 1C did not answer after the step: {trip.get('error') or 'no answer'}"

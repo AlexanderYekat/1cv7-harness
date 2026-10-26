@@ -147,6 +147,160 @@ class StepsTests(unittest.TestCase):
         self.assertEqual(scenario77.judge_result(steps, None, closed_by_controller=True), ["only 0 of 2 steps ran"])
 
 
+def window(text="", title="1С:Предприятие", captions=("OK",), fields=0, hwnd=100):
+    """A modal window as form_window77.window_record reads it: static text, push buttons, input fields."""
+    children = [{"hwnd": 1, "parent": hwnd, "class": "Static", "id": 20, "text": "", "style": 0x50000003}]
+    if text:
+        children.append({"hwnd": 2, "parent": hwnd, "class": "Static", "id": 65535, "text": text, "style": 0x50000080})
+    for number, caption in enumerate(captions):
+        children.append({"hwnd": 10 + number, "parent": hwnd, "class": "Button", "id": number + 1, "text": caption,
+                         "visible": True, "enabled": True, "style": 0x50010000 | (number == 0)})
+    for number in range(fields):
+        children.append({"hwnd": 30 + number, "parent": hwnd, "class": "Edit", "id": 1000 + number, "text": "",
+                         "style": 0x50010080})
+    return {"hwnd": hwnd, "class": "#32770", "text": title, "children": children}
+
+
+class DialogStepsTests(unittest.TestCase):
+    """Task 026: modal windows an action opens, answered by the dialog steps after it."""
+
+    def test_dialog_steps_chain_after_their_action(self):
+        steps = scenario77.steps({"steps": [
+            {"click": "Окно 77"}, {"dialog": " Записать? ", "button": " Да "},
+            {"dialog": "Готово", "closes": True}, {"message": "конец"}]})
+        self.assertEqual(steps[0], {"index": 1, "kind": "click", "target": "Окно 77", "dialogs": 2})
+        self.assertEqual(steps[1], {"index": 2, "kind": "dialog", "target": "Записать?", "button": "Да",
+                                    "chain": 1, "last": False})
+        self.assertEqual(steps[2], {"index": 3, "kind": "dialog", "target": "Готово", "closes": True,
+                                    "chain": 1, "last": True})
+        steps = scenario77.steps({"steps": [{"input": "Число77", "text": "500"}, {"dialog": "Больше 100"},
+                                            {"click": "ОК"}, {"dialog": "Строка", "text": "", "button": "ОК"}]})
+        self.assertEqual([s.get("dialogs") for s in steps], [1, None, 1, None])
+        self.assertEqual([(s.get("chain"), s.get("last")) for s in steps[1::2]], [(1, True), (3, True)])
+        self.assertNotIn("dialogs", scenario77.steps({"steps": [{"click": "ОК"}]})[0])
+
+    def test_dialog_steps_out_of_order_are_refused(self):
+        for steps, message in (
+                ([{"dialog": "Записать?"}], "follows the click or input"),
+                ([{"check": "Код", "text": ""}, {"dialog": "Записать?"}], "follows the click or input"),
+                ([{"click": "ОК"}, {"message": "x"}, {"dialog": "Записать?"}], "follows the click or input"),
+                ([{"click": "ОК", "closes": True}, {"dialog": "Записать?"}], "step 1 .*put closes on the last dialog"),
+                ([{"click": "ОК"}, {"dialog": "А", "closes": True}, {"dialog": "Б"}], "step 2 .*put closes"),
+                ([{"click": "ОК"}, {"dialog": "А", "closes": True}, {"click": "ОК"}], "the form is closed at step 2"),
+                ([{"click": "ОК"}, {"dialog": "А", "button": " "}], "button is the caption"),
+                ([{"click": "ОК"}, {"dialog": "А", "button": 1}], "button must be a string"),
+                ([{"click": "ОК"}, {"dialog": ""}], "non-empty"),
+                ([{"click": "ОК"}, {"dialog": "А", "checked": True}], "unknown keys")):
+            with self.subTest(steps=steps), self.assertRaisesRegex(ValueError, message):
+                scenario77.steps({"steps": steps})
+        resolved = scenario77.resolve(scenario77.steps({"steps": [{"click": "Закрыть"}, {"dialog": "А"}]}), DESCRIPTION)
+        self.assertNotIn("record_id", resolved[1])
+
+    def test_window_text_buttons_and_the_answer(self):
+        question = window("Записать\r\nизменения?", captions=("&Да", "Нет", "Отмена"))
+        self.assertEqual(scenario77.dialog_text(question), "Записать изменения?")
+        self.assertEqual(scenario77.dialog_text(window("", title=" Harness77 строка ")), "Harness77 строка")
+
+        def plan(step, shown):
+            return scenario77.answer_plan(scenario77.steps({"steps": [{"click": "ОК"}, step]})[1], shown)
+        button, field, issue = plan({"dialog": "Записать изменения?", "button": "да"}, question)
+        self.assertEqual((button["hwnd"], field, issue), (10, None, None))
+        self.assertEqual(plan({"dialog": "Записать  изменения?", "button": "Нет"}, question)[0]["text"], "Нет")
+        self.assertEqual(plan({"dialog": "Записать?", "button": "Да"}, question)[2],
+                         "the window shows 'Записать изменения?' with buttons ['Да', 'Нет', 'Отмена']")
+        self.assertEqual(plan({"dialog": "Записать изменения?", "button": "Пропустить"}, question)[2],
+                         "no button 'Пропустить' among ['Да', 'Нет', 'Отмена']")
+        self.assertRegex(plan({"dialog": "Записать изменения?"}, question)[2], "name one with button")
+        self.assertEqual(plan({"dialog": "Готово"}, window("Готово"))[0]["id"], 1)
+        # «ОК» in Cyrillic presses the Latin «OK» of 1C's warning: a caption compares as it looks.
+        self.assertEqual(plan({"dialog": "Готово", "button": "ОК"}, window("Готово", captions=("OK", "Cancel")))[0]["id"], 1)
+        self.assertEqual(plan({"dialog": "Готово", "button": "Cancel"}, window("Готово", captions=("OK", "Сancel")))[0]["id"], 2)
+        prompt = window("", title="Harness77 строка", captions=("OK", "Отмена"), fields=1)
+        button, field, issue = plan({"dialog": "Harness77 строка", "text": "abc", "button": "ok"}, prompt)
+        self.assertEqual((button["hwnd"], field["hwnd"], issue), (10, 30, None))
+        self.assertRegex(plan({"dialog": "Готово", "text": "abc"}, window("Готово"))[2], "has 0 input fields")
+        # A check box is a button of the window too, but not an answer; a grandchild is not the window's own.
+        boxed = window("Готово")
+        boxed["children"] += [{"hwnd": 50, "parent": 100, "class": "Button", "id": 9, "text": "Больше не спрашивать",
+                               "visible": True, "enabled": True, "style": 0x50010003},
+                              {"hwnd": 51, "parent": 50, "class": "Button", "id": 8, "text": "Вложенная"}]
+        self.assertEqual(plan({"dialog": "Готово"}, boxed)[0]["hwnd"], 10)
+
+    def test_a_window_no_step_expects_is_closed_with_the_safest_answer(self):
+        self.assertEqual(scenario77.safe_button(window("?", captions=("Да", "Нет", "Отмена")))["text"], "Отмена")
+        self.assertEqual(scenario77.safe_button(window("?", captions=("Да", "Нет")))["text"], "Нет")
+        self.assertEqual(scenario77.safe_button(window("!", captions=("OK",)))["text"], "OK")
+        self.assertEqual(scenario77.safe_button(window("?", captions=("Повтор", "Cancel")))["text"], "Cancel")
+        self.assertEqual(scenario77.safe_button(window("?", captions=("Прервать", "Повтор")))["id"], 2)
+        self.assertIsNone(scenario77.safe_button(window("?", captions=())))
+
+    def test_the_calls_of_a_chain_are_judged_as_one(self):
+        # m-close, series 0c: #Закрыть returned at once and 1C asked while it was asked itself; the chain then asks
+        # again after the answer, under its own number, and the last step judges every call.
+        self.assertEqual([scenario77.trip_number(3, n) for n in range(3)], [3, 1003, 2003])
+        merged = scenario77.merge_trips([trip(messages=["до"], number=2),
+                                         trip(messages=["после"], diagnostics=[{"line": 4, "message": "x"}])])
+        self.assertEqual(merged, {"returned": True, "complete": True, "messages": ["до", "после"],
+                                  "diagnostics": [{"line": 4, "message": "x"}], "calls": 2})
+        self.assertEqual(scenario77.merge_trips([trip(), {"returned": False, "error": "no answer in 30 s"}]),
+                         {"returned": False, "complete": False, "messages": [], "diagnostics": [], "calls": 2,
+                          "error": "no answer in 30 s"})
+        self.assertFalse(scenario77.merge_trips([])["returned"])
+        steps = scenario77.steps({"steps": [{"click": "Закрыть"}, {"dialog": "Записать?", "button": "Да", "closes": True}]})
+        record = dict(steps[1], window=window("Записать?", captions=("Да", "Нет")), answer={"requested": True},
+                      action={"returned": True}, round_trip=merged)
+        self.assertRegex(scenario77.judge(steps[1], record, merged["messages"], False), "1C reported an error: line 4")
+
+    def test_the_watcher_keeps_the_methods_of_its_thread(self):
+        # Series 0: a watcher method named start replaced Thread.start, and no session got its watcher.
+        import threading
+        for name in ("start", "join", "is_alive", "name", "daemon"):
+            self.assertIs(getattr(form.FormWatcher, name), getattr(threading.Thread, name), name)
+        public = {name for name in dir(threading.Thread) if not name.startswith("_")} - {"run"}
+        self.assertEqual(set(vars(form.FormWatcher)) & public, set())
+
+    def test_dialog_steps_are_judged(self):
+        steps = scenario77.steps({"steps": [{"click": "Окно 77"}, {"dialog": "Записать?", "button": "Да"},
+                                            {"dialog": "Готово", "closes": True}]})
+        click, first, last = steps
+        shown = window("Записать?", captions=("Да", "Нет"))
+        self.assertIsNone(scenario77.judge(click, {"action": {"returned": None}, "modal": shown}, [], True))
+        self.assertEqual(scenario77.judge(dict(click, dialogs=0), {"action": {}, "unexpected": shown}, [], True),
+                         "step 1 (click 'Окно 77'): an unexpected modal window 'Записать?' with buttons ['Да', 'Нет']")
+        # The action returned without a window: it passes, and its dialog step fails.
+        self.assertIsNone(scenario77.judge(click, {"action": {"returned": True}, "round_trip": trip()}, [], True))
+        self.assertEqual(scenario77.judge(first, {"window": None}, [], True),
+                         "step 2 (dialog 'Записать?'): no modal window opened")
+        self.assertRegex(scenario77.judge(first, {"window": shown, "answer": {"refused": "the window shows 'x'"}}, [],
+                                          True), r"step 2 .*: the window shows 'x'")
+        self.assertRegex(scenario77.judge(first, {"window": shown, "answer": {"error": "type did not return"}}, [],
+                                          True), "not answered: type did not return")
+        answered = {"window": shown, "answer": {"requested": True}}
+        self.assertIsNone(scenario77.judge(first, dict(answered, modal=window("Готово")), [], True))
+        # The last window ends the action: it returned, 1C answered, the form closed as declared.
+        ended = dict(answered, action={"returned": True, "message": "BM_CLICK"}, round_trip=trip())
+        self.assertIsNone(scenario77.judge(last, ended, [], False))
+        self.assertRegex(scenario77.judge(last, ended, [], True), "the form did not close")
+        self.assertRegex(scenario77.judge(dict(last, closes=False), ended, [], False), "the form closed")
+        self.assertEqual(scenario77.judge(last, dict(ended, action={"returned": False, "message": "BM_CLICK"}), [], True),
+                         "step 3 (dialog 'Готово'): BM_CLICK did not return after the window closed")
+        self.assertEqual(scenario77.judge(last, dict(ended, action={"returned": False, "failed_stage": "leave",
+                                                                    "reason": "the field kept the focus"}), [], True),
+                         "step 3 (dialog 'Готово'): leave failed after the window closed: the field kept the focus")
+        self.assertRegex(scenario77.judge(last, dict(ended, round_trip=trip(diagnostics=[
+            {"line": 7, "message": "Деление на 0"}])), [], False), "1C reported an error: line 7")
+        self.assertRegex(scenario77.judge(last, dict(answered, unexpected=window("Ещё")), [], True),
+                         "step 3 .*an unexpected modal window 'Ещё'")
+        # The launcher's record is the step with what happened (series 0b: a key of the step hid the action's outcome).
+        self.assertNotIn("action", first)
+        self.assertEqual(scenario77.judge(first, dict(first, window=None), [], True),
+                         "step 2 (dialog 'Записать?'): no modal window opened")
+        self.assertIsNone(scenario77.judge(first, dict(first, **answered, modal=window("Готово")), [], True))
+        records = [dict(click, status="passed", issue=None), dict(first, status="passed", issue=None),
+                   dict(last, status="passed", issue=None, form_open=False)]
+        self.assertEqual(scenario77.judge_result(steps, records, closed_by_controller=False), [])
+
+
 class StepOperationTests(unittest.TestCase):
     """The launcher judges commands of a scenario without the harness protocol of the form."""
 
