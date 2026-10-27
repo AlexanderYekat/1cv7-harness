@@ -10,6 +10,10 @@ injection, no foreground activation, no desktop switch. ``fit_units``,
 Task 026: the last message of a step's action is sent from a thread of its own (``Pending``),
 so the modal window its handler opens is found among the server thread's top-level windows,
 read and answered by ``WM_COMMAND`` from its button, as the warning of task 002.
+
+Task 027: a key of a table part is ``WM_KEYDOWN``/``WM_KEYUP`` posted to its window or to the
+cell's editor (``post_key``), so 1C's message loop handles it as it handles the keyboard: still a
+message to a verified window, not system input. ``Posted`` stands for such an action in a chain.
 """
 
 import ctypes as C
@@ -29,6 +33,9 @@ WM_NEXTDLGCTL, EM_SETSEL, VK_BACK = 0x0028, 0x00B1, 0x08
 # Modal windows (task 026): a button of the window is pressed as WM_COMMAND/BN_CLICKED (task 002); the last
 # message of an action waits in its own thread while the windows its handler opens are answered.
 WM_COMMAND, GW_OWNER = 0x0111, 4
+# Keys of a table part (task 027): lParam of WM_KEYDOWN is the repeat count 1, the scan code in bits 16–23
+# and the extended-key flag in bit 24; WM_KEYUP adds the previous-state and transition bits 30 and 31.
+WM_KEYDOWN, WM_KEYUP, MAPVK_VK_TO_VSC = 0x0100, 0x0101, 0
 PENDING_TIMEOUT_MS = 300000
 FIRST_WINDOW_ID = 4152
 # The tree of groups of a catalog's list form: the last record of 26 list forms of base-for-test and
@@ -282,6 +289,28 @@ class Pending:  # pragma: no cover - native, verified on the stand
     def done(self, wait_s=0):
         self.thread.join(wait_s)
         return not self.thread.is_alive()
+
+
+class Posted:
+    """An action whose messages were posted (task 027): nothing to wait for, 1C handles them in its queue.
+
+    The call to 1C after it comes later in the same queue; a modal window the key opened serves that call
+    in its own loop, as after ``#Закрыть`` (task 026).
+    """
+
+    def __init__(self, record):
+        self.message, self.started = record.get("message"), time.monotonic()
+        self.outcome = {"returned": bool(record.get("returned")), "last_error": record.get("last_error"),
+                        "posted": True, "elapsed_s": 0.0}
+
+    def done(self, wait_s=0):
+        return True
+
+
+def key_parameters(vk, extended, scan):
+    """(lParam of WM_KEYDOWN, lParam of WM_KEYUP) of one key press."""
+    down = 1 | (scan & 0xFF) << 16 | (1 << 24 if extended else 0)
+    return down, down | 1 << 30 | 1 << 31
 
 
 class OwnedForm:  # pragma: no cover - native, verified on the stand
@@ -706,6 +735,80 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
             raise C.WinError(C.get_last_error())
         record.update(requested=True, message="WM_COMMAND/BN_CLICKED", identity_rechecked=True)
         return record
+
+    def post(self, hwnd, message, wparam=0, lparam=0):
+        """``PostMessageW`` to an owned window after rechecking the server identity (task 027)."""
+        self.modal.verify()
+        if self.modal.owner(hwnd) != (self.modal.server["pid"], self.modal.tid):
+            raise RuntimeError("window is not on the verified server thread")
+        self.user.PostMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
+        C.set_last_error(0)
+        posted = bool(self.user.PostMessageW(hwnd, message, wparam, lparam))
+        return posted, 0 if posted else C.get_last_error()
+
+    def post_key(self, hwnd, name, vk, extended):
+        """One key pressed in a window of 1C: ``WM_KEYDOWN`` and ``WM_KEYUP`` posted to it (task 027).
+
+        1C's message loop translates and dispatches them as keyboard input of its thread; the system's input
+        state, the foreground and the desktop are not touched.
+        """
+        self.user.MapVirtualKeyW.argtypes = [W.UINT, W.UINT]
+        down, up = key_parameters(vk, extended, self.user.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC))
+        record = {"key": name, "vk": vk, "hwnd": hwnd, "id": self.user.GetDlgCtrlID(hwnd), "message": "WM_KEYDOWN/WM_KEYUP",
+                  "posted": True, "identity_rechecked": True}
+        for stage, message, lparam in (("down", WM_KEYDOWN, down), ("up", WM_KEYUP, up)):
+            posted, error = self.post(hwnd, message, vk, lparam)
+            if not posted:
+                return dict(record, returned=False, failed_stage=stage, last_error=error)
+        return dict(record, returned=True, last_error=0)
+
+    def give_focus(self, dialog, hwnd, timeout_ms=10000):
+        """``WM_NEXTDLGCTL`` to the dialog: the focus to ``hwnd`` in 1C's own thread, as for a field (task 025)."""
+        returned, _, error = self.send(dialog, WM_NEXTDLGCTL, hwnd, 1, timeout_ms)
+        if not returned:
+            raise RuntimeError(f"WM_NEXTDLGCTL did not return, last error {error}")
+        return self.focused()
+
+    def within(self, hwnd, ancestor):
+        """``hwnd`` is ``ancestor`` or one of its descendants."""
+        cursor, steps = hwnd, 0
+        while cursor and steps < 32:
+            if cursor == ancestor:
+                return True
+            cursor, steps = self.user.GetParent(cursor), steps + 1
+        return False
+
+    def editor_of(self, focus, table):
+        """The cell editor that holds ``focus``: the child window of the table part above it, or None."""
+        if not focus or focus["hwnd"] == table or not self.within(focus["hwnd"], table):
+            return None
+        cursor = focus["hwnd"]
+        while self.user.GetParent(cursor) != table:
+            cursor = self.user.GetParent(cursor)
+        until = time.monotonic() + 2
+        info = self.modal.info(cursor, until)
+        return {k: info.get(k) for k in ("hwnd", "class", "id", "text", "visible", "enabled")}
+
+    def table_windows(self, table):
+        """The table part's window, its descendants (cell editors) and the focus, for the evidence (task 027)."""
+        until = time.monotonic() + 2
+        children = [dict({k: info.get(k) for k in ("hwnd", "class", "id", "text", "visible", "enabled")},
+                         parent=self.user.GetParent(child) or None)
+                    for child, info in ((child, self.modal.info(child, until)) for child in self.descendants(table))]
+        return {"table": table, "children": children, "focus": self.focused()}
+
+    def replace_text(self, hwnd, text, timeout_ms=10000):
+        """Select the text of the window with the focus and replace it, as in a form's field (task 025)."""
+        record = {"hwnd": hwnd, "id": self.user.GetDlgCtrlID(hwnd), "text": text, "text_before": self.text(hwnd)}
+        ansi = not self.user.IsWindowUnicode(hwnd)
+        record["encoding"] = "cp1251" if ansi else "utf-16"
+        codes = [character.encode("cp1251")[0] if ansi else ord(character) for character in text] or [VK_BACK]
+        for name, message, wparam, lparam, as_ansi in ([("select", EM_SETSEL, 0, -1, False)]
+                                                        + [("type", WM_CHAR, code, 1, ansi) for code in codes]):
+            returned, _, error = self.send(hwnd, message, wparam, lparam, timeout_ms, ansi=as_ansi)
+            if not returned:
+                return dict(record, typed=False, failed_stage=name, last_error=error)
+        return dict(record, typed=True, text_after=self.text(hwnd))
 
     def alive(self, hwnd):
         """The window still exists on the verified server thread (the form was not closed)."""

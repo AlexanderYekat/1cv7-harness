@@ -20,15 +20,37 @@ Task 026 adds ``{ dialog = "<text>", button = "…", text = "…", closes = true
 an action opened (``Предупреждение``, ``Вопрос``, ``ВвестиСтроку``…), its text, the answer. Dialog
 steps follow the action that opens the window, or another dialog step; the chain is one action,
 and its messages, errors and closing belong to its last step.
+
+Task 027 adds the table part of a document's form: ``{ add_row = true }``, ``{ row = 2 }``,
+``{ cell = "<column>", text = "…" }``, ``{ delete_row = true }``, ``{ rows = 2 }``,
+``{ total = "<column>", text = "…" }``, ``row = 2`` of a value step, and ``{ key = "Down" }`` in a
+table part or a list. A column is one of the Browser section's, by identifier or caption. The
+controller reports the rows, the current row and column with every call of a table step.
 """
 
 import re
 
-KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog")
-OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str},
+KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key")
+OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
-           "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool}}
-ACTIONS = ("click", "input")
+           "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
+           "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
+           "key": {"closes": bool}}
+ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key")
+# Steps of the table part of a document's form (task 027); key also works in a list.
+TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total")
+COLUMN_KINDS = ("cell", "total")
+# Keys of a table part or a list: (virtual-key code, extended); F2…F9 are 0x71…0x78.
+KEYS = {"insert": ("Insert", 0x2D, True), "delete": ("Delete", 0x2E, True), "enter": ("Enter", 0x0D, False),
+        "escape": ("Escape", 0x1B, False), "tab": ("Tab", 0x09, False), "up": ("Up", 0x26, True),
+        "down": ("Down", 0x28, True), "left": ("Left", 0x25, True), "right": ("Right", 0x27, True),
+        "home": ("Home", 0x24, True), "end": ("End", 0x23, True), "pageup": ("PageUp", 0x21, True),
+        "pagedown": ("PageDown", 0x22, True)} | {f"f{n}": (f"F{n}", 0x6F + n, False) for n in range(2, 10)}
+# The table part's window (task 022) and the number column, which takes no input; the type codes of the
+# columns a cell step types into: string, number, date.
+TABLE_WINDOW_ID, LINE_NUMBER, TYPED = 4151, "НомерСтроки", ("S", "N", "D")
+TABLE_ERROR = "error:"
 # Classes of the description a step accepts; a text check reads any window.
 CLASSES = {"click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
 NAME = re.compile(r"[^\W\d]\w*\Z")
@@ -69,19 +91,25 @@ def steps(parameters):
         if not isinstance(item, dict):
             raise ValueError(f"{where}: a table such as {{ click = \"ОК\" }}")
         kinds = [key for key in item if key in KINDS]
+        others = [key for key in kinds if key != "row"]
+        if len(kinds) == 2 and len(others) == 1 and "row" in OPTIONS[others[0]]:
+            kinds = others  # { value = "Сумма", row = 2 }: the row of a value, not the step that goes to a row
         if len(kinds) != 1:
             raise ValueError(f"{where}: exactly one of {', '.join(KINDS)}, got {sorted(item)}")
         kind = kinds[0]
         unknown = set(item) - {kind} - set(OPTIONS[kind])
         if unknown:
             raise ValueError(f"{where} ({kind}): unknown keys {sorted(unknown)}")
-        step = {"index": number, "kind": kind, "target": _text(item[kind], f"{where} {kind}", empty=False).strip()}
+        step = {"index": number, "kind": kind, "target": _target(kind, item[kind], where)}
         for key, expected in OPTIONS[kind].items():
             if key in item:
+                if expected is int:
+                    step[key] = _number(item[key], f"{where} ({kind}) {key}", 1)
+                    continue
                 if not isinstance(item[key], expected):
                     raise ValueError(f"{where} ({kind}): {key} must be {'a string' if expected is str else 'true or false'}")
                 step[key] = _text(item[key], f"{where} {key}") if expected is str else item[key]
-        if kind in ("input", "value") and "text" not in step:
+        if kind in ("input", "value", "cell", "total") and "text" not in step:
             raise ValueError(f"{where} ({kind}): text is required")
         if kind == "dialog" and "button" in step:
             if not step["button"].strip():
@@ -117,16 +145,83 @@ def steps(parameters):
     return result
 
 
+def _number(value, where, least):
+    if isinstance(value, bool) or not isinstance(value, int) or not least <= value <= 99999:
+        raise ValueError(f"{where}: a number {least}…99999, got {value!r}")
+    return value
+
+
+def _target(kind, value, where):
+    """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
+    if kind in ("add_row", "delete_row"):
+        if value is not True:
+            raise ValueError(f"{where} ({kind}): write {kind} = true")
+        return kind
+    if kind in ("row", "rows"):
+        return _number(value, f"{where} ({kind})", 1 if kind == "row" else 0)
+    text = _text(value, f"{where} {kind}", empty=False).strip()
+    if kind == "key":
+        if text.casefold() not in KEYS:
+            raise ValueError(f"{where} (key): one of {', '.join(name for name, _, _ in KEYS.values())}, got {text!r}")
+        return KEYS[text.casefold()][0]
+    return text
+
+
 def _caption(text):
     return (text or "").replace("&", "").strip().casefold()
 
 
+def table_step(step):
+    """The step works with the table part of a document's form (task 027)."""
+    return step["kind"] in TABLE_KINDS or (step["kind"] == "value" and "row" in step)
+
+
+def column(step, table):
+    """The column of a cell or total step among the table part's fields, by identifier then caption."""
+    where = f"step {step['index']} ({step['kind']} {step['target']!r})"
+    wanted = step["target"].casefold()
+    fields = table.get("fields") or []
+    found = [f for f in fields if (f.get("identifier") or "").casefold() == wanted] \
+        or [f for f in fields if _caption(f.get("caption")) == wanted]
+    if not found:
+        raise ValueError(f"{where}: no column of the table part with this identifier or caption")
+    if len(found) > 1:
+        raise ValueError(f"{where}: {len(found)} columns match: " + ", ".join(f["identifier"] or f["caption"] for f in found))
+    field = found[0]
+    if step["kind"] == "total" and not NAME.match(field.get("identifier") or ""):
+        raise ValueError(f"{where}: the column has no attribute to total")
+    if step["kind"] == "cell" and (field["class"] not in CLASSES["input"] or field["identifier"] == LINE_NUMBER
+                                   or not NAME.match(field.get("identifier") or "")):
+        raise ValueError(f"{where}: column {field['identifier'] or field['caption']!r} is {field['class']}, "
+                         "the step needs a field of an attribute (1CEDIT or BMASKED)")
+    if step["kind"] == "cell" and field.get("type") not in (None,) + TYPED:
+        # A reference is chosen in a form of its own (F4, selection), which the steps do not open.
+        raise ValueError(f"{where}: column {field['identifier']!r} holds a reference ({field['type']}); "
+                         "text goes into a string, number or date column")
+    return field
+
+
 def resolve(items, description):
-    """Every element step with the record ID and class of its control; ValueError names the step."""
+    """Every element step with the record ID and class of its control; ValueError names the step.
+
+    A step of the table part needs a document's form with one (task 027); a column step gets its column.
+    """
     controls = description["controls"]
+    table = description.get("browser")
     resolved = []
     for step in items:
         step = dict(step)
+        where = f"step {step['index']} ({step['kind']})"
+        if step["kind"] == "key" and not table:
+            raise ValueError(f"{where}: the form has no table part or list")
+        if table_step(step):
+            if not table:
+                raise ValueError(f"{where}: the form has no table part")
+            if not table.get("document"):
+                raise ValueError(f"{where}: only the table part of a document's form; a list takes key steps")
+        if step["kind"] in COLUMN_KINDS:
+            field = column(step, table)
+            step.update(column=field["identifier"], column_class=field["class"], column_window=field.get("window_id"))
         if step["kind"] in ("click", "input", "check"):
             where = f"step {step['index']} ({step['kind']} {step['target']!r})"
             wanted = step["target"].casefold()
@@ -222,8 +317,78 @@ def safe_button(window):
     return next((b for b in choices if b.get("id") == IDCANCEL), None)
 
 
-def step_function(items):
-    """``Harness77Step`` of the controller: messages of the step and the requested attribute."""
+def _literal(text):
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _branch(number, body):
+    return f'''    Если Номер77Шага = {number} Тогда
+        Попытка
+{body}        Исключение
+            Ответ77 = "{TABLE_ERROR}" + Harness77Строка(ОписаниеОшибки());
+        КонецПопытки;
+    КонецЕсли;
+'''
+
+
+def _table_branch(step):
+    """What the controller does for a table step on its own call (task 027), before the step's window action.
+
+    ``row``: refuses a row the table part lacks (the keys move the cursor: ``АктивизироватьСтроку`` called from
+    the controller moves nothing, series 1c); ``cell``: its column current and in edit mode
+    (``Активизировать(<колонка>, 1)``); ``total``: the column's total; ``value`` with ``row``: the attribute of
+    that row from the unloaded table part, so the cursor stays.
+    """
+    number, kind = step["index"], step["kind"]
+    if kind == "row":
+        return _branch(number, f'''            Если Контекст77Формы.КоличествоСтрок() < {step["target"]} Тогда
+                Ответ77 = "{TABLE_ERROR}no row {step["target"]} of " + Строка(Контекст77Формы.КоличествоСтрок());
+            КонецЕсли;
+''')
+    if kind == "cell":
+        return _branch(number, f"            Контекст77Формы.Активизировать({_literal(step['column'])}, 1);\n")
+    if kind == "total":
+        return _branch(number, f'''            Ответ77 = "total:" + Harness77Строка(Контекст77Формы.Итог({_literal(step["column"])}));
+''')
+    if kind == "value" and "row" in step:
+        return f'''    Если Номер77Шага = {number} Тогда
+        Попытка
+            Таблица77 = СоздатьОбъект("ТаблицаЗначений");
+            Контекст77Формы.ВыгрузитьТабличнуюЧасть(Таблица77, {_literal(step["target"])});
+            Если Таблица77.КоличествоСтрок() < {step["row"]} Тогда
+                Ответ77 = "{VALUE_ERROR}no row {step["row"]} of " + Строка(Таблица77.КоличествоСтрок());
+            Иначе
+                Ответ77 = "{VALUE}" + Harness77Строка(Таблица77.ПолучитьЗначение({step["row"]}, {_literal(step["target"])}));
+            КонецЕсли;
+        Исключение
+            Ответ77 = "{VALUE_ERROR}" + ОписаниеОшибки();
+        КонецПопытки;
+    КонецЕсли;
+'''
+    return ""
+
+
+# Every call of a scenario on a document's form with a table part reports its rows, the current row and column.
+TABLE_STATE = '''Функция Harness77Таблица()
+    Ответ77 = "";
+    Попытка
+        Ответ77 = Ответ77 + РазделительСтрок + "rows:" + Строка(Контекст77Формы.КоличествоСтрок());
+        Ответ77 = Ответ77 + РазделительСтрок + "row:" + Строка(Контекст77Формы.НомерСтроки);
+        Ответ77 = Ответ77 + РазделительСтрок + "column:" + Harness77Строка(Контекст77Формы.Форма.ТекущаяКолонка());
+    Исключение
+        Ответ77 = Ответ77 + РазделительСтрок + "state-error:" + Harness77Строка(ОписаниеОшибки());
+    КонецПопытки;
+    Возврат Ответ77;
+КонецФункции
+
+'''
+
+
+def step_function(items, table=False):
+    """``Harness77Step`` of the controller: messages of the step and the requested attribute.
+
+    ``table``: the form is a document's with a table part (task 027); every answer ends with its state.
+    """
     branches = "".join(f'''    Если Номер77Шага = {step["index"]} Тогда
         Попытка
             Ответ77 = "{VALUE}" + Harness77Строка(Контекст77Формы.{step["target"]});
@@ -231,16 +396,17 @@ def step_function(items):
             Ответ77 = "{VALUE_ERROR}" + ОписаниеОшибки();
         КонецПопытки;
     КонецЕсли;
-''' for step in items if step["kind"] == "value")
+''' if step["kind"] == "value" and "row" not in step else _table_branch(step) for step in items)
+    state = "    Ответ77 = Ответ77 + Harness77Таблица();\n" if table else ""
     return f'''Функция Harness77Строка(Значение77)
     Возврат СтрЗаменить(СтрЗаменить(Строка(Значение77), "\\", "\\\\"), РазделительСтрок, "\\n");
 КонецФункции
 
-Функция Harness77Step(Номер77Шага, Протокол, Метка) Экспорт
+{TABLE_STATE if table else ""}Функция Harness77Step(Номер77Шага, Протокол, Метка) Экспорт
     Сообщения77 = СоздатьОбъект("MessageView");
     Сообщения77.SetSystemMessages();
     Ответ77 = "";
-{branches}    Сообщить("{STEP_MARKER}" + Метка);
+{branches}{state}    Сообщить("{STEP_MARKER}" + Метка);
     Сообщения77.SaveToFile(Протокол);
     Сообщения77.Clear();
     Возврат Ответ77;
@@ -252,13 +418,13 @@ def step_function(items):
 SAVE = "    Сообщения77.SaveToFile(Протокол);\n    Возврат Ответ77;\nКонецФункции\n"
 
 
-def controller(text, items):
+def controller(text, items, table=False):
     """The form controller with the step function; ``open`` clears the messages it saved."""
     if text.count(SAVE) != 1 or text.count("Функция Harness77Ert(") != 1:
         raise ValueError("unexpected form controller layout for steps")
     text = text.replace(SAVE, SAVE.replace("    Возврат", '    Если Команда = "open" Тогда\n'
                                                      "        Сообщения77.Clear();\n    КонецЕсли;\n    Возврат", 1))
-    return text.replace("Функция Harness77Ert(", step_function(items) + "Функция Harness77Ert(", 1)
+    return text.replace("Функция Harness77Ert(", step_function(items, table) + "Функция Harness77Ert(", 1)
 
 
 # The client's wait before ``result`` (task 008) serves the watcher's step requests meanwhile: each
@@ -308,12 +474,33 @@ def client(done, wait_ms):
 
 
 def answer(text):
-    """{value | value_error} of the controller's answer to a step."""
-    if text.startswith(VALUE):
-        return {"value": _unescape(text[len(VALUE):])}
-    if text.startswith(VALUE_ERROR):
-        return {"value_error": text[len(VALUE_ERROR):].strip()}
-    return {}
+    """{value | value_error, total, table_error, rows, row, column, state_error} of the controller's answer.
+
+    The answer is lines ``name:text``; a text is escaped (no line breaks in it). The rows, the current row
+    and column come with every call on a document's form with a table part (task 027); ``error:`` is what
+    1C refused in a table step's own work.
+    """
+    names = {"rows": "rows", "row": "row", "column": "column", "total": "total", "error": "table_error",
+             "state-error": "state_error"}
+    record = {}
+    for line in text.splitlines():
+        if line.startswith(VALUE):
+            record["value"] = _unescape(line[len(VALUE):])
+        elif line.startswith(VALUE_ERROR):
+            record["value_error"] = line[len(VALUE_ERROR):].strip()
+        else:
+            name, separator, rest = line.partition(":")
+            if not separator or name not in names:
+                continue
+            rest = _unescape(rest)
+            if name in ("rows", "row"):
+                try:
+                    record[name] = int(rest.strip())
+                except ValueError:
+                    pass
+                continue
+            record[names[name]] = rest if name == "total" else rest.strip()
+    return record
 
 
 def _unescape(text):
@@ -338,7 +525,11 @@ def trip_number(index, count):
 
 
 def merge_trips(trips):
-    """The calls to 1C of one chain as one: all returned and complete, their messages and errors in order."""
+    """The calls to 1C of one chain as one: all returned and complete, their messages and errors in order.
+
+    The state of the table part (task 027) and what 1C answered for a step's own work are the last call's:
+    after the action and its windows, or the own call of a row step after the Enters that ended a row's input.
+    """
     if not trips:
         return {"returned": False, "error": "1C was not asked"}
     merged = {"returned": all(t.get("returned") for t in trips), "complete": all(t.get("complete") for t in trips),
@@ -347,6 +538,8 @@ def merge_trips(trips):
     error = next((t["error"] for t in trips if t.get("error")), None)
     if error:
         merged["error"] = error
+    merged.update({key: trips[-1][key] for key in ("rows", "row", "column", "state_error", "table_error", "value",
+                                                   "value_error", "total") if key in trips[-1]})
     return merged
 
 
@@ -357,12 +550,49 @@ def messages(protocol, marker):
     return (lines[:-1] if complete else lines), complete
 
 
+def label(step):
+    """How a reason names a step: its number, kind and target."""
+    if step["kind"] in ("add_row", "delete_row"):
+        return f"step {step['index']} ({step['kind']})"
+    return f"step {step['index']} ({step['kind']} {step['target']!r})"
+
+
+def _judge_table(step, record, trip):
+    """The issue of a table step's own check (task 027), once its action and the calls to 1C passed."""
+    name, kind = label(step), step["kind"]
+    if trip.get("table_error"):
+        return f"{name}: 1C refused: {trip['table_error']}"
+    if kind == "row" and record.get("input_ended") is False:
+        return f"{name}: the row's input did not end: a cell editor stays open"
+    if kind in ("add_row", "delete_row", "row", "rows") and ("rows" not in trip or "row" not in trip):
+        return f"{name}: the table part was not read: {trip.get('state_error') or 'no state in 1C answer'}"
+    if kind in ("add_row", "delete_row"):
+        before = (record.get("before") or {}).get("rows")
+        if before is None:
+            return f"{name}: the table part was not read before the step"
+        wanted = before + (1 if kind == "add_row" else -1)
+        if trip["rows"] != wanted:
+            return f"{name}: the table has {trip['rows']} rows, expected {wanted}"
+    if kind == "cell" and not (record.get("action") or {}).get("committed"):
+        return f"{name}: the cell kept its editor after Enter"
+    if kind == "row" and trip["row"] != step["target"]:
+        return f"{name}: the current row is {trip['row']}, expected {step['target']}"
+    if kind == "rows" and trip["rows"] != step["target"]:
+        return f"{name}: the table has {trip['rows']} rows, expected {step['target']}"
+    if kind == "total":
+        if "total" not in trip:
+            return f"{name}: no total in 1C's answer"
+        if trip["total"].strip() != step["text"].strip():
+            return f"{name}: is {trip['total']!r}, expected {step['text']!r}"
+    return None
+
+
 def judge(step, record, pending, form_open):
     """The issue of one executed step, or None; ``record`` holds what happened and what the windows show.
 
     ``pending`` are the message lines since the last action, this step's included.
     """
-    name = f"step {step['index']} ({step['kind']} {step['target']!r})"
+    name = label(step)
     action = record.get("action") or {}
     if action.get("refused"):
         return f"{name}: {action['refused']}"
@@ -410,6 +640,10 @@ def judge(step, record, pending, form_open):
                 return f"{name}: shows {actual!r}, expected {wanted!r}"
         elif actual is not wanted:
             return f"{name}: {key} is {actual}, expected {wanted}"
+    if step["kind"] in TABLE_KINDS:
+        issue = _judge_table(step, record, trip)
+        if issue:
+            return issue
     if step["kind"] == "value":
         if "value_error" in trip:
             return f"{name}: 1C did not read the attribute: {trip['value_error']}"

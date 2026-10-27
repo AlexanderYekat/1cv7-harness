@@ -64,6 +64,13 @@ modal window its handler opens (``Предупреждение``, ``Вопрос
 by the dialog steps after the action. The round trip follows the last of them. A window no step
 expects fails the step and, like the window of any failed step, is closed with the safest answer.
 
+Task 027 adds the table part of a document's form (``add_row``, ``row``, ``cell``, ``delete_row``, ``rows``,
+``total``, ``value`` with ``row``) and ``key`` in a table part or a list. A table step calls 1C before its keys
+(the rows, the current row and column; for ``cell`` its column in edit mode), then posts Insert, Delete,
+Down/Up or the cell's text and Enter, and calls 1C again. 1C makes the cursor the document's current row in
+its idle update, which reaches a visible main window only: while the steps of such a form run, the main window
+is shown on the run's private desktop without activation, as for the captures of task 010.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -285,14 +292,25 @@ def controller_text(parameters, fixture_context=None):
 
 
 def browser(text):
-    """{position, columns} of a dialog's table part (form_window77.window_ids), or None without one."""
+    """{position, columns, fields} of a dialog's table part (form_window77.window_ids), or None without one.
+
+    ``fields`` are the columns of its ``Fixed`` record in order (task 027): identifier (the attribute),
+    caption, class and formula, and the window ID their cell editor is expected to get, the IDs 1C
+    keeps for the columns after the first ``position`` windows (task 022).
+    """
     from harness77.ert_module import parse_dialog
+    from form_window77 import FIRST_WINDOW_ID
     for section in parse_dialog(text)[1:]:
         if isinstance(section, list) and section[:1] == ["Browser"]:
             fixed = [item for item in section[2:] if isinstance(item, list) and item[:1] == ["Fixed"]]
             if len(fixed) != 1 or not section[1].isdigit():
                 raise ValueError("unknown layout of the Browser section")
-            return {"position": int(section[1]), "columns": len(fixed[0]) - 1}
+            position, columns = int(section[1]), fixed[0][1:]
+            if any(not isinstance(item, list) or len(item) < 8 for item in columns):
+                raise ValueError("unknown layout of a Browser column")
+            fields = [{"identifier": item[7], "caption": item[1], "class": item[3], "formula": item[6],
+                       "window_id": FIRST_WINDOW_ID + position + number} for number, item in enumerate(columns)]
+            return {"position": position, "columns": len(columns), "fields": fields}
     return None
 
 
@@ -322,6 +340,14 @@ def configuration_description(md_path, name, fixture=None):
     description = describe(form.text, metadata)
     table = browser(form.text)
     if table is not None:
+        # The table part of a document's own form takes table steps; a list form's list only keys (task 027).
+        table["document"] = owner.casefold().startswith("документ.") and module == "Форма"
+        if table["document"]:
+            # The type code of a column's attribute (S, N, D or a reference): text goes only into the first three.
+            attributes = metadata.attributes("Документ", owner.split(".", 1)[1]) or {}
+            for field in table["fields"]:
+                found = attributes.get((field["identifier"] or "").casefold())
+                field["type"] = found.code if found is not None else None
         description["browser"] = table
     return description, {"form_object": name, "md_sha256": sha256(md_path), "path": form.path, "file": form.file}
 
@@ -374,6 +400,7 @@ class Chain:  # pragma: no cover - native, verified on the stand
     def __init__(self, form, record, pending, seen, finish):
         self.form, self.record, self.pending, self.finish = form, record, pending, finish
         self.seen, self.window, self.trips = set(seen), None, []
+        self.before = None  # a table step's call to 1C before its keys (task 027)
 
     def wait(self):
         outcome = self.form.await_action(self.pending, self.seen, ACTION_WAIT_S)
@@ -390,13 +417,16 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     """After ``open`` returns: inspect the owned form, run the actions, then release the client."""
 
     def __init__(self, out, lifecycle, desktop, description, actions, evidence_dir, visual_probe=False,
-                 captures=(), configuration=None, steps=None):
+                 captures=(), configuration=None, steps=None, show=False):
         super().__init__(name="harness77-form-watcher", daemon=True)
         self.out, self.lifecycle, self.desktop = out, lifecycle, desktop
         self.description, self.actions, self.evidence_dir = description, list(actions), evidence_dir
         self.visual_probe = visual_probe
         self.captures, self.configuration = list(captures), configuration
         self.steps = steps  # resolved steps of task 025, or None
+        # Task 027: 1C makes the cursor of a table part the document's current row in its idle update, which MFC
+        # sends to a visible main window only (series 1b–1e): shown while the steps of such a form run.
+        self.show = show
         self.stopped = threading.Event()
 
     def run(self):
@@ -454,7 +484,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 if self.visual_probe:
                     inspection["visual_probe"] = self.probe_visual(form, inspection)
             captures = []
-            shown = self.show_main(form, inspection) if self.captures else None
+            shown = self.show_main(form, inspection) if self.captures or self.show else None
             try:
                 if shown is not None:
                     captures += self.shoot(form, inspection, "open", shown)
@@ -517,14 +547,19 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         from form_window77 import window_ids
         ids, dialog = window_ids(self.description), inspection["chain"][0]["hwnd"]
         windows = {c["id"]: c for c in inspection["controls"]}
+        table = windows.get(scenario77.TABLE_WINDOW_ID)
         records, pending, chain = [], [], None
         self.calls = {}
         for step in self.steps:
             record = dict(step)
-            control = windows.get(ids[step["record_id"]]) if "record_id" in step else None
+            # A step of the table part (task 027) works with its window, as an element step with its control's.
+            tabular = step["kind"] == "key" or scenario77.table_step(step)
+            control = windows.get(ids[step["record_id"]]) if "record_id" in step else table if tabular else None
             try:
                 if "record_id" in step and control is None:
                     raise RuntimeError(f"no window of element {step['record_id']} in the form")
+                if tabular and control is None:
+                    raise RuntimeError(f"no window {scenario77.TABLE_WINDOW_ID} of the table part in the form")
                 if step["kind"] in scenario77.ACTIONS:
                     shown = form.element_state(control)
                     if "error" in shown or not shown["enabled"] or not shown["visible"]:
@@ -534,7 +569,11 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     else:
                         chain = self.begin(form, inspection, step, control, ids, windows)
                         record["action"] = chain.record
+                        if chain.before is not None:
+                            record["before"] = chain.before
                         self.settle(form, chain, step)
+                        if step["kind"] == "cell":
+                            self.committed(form, chain)
                         record["calls"] = list(chain.trips)
                         self.opened(step, record, chain)
                 elif step["kind"] == "dialog":
@@ -551,7 +590,10 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                             self.opened(step, record, chain)
                             if step["last"] and chain.window is None:
                                 record["action"] = chain.record
-                if step["kind"] not in scenario77.ACTIONS + ("dialog",):
+                if step["kind"] == "row":
+                    record["round_trip"] = self.go_to_row(form, inspection, step, record, control["hwnd"])
+                    pending = pending + record["round_trip"].get("messages", [])
+                elif step["kind"] not in scenario77.ACTIONS + ("dialog",):
                     record["round_trip"] = self.round_trip(step["index"])
                     pending = pending + record["round_trip"].get("messages", [])
                 elif chain is not None and chain.window is None and record.get("action") is chain.record \
@@ -563,9 +605,11 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     record["form_open"] = form.alive(dialog)
                     if control is not None and record["form_open"]:
                         record["state"] = form.element_state(control, checkbox=step.get("element_class") == "CHECKBOX")
+                    if tabular and record["form_open"]:
+                        record["table"] = form.table_windows(control["hwnd"])
                 record["issue"] = scenario77.judge(step, record, pending, record.get("form_open", True))
             except Exception as error:  # noqa: BLE001 - a failed step still closes its window (series 0b)
-                record["issue"] = f"step {step['index']} ({step['kind']} {step['target']!r}): {type(error).__name__}: {error}"
+                record["issue"] = f"{scenario77.label(step)}: {type(error).__name__}: {error}"
             if record["issue"] and chain is not None and chain.window is not None:
                 record["dismissed"] = self.dismiss(form, chain, step)
             record["status"] = "failed" if record["issue"] else "passed"
@@ -582,18 +626,24 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         """
         if chain.window is not None or not chain.record.get("returned"):
             return
-        count = self.calls.get(step["index"], 0)
-        self.calls[step["index"]] = count + 1
-        number = scenario77.trip_number(step["index"], count)
-        chain.trips.append(dict(self.round_trip(number), number=number))
+        chain.trips.append(self.call(step))
         window = form.modal_window(chain.seen)
         if window is not None:
             chain.window = dict(window, after_return=True)
             chain.seen.add(window["hwnd"])
 
+    def call(self, step):
+        """The step's next call to 1C, numbered by ``trip_number``: its own number first."""
+        count = self.calls.get(step["index"], 0)
+        self.calls[step["index"]] = count + 1
+        number = scenario77.trip_number(step["index"], count)
+        return dict(self.round_trip(number), number=number)
+
     def begin(self, form, inspection, step, control, ids, windows):
         """The action of a step with its last message pending: the Chain after its return or first window."""
         seen = form.top_windows()
+        if step["kind"] in scenario77.ACTIONS and step["kind"] not in ("click", "input"):
+            return self.begin_table(form, inspection, step, control, seen)
         if step["kind"] == "click":
             record, pending = form.click_pending(inspection, control["id"])
             finish = finish_click
@@ -605,6 +655,120 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if pending is not None:
             chain.wait()
         return chain
+
+    def begin_table(self, form, inspection, step, table, seen):
+        """The action of a table step (task 027): 1C first, then a key to the table part or the cell's editor.
+
+        The step's own call reports the rows, the current row and column before the keys; for ``cell`` it
+        also makes its column current and opens the editor (``Активизировать(<колонка>, 1)``). Then the text
+        replaces the editor's and Enter ends the input; ``add_row`` is Insert, ``delete_row`` Delete and
+        ``key`` its key, in the cell's editor if it has the focus, else in the table part. The keys are posted
+        (``Posted``): 1C's message loop handles them as its keyboard (series 0).
+        """
+        from form_window77 import Posted
+        trip = self.call(step)
+        chain = Chain(form, {"returned": False}, None, seen, finish_click)
+        chain.before, chain.trips = trip, [trip]
+        if not trip.get("returned"):
+            chain.record["refused"] = "1C did not answer before the step: " + str(trip.get("error"))
+            return chain
+        if trip.get("table_error"):
+            chain.record["refused"] = "1C refused: " + trip["table_error"]
+            return chain
+        dialog, hwnd = inspection["chain"][0]["hwnd"], table["hwnd"]
+        focus = form.focused()
+        record = {"focus_before": focus, "editor_before": form.editor_of(focus, hwnd)}
+        if step["kind"] == "cell":
+            current = trip.get("column") or ""
+            if current.casefold() != step["column"].casefold():
+                chain.record.update(record, refused=f"column {step['column']!r} did not become current: {current!r}")
+                return chain
+            if record["editor_before"] is None:
+                chain.record.update(record, refused=f"no cell editor opened; the focus is {focus}")
+                return chain
+            typed = form.replace_text(focus["hwnd"], step["text"])
+            record.update(typing=typed, target=focus["hwnd"], expected_editor=step.get("column_window"))
+            if not typed["typed"]:
+                chain.record.update(record, failed_stage="type", last_error=typed.get("last_error"))
+                return chain
+            target, key = focus["hwnd"], scenario77.KEYS["enter"]
+        else:
+            if record["editor_before"] is not None and step["kind"] in ("add_row", "delete_row"):
+                focus = self.end_input(form, step, chain.trips, record, focus, hwnd)
+                if record["input_ended"] is False:
+                    chain.record.update(record, refused="the row's input did not end: a cell editor stays open")
+                    return chain
+            if focus is None or not form.within(focus["hwnd"], hwnd):
+                focus = record["focus_given"] = form.give_focus(dialog, hwnd)
+            target = focus["hwnd"] if focus and form.within(focus["hwnd"], hwnd) else hwnd
+            key = scenario77.KEYS[{"add_row": "insert", "delete_row": "delete"}.get(step["kind"], step["target"].casefold())]
+        chain.record = dict(record, **form.post_key(target, *key))
+        chain.pending = Posted(chain.record)
+        chain.wait()
+        return chain
+
+    def end_input(self, form, step, trips, record, focus, table):
+        """End the input of a row before a row's step (task 027): Enter in the open cell editor, as the keyboard
+        user does, until none is open, at most once a column; each Enter is followed by a call to 1C (``trips``).
+
+        Insert or Delete in the editor would change its text, not the rows; Escape there cancels the new row
+        1C still takes the input of (series 0), and Insert in the editor or the menu's «Новая строка» did
+        nothing (series 0b). ``АктивизироватьСтроку`` of another row does not end it (series 1, r-rows).
+        """
+        enters = []
+        for _ in range(len((self.description.get("browser") or {}).get("fields") or []) + 1):
+            if form.editor_of(focus, table) is None:
+                break
+            enters.append(form.post_key(focus["hwnd"], *scenario77.KEYS["enter"]))
+            trips.append(self.call(step))
+            focus = form.focused()
+        record.update(input_enters=enters, input_ended=form.editor_of(focus, table) is None)
+        return focus
+
+    def go_to_row(self, form, inspection, step, record, table):
+        """A row step (task 027): the cursor to the row by Down and Up, as the keyboard user moves it.
+
+        The step's own call reports the rows and the current row (and refuses a row the table lacks); the input
+        of a new row ends first (``end_input``); then one key at a time, each followed by a call to 1C, until the
+        current row is the step's, the cursor stops moving or as many keys as rows were pressed. Neither
+        ``АктивизироватьСтроку`` nor ``ПолучитьСтрокуПоНомеру`` called from the controller moves the row a cell
+        step types into (series 1c, 1d); the keys do while the main window is shown (series 1e).
+        """
+        trips = [self.call(step)]
+        state = trips[0]
+        if not state.get("returned") or state.get("table_error") or "row" not in state:
+            return scenario77.merge_trips(trips)
+        focus = form.focused()
+        if form.editor_of(focus, table) is not None:
+            focus = self.end_input(form, step, trips, record, focus, table)
+            if record["input_ended"] is False:
+                return scenario77.merge_trips(trips)
+        if focus is None or not form.within(focus["hwnd"], table):
+            focus = record["focus_given"] = form.give_focus(inspection["chain"][0]["hwnd"], table)
+        target = focus["hwnd"] if focus and form.within(focus["hwnd"], table) else table
+        keys, current = [], trips[-1].get("row")
+        for _ in range(state.get("rows", 0) + 1):
+            if current is None or current == step["target"]:
+                break
+            keys.append(form.post_key(target, *scenario77.KEYS["down" if current < step["target"] else "up"]))
+            trips.append(self.call(step))
+            if trips[-1].get("row") == current:
+                break  # the cursor did not move
+            current = trips[-1].get("row")
+        record["row_keys"] = keys
+        return scenario77.merge_trips(trips)
+
+    @staticmethod
+    def committed(form, chain):
+        """A cell's input ended (task 027): after Enter the focus left its editor or another column is current."""
+        record = chain.record
+        if chain.window is not None or not record.get("returned") or "target" not in record:
+            return
+        focus = form.focused()
+        column = (chain.trips[-1] if chain.trips else {}).get("column")
+        record.update(focus_after=focus, column_after=column)
+        record["committed"] = (focus is None or focus["hwnd"] != record["target"]
+                               or (column or "").casefold() != (chain.before.get("column") or "").casefold())
 
     @staticmethod
     def opened(step, record, chain):
@@ -855,7 +1019,15 @@ class FormAdapter(launcher.Harness77Adapter):
     def controller(self, parameters):
         text = controller_text(parameters, self.fixture_context)
         steps = scenario77.steps(parameters)
-        return text if steps is None else scenario77.controller(text, steps)
+        if steps is None:
+            return text
+        table = (self.form[0].get("browser") or {}) if self.form is not None else {}
+        if any(scenario77.table_step(step) or step["kind"] == "key" for step in steps):
+            if self.form is None:
+                raise ValueError("table steps need a form of the configuration with a table part or a list")
+            # The code of the table steps names their columns: resolved before 1C starts (task 027).
+            steps = scenario77.resolve(steps, self.form[0])
+        return scenario77.controller(text, steps, table=bool(table.get("document")))
 
     def client(self, text):
         if text.count(CALL) != 1:
@@ -898,7 +1070,8 @@ class FormAdapter(launcher.Harness77Adapter):
         def watching():
             watcher = FormWatcher(out, lifecycle, desktop, description, actions(self.parameters),
                                   self.run_dir / "form", visual_probe=self.parameters.get("visual_probe") is True,
-                                  captures=self.requests, configuration=self.configuration, steps=steps)
+                                  captures=self.requests, configuration=self.configuration, steps=steps,
+                                  show=steps is not None and bool(description.get("browser")))
             watcher.start()
             try:
                 yield

@@ -339,5 +339,148 @@ class StepOperationTests(unittest.TestCase):
         self.assertEqual(row["form_issues"], ["inspection: no window", "only 0 of 1 steps ran"])
 
 
+# The document form of «Готовая продукция» (task 027): its table part after 6 windows, five columns.
+TABLE = {"position": 6, "columns": 5, "document": True, "fields": [
+    {"identifier": "НомерСтроки", "caption": "N", "class": "1CEDIT", "formula": "", "window_id": 4158, "type": None},
+    {"identifier": "Товар", "caption": "Наименование", "class": "BMASKED", "formula": "Пересчет()", "window_id": 4159,
+     "type": "B"},
+    {"identifier": "Количество", "caption": "Кол-во", "class": "1CEDIT", "formula": "Пересчет()", "window_id": 4160,
+     "type": "N"},
+    {"identifier": "", "caption": "Вид", "class": "STATIC", "formula": "Вид()", "window_id": 4161},
+    {"identifier": "Сумма", "caption": "Сумма", "class": "1CEDIT", "formula": "Пересчет()", "window_id": 4162,
+     "type": "N"}]}
+
+
+def table_steps(*items, table=TABLE):
+    return scenario77.resolve(scenario77.steps({"steps": list(items)}), dict(DESCRIPTION, browser=table))
+
+
+class TableStepsTests(unittest.TestCase):
+    def test_table_steps_are_read(self):
+        steps = scenario77.steps({"steps": [
+            {"add_row": True}, {"cell": " Кол-во ", "text": "3"}, {"row": 2}, {"rows": 0}, {"delete_row": True},
+            {"total": "Сумма", "text": "30"}, {"value": "Сумма", "row": 1, "text": "30"}, {"key": "pagedown"},
+            {"key": "F9", "closes": True}]})
+        self.assertEqual([(s["kind"], s["target"]) for s in steps], [
+            ("add_row", "add_row"), ("cell", "Кол-во"), ("row", 2), ("rows", 0), ("delete_row", "delete_row"),
+            ("total", "Сумма"), ("value", "Сумма"), ("key", "PageDown"), ("key", "F9")])
+        self.assertEqual(steps[6]["row"], 1)
+        self.assertEqual([scenario77.label(s) for s in steps[:3]],
+                         ["step 1 (add_row)", "step 2 (cell 'Кол-во')", "step 3 (row 2)"])
+        self.assertEqual(scenario77.KEYS["f9"], ("F9", 0x78, False))
+        self.assertEqual(scenario77.KEYS["delete"], ("Delete", 0x2E, True))
+
+    def test_malformed_table_steps_are_refused(self):
+        for item in ({"add_row": False}, {"add_row": "yes"}, {"delete_row": 1}, {"row": 0}, {"row": "1"},
+                     {"row": True}, {"rows": -1}, {"row": 100000}, {"cell": "Сумма"}, {"total": "Сумма"},
+                     {"key": "Space"}, {"key": ""}, {"value": "Сумма", "row": 0, "text": "1"},
+                     {"value": "Сумма", "row": "1", "text": "1"}, {"add_row": True, "text": "1"}):
+            with self.subTest(item=item), self.assertRaises(ValueError):
+                scenario77.steps({"steps": [item]})
+        # Dialog steps follow the table's actions as they follow a click (task 026).
+        steps = scenario77.steps({"steps": [{"delete_row": True}, {"dialog": "Удалить?", "button": "Да"}]})
+        self.assertEqual((steps[0]["dialogs"], steps[1]["chain"]), (1, 1))
+
+    def test_columns_resolve_by_identifier_then_caption(self):
+        steps = table_steps({"cell": "кол-во", "text": "3"}, {"cell": "Сумма", "text": "x"}, {"total": "сумма", "text": "1"},
+                            {"add_row": True}, {"key": "Down"})
+        self.assertEqual([(s.get("column"), s.get("column_window")) for s in steps],
+                         [("Количество", 4160), ("Сумма", 4162), ("Сумма", 4162), (None, None), (None, None)])
+        for item, message in (({"cell": "Цена", "text": "1"}, "no column"),
+                              ({"cell": "N", "text": "1"}, "needs a field of an attribute"),
+                              ({"cell": "Вид", "text": "1"}, "is STATIC"),
+                              ({"total": "Вид", "text": "1"}, "no attribute to total"),
+                              ({"cell": "Товар", "text": "x"}, r"holds a reference \(B\)")):
+            with self.subTest(item=item), self.assertRaisesRegex(ValueError, "step 1 .*" + message):
+                table_steps(item)
+        twice = dict(TABLE, fields=TABLE["fields"] + [dict(TABLE["fields"][2], identifier="Количество2")])
+        with self.assertRaisesRegex(ValueError, "2 columns match"):
+            table_steps({"cell": "Кол-во", "text": "1"}, table=twice)
+
+    def test_table_steps_need_a_document_form_with_a_table_part(self):
+        for item in ({"add_row": True}, {"row": 1}, {"value": "Сумма", "row": 1, "text": "1"}, {"key": "Down"}):
+            with self.subTest(item=item), self.assertRaisesRegex(ValueError, "has no table part"):
+                scenario77.resolve(scenario77.steps({"steps": [item]}), DESCRIPTION)
+        listed = dict(TABLE, document=False)
+        self.assertEqual(table_steps({"key": "Down"}, {"value": "Наименование", "text": "x"}, table=listed)[0]["target"],
+                         "Down")
+        for item in ({"add_row": True}, {"rows": 1}, {"value": "Сумма", "row": 1, "text": "1"}):
+            with self.subTest(item=item), self.assertRaisesRegex(ValueError, "a list takes key steps"):
+                table_steps(item, table=listed)
+
+    def test_the_controller_works_the_table_part_on_the_steps_own_call(self):
+        steps = table_steps({"add_row": True}, {"cell": "Кол-во", "text": "3"}, {"row": 2},
+                            {"total": "Сумма", "text": "30"}, {"value": "Сумма", "row": 1, "text": "30"},
+                            {"value": "Товар", "text": "x"})
+        text = scenario77.controller(form.CONTROLLER, steps, table=True)
+        self.assertIn('    Ответ77 = Ответ77 + Harness77Таблица();\n    Сообщить("HARNESS77-STEP:" + Метка);', text)
+        self.assertIn('"rows:" + Строка(Контекст77Формы.КоличествоСтрок())', text)
+        self.assertIn('"column:" + Harness77Строка(Контекст77Формы.Форма.ТекущаяКолонка())', text)
+        self.assertNotIn("Номер77Шага = 1 ", text)
+        self.assertIn('    Если Номер77Шага = 2 Тогда\n        Попытка\n'
+                      '            Контекст77Формы.Активизировать("Количество", 1);\n', text)
+        # The keys move the row (series 1e); the controller only refuses a row the table lacks.
+        self.assertNotIn("АктивизироватьСтроку", text)
+        self.assertIn('"error:no row 2 of " + Строка(Контекст77Формы.КоличествоСтрок())', text)
+        self.assertIn('Ответ77 = "total:" + Harness77Строка(Контекст77Формы.Итог("Сумма"));', text)
+        self.assertIn('Контекст77Формы.ВыгрузитьТабличнуюЧасть(Таблица77, "Сумма");', text)
+        self.assertIn('Ответ77 = "value:" + Harness77Строка(Таблица77.ПолучитьЗначение(1, "Сумма"));', text)
+        self.assertIn('Ответ77 = "value:" + Harness77Строка(Контекст77Формы.Товар);', text)
+        self.assertNotIn("Harness77Таблица", scenario77.controller(form.CONTROLLER, steps[-1:]))
+
+    def test_the_state_of_the_table_part_is_read_back(self):
+        self.assertEqual(scenario77.answer("\r\nrows:2\r\nrow:1\r\ncolumn:Количество "),
+                         {"rows": 2, "row": 1, "column": "Количество"})
+        self.assertEqual(scenario77.answer("total: 30.00\r\nrows:x\r\nstate-error:Нет\\nстрок"),
+                         {"total": " 30.00", "state_error": "Нет\r\nстрок"})
+        self.assertEqual(scenario77.answer("error:no row 3 of 2\r\nrows:2\r\nother:1"),
+                         {"table_error": "no row 3 of 2", "rows": 2})
+        self.assertEqual(scenario77.answer("value:a:b\r\nrow:1"), {"value": "a:b", "row": 1})
+        merged = scenario77.merge_trips([trip(rows=1, row=1, column="Товар", messages=["a"]),
+                                         trip(rows=2, row=2, messages=["b"])])
+        self.assertEqual((merged["rows"], merged["row"], "column" in merged, merged["messages"]), (2, 2, False, ["a", "b"]))
+
+    def test_table_steps_are_judged(self):
+        def judge(item, record):
+            return scenario77.judge(table_steps(item)[0], record, [], True)
+        added = {"action": {"returned": True}, "before": trip(rows=1, row=1), "round_trip": trip(rows=2, row=2)}
+        self.assertIsNone(judge({"add_row": True}, added))
+        self.assertEqual(judge({"add_row": True}, dict(added, round_trip=trip(rows=1, row=1))),
+                         "step 1 (add_row): the table has 1 rows, expected 2")
+        self.assertRegex(judge({"add_row": True}, dict(added, before=trip())), "not read before the step")
+        self.assertRegex(judge({"add_row": True}, dict(added, round_trip=trip(state_error="Нет"))), "not read: Нет")
+        self.assertIsNone(judge({"delete_row": True}, dict(added, before=trip(rows=3, row=1))))
+        self.assertRegex(judge({"delete_row": True}, added), "has 2 rows, expected 0")
+        cell = {"action": {"returned": True, "committed": True}, "round_trip": trip(rows=1, row=1)}
+        self.assertIsNone(judge({"cell": "Кол-во", "text": "3"}, cell))
+        self.assertRegex(judge({"cell": "Кол-во", "text": "3"}, dict(cell, action={"returned": True})),
+                         "kept its editor after Enter")
+        self.assertRegex(judge({"cell": "Кол-во", "text": "3"}, {"action": {
+            "refused": "column 'Количество' did not become current: 'Товар'"}}), "did not become current")
+        self.assertRegex(judge({"cell": "Кол-во", "text": "3"}, dict(cell, round_trip=trip(table_error="Нет поля"))),
+                         "1C refused: Нет поля")
+        self.assertIsNone(judge({"row": 2}, {"round_trip": trip(rows=2, row=2)}))
+        self.assertRegex(judge({"row": 2}, {"round_trip": trip(rows=2, row=1)}), "the current row is 1, expected 2")
+        # A new row's input ends before the cursor moves (series 1, r-rows): an editor that stays open fails the step.
+        self.assertRegex(judge({"row": 1}, {"input_ended": False, "round_trip": trip(rows=2, row=2)}),
+                         "the row's input did not end")
+        self.assertIsNone(judge({"row": 1}, {"input_ended": True, "round_trip": scenario77.merge_trips(
+            [trip(rows=2, row=2, messages=["пересчет"]), trip(rows=2, row=1)])}))
+        self.assertRegex(judge({"row": 3}, {"round_trip": scenario77.merge_trips(
+            [trip(rows=2, row=2), trip(rows=2, row=2, table_error="no row 3 of 2")])}), "1C refused: no row 3 of 2")
+        self.assertRegex(judge({"row": 3}, {"round_trip": trip(rows=2, row=1, table_error="no row 3 of 2")}),
+                         "1C refused: no row 3 of 2")
+        self.assertIsNone(judge({"rows": 2}, {"round_trip": trip(rows=2, row=1)}))
+        self.assertRegex(judge({"rows": 1}, {"round_trip": trip(rows=2, row=1)}), "has 2 rows, expected 1")
+        self.assertIsNone(judge({"total": "Сумма", "text": "30"}, {"round_trip": trip(total=" 30 ", rows=1, row=1)}))
+        self.assertRegex(judge({"total": "Сумма", "text": "30"}, {"round_trip": trip(total="20")}), "is '20', expected '30'")
+        self.assertRegex(judge({"total": "Сумма", "text": "30"}, {"round_trip": trip()}), "no total")
+        self.assertIsNone(judge({"value": "Сумма", "row": 1, "text": "30"}, {"round_trip": trip(value="30")}))
+        self.assertRegex(judge({"value": "Сумма", "row": 2, "text": "30"},
+                               {"round_trip": trip(value_error="no row 2 of 1")}),
+                         "did not read the attribute: no row 2 of 1")
+        self.assertIsNone(judge({"key": "Down"}, {"action": {"returned": True}, "round_trip": trip()}))
+
+
 if __name__ == "__main__":
     unittest.main()

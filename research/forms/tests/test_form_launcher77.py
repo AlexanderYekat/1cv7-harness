@@ -314,6 +314,11 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(adapter.platform_status([{"status": "failed"}]), "passed")
 
 
+def place(description):
+    """Where the table part is among the windows: the first number of its Browser section and its columns."""
+    return {key: description["browser"][key] for key in ("position", "columns")}
+
+
 class ConfigurationFormTests(unittest.TestCase):
     """Task 022: the controller opens a form of the configuration; its dialog comes from the opened base."""
 
@@ -354,9 +359,11 @@ class ConfigurationFormTests(unittest.TestCase):
         self.assertEqual(source["file"], self.fixtures.GROUP_FORM)
         listed, source = form.configuration_description(self.base / "1Cv7.MD",
                                                         "Справочник.Контрагенты.ФормаСписка.ФормаСписка")
-        self.assertEqual((source["path"], listed["browser"]), (self.fixtures.LIST, {"position": 26, "columns": 1}))
+        self.assertEqual((source["path"], place(listed)), (self.fixtures.LIST, {"position": 26, "columns": 1}))
         journal, source = form.configuration_description(self.base / "1Cv7.MD", "Журнал.Банк.ФормаСписка.ФормаСписка")
-        self.assertEqual((source["path"], journal["browser"]), (self.fixtures.JOURNAL, {"position": 26, "columns": 1}))
+        self.assertEqual((source["path"], place(journal)), (self.fixtures.JOURNAL, {"position": 26, "columns": 1}))
+        # A list takes only key steps (task 027).
+        self.assertEqual((listed["browser"]["document"], journal["browser"]["document"]), (False, False))
 
     def test_a_subordinate_catalog_and_a_catalog_edited_in_its_list_are_refused(self):
         md = self.base / "1Cv7.MD"
@@ -387,7 +394,10 @@ class ConfigurationFormTests(unittest.TestCase):
         self.assertEqual(description, form77().describe(self.fixtures.DIALOG))
         self.assertEqual((source["path"], source["file"]), (self.fixtures.PROCESSING, self.fixtures.PROCESSING_FORM))
         document, _ = form.configuration_description(self.base / "1Cv7.MD", "Документ.Выписка")
-        self.assertEqual(document["browser"], {"position": 26, "columns": 1})
+        self.assertEqual(place(document), {"position": 26, "columns": 1})
+        # Its columns with the window IDs kept for them (task 027): the table part takes table steps.
+        self.assertTrue(document["browser"]["document"])
+        self.assertEqual([(f["class"], f["window_id"]) for f in document["browser"]["fields"]], [("1CEDIT", 4178)])
         self.assertEqual({k: v for k, v in document.items() if k != "browser"},
                          form77().describe(self.fixtures.DOCUMENT_TEXT))
         with self.assertRaisesRegex(ValueError, "no form of Отчет.Нет"):
@@ -405,6 +415,32 @@ class ConfigurationFormTests(unittest.TestCase):
         plain.select_base(self.base)
         self.assertIsNone(plain.form)
         self.assertIsNone(launcher.Harness77Adapter().select_base(self.base))
+
+    def test_table_steps_are_resolved_before_1c_starts(self):
+        parameters = {"form_object": "Документ.Выписка", "steps": [
+            {"add_row": True}, {"cell": "Сумма", "text": "5"}, {"total": "сумма", "text": "5"}]}
+        adapter = form.FormAdapter()
+        adapter.commands(parameters, ["open", "result"])
+        adapter.select_base(self.base, "f" * 64)
+        text = adapter.controller(parameters)
+        self.assertIn('Контекст77Формы.Активизировать("Сумма", 1);', text)
+        self.assertIn("Ответ77 = Ответ77 + Harness77Таблица();", text)
+        unknown = dict(parameters, steps=[{"cell": "Цена", "text": "1"}])
+        with self.assertRaisesRegex(ValueError, "no column of the table part"):
+            adapter.controller(unknown)
+        # An ERT has no table part: refused before 1C starts, as an unknown element is.
+        ert = form.FormAdapter()
+        ert.commands({"steps": [{"key": "Down"}]}, ["open", "result"])
+        with self.assertRaisesRegex(ValueError, "a form of the configuration with a table part"):
+            ert.controller({"steps": [{"key": "Down"}]})
+
+    def test_a_key_is_one_press_of_its_virtual_key(self):
+        down, up = window.key_parameters(0x2D, True, 0x52)
+        self.assertEqual((down, up), (0x01520001, 0xC1520001))
+        self.assertEqual(window.key_parameters(0x0D, False, 0x1C), (0x001C0001, 0xC01C0001))
+        posted = window.Posted({"message": "WM_KEYDOWN/WM_KEYUP", "returned": True, "last_error": 0})
+        self.assertTrue(posted.done())
+        self.assertEqual((posted.outcome["returned"], posted.outcome["posted"]), (True, True))
 
 
 class TablePartWindowTests(unittest.TestCase):
