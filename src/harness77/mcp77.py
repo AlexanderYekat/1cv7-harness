@@ -229,6 +229,17 @@ TOOLS = (
           Arg("reindex_timeout_s", "--reindex-timeout-s", "number",
               "Запас к сроку открытия, если прошлый сеанс 1С на базе был прерван")],
          read_only=False, destructive=True, cancel_file=True),
+    Tool("suite", "Набор сценариев 1С 7.7", ("suite",),
+         "Последовательный запуск профилей проектов из TOML-манифеста на одном стенде. "
+         "Отдельный run.json для каждого сценария; общие suite.json и junit.xml. "
+         "Провал теста не останавливает набор, отмена запроса останавливает текущий run и набор.",
+         [Arg("suite", "--suite", "string", "TOML-манифест сценариев", required=True),
+          Arg("stand", "--stand", "string", "Профиль стенда TOML", required=True),
+          Arg("output_root", "--output-root", "string", "Корень результатов (по умолчанию .artifacts/suites)"),
+          Arg("suite_id", "--suite-id", "string", "Имя нового каталога набора (по умолчанию UUID)"),
+          *[Arg(f"{phase}_timeout_s", f"--{phase}-timeout-s", "number", f"Срок фазы {phase} каждого run, секунды")
+            for phase in ("open", "calculation", "cancel", "shutdown", "total", "reindex")]],
+         read_only=False, destructive=True, cancel_file=True),
     Tool("visual-compare", "Сравнение снимков формы", ("visual", "compare"),
          "Сравнить два PNG по пикселям вне масок; в новый каталог output пишутся diff.png и result.json. "
          "Код 1 — различия сверх допуска.",

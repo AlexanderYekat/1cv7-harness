@@ -148,7 +148,7 @@ class ServerProcessTests(unittest.TestCase):
     def test_tools_list(self):
         tools = {tool["name"]: tool for tool in self.client.request("tools/list")["result"]["tools"]}
         self.assertEqual(list(tools), ["lint", "compiler-protocol", "triage", "extract", "form-extract", "build",
-                                       "md-extract", "md-build", "run", "visual-compare"])
+                                       "md-extract", "md-build", "run", "suite", "visual-compare"])
         for tool in tools.values():
             self.assertFalse(tool["inputSchema"]["additionalProperties"])
             self.assertEqual(tool["outputSchema"], mcp77.OUTPUT_SCHEMA)
@@ -286,6 +286,27 @@ class ServerProcessTests(unittest.TestCase):
         self.assertEqual(*same(result, expected, [(self.dir / "mcp", self.dir / "cli")]))
         report = json.loads((self.dir / "mcp" / "mcp-equality" / "run.json").read_text(encoding="utf-8"))
         self.assertFalse(report["cancelled"])
+
+    def test_suite_runs_through_mcp_and_emits_linked_junit(self):
+        project, stand = simulation(self.dir / "sim-suite")
+        manifest = self.dir / "suite.toml"
+        manifest.write_text('schema_version=1\n[suite]\nid="mcp-suite"\n'
+                            '[[scenarios]]\nid="first"\nproject=' + json.dumps(str(project)) + '\n'
+                            '[[scenarios]]\nid="second"\nproject=' + json.dumps(str(project)) + '\n',
+                            encoding="utf-8")
+        result = self.client.call("suite", {"suite": str(manifest), "stand": str(stand),
+                                             "suite_id": "mcp-suite", "output_root": str(self.dir / "suites")})
+        content = result["structuredContent"]
+        self.assertEqual(content["exit_code"], 0, result)
+        self.assertTrue(any(a.startswith("--cancel-file=") for a in content["argv"]))
+        summary = content["stdout"]
+        self.assertEqual(summary["counts"], {"passed": 2, "failed": 0, "blocked": 0, "skipped": 0})
+        folder = Path(summary["suite_dir"])
+        report = json.loads((folder / "suite.json").read_text(encoding="utf-8"))
+        self.assertEqual(len({r["run_id"] for r in report["scenarios"]}), 2)
+        self.assertTrue((folder / "junit.xml").is_file())
+        for row in report["scenarios"]:
+            self.assertTrue((folder / row["report"]["path"]).is_file())
 
     def test_closed_input_answers_calls_in_flight(self):
         client = Client(self.dir)

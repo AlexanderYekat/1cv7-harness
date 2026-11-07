@@ -1,7 +1,7 @@
 # Контракты harness77 0.1
 
 Реализованы операции: `lint`, `compiler-protocol`, `extract`, `build`, `run`, `catalog`,
-`form-extract`, `triage`, `visual`, `md-extract`, `md-build`; `mcp` — сервер MCP над ними.
+`form-extract`, `triage`, `visual`, `md-extract`, `md-build`, `suite`; `mcp` — сервер MCP над ними.
 `harness77 --version` и `python -m harness77 --version` выводят версию пакета.
 У каждой операции есть `--help`. Пути разрешаются относительно CWD вызывающего;
 пакет, словарь и зависимости от CWD не зависят. Stdout/stderr CLI — UTF-8.
@@ -679,6 +679,67 @@ harness77 visual compare BASELINE.png ACTUAL.png --output NEW_DIR [--mask x,y,w,
 (`PW_RENDERFULLCONTENT`) серией до двух совпадающих вне курсора (до 6 попыток),
 затем скрывает окно. Другой launcher на запрос снимков отвечает отказом.
 
+## Набор сценариев — команда `suite` ([задача 029](tasks/029-scenario-suite.md))
+
+```text
+harness77 suite --suite SUITE.toml --stand STAND.toml [--output-root DIR] [--suite-id ID]
+                [--cancel-file NEW_FILE] [--open-timeout-s N] [--calculation-timeout-s N]
+                [--cancel-timeout-s N] [--shutdown-timeout-s N] [--total-timeout-s N]
+                [--reindex-timeout-s N]
+```
+
+Манифест: `schema_version = 1`, `[suite] id = "name"`, непустой список
+`[[scenarios]]` с `id = "scenario"`, `project = "relative/project.toml"`.
+Другие ключи отклоняются. Имена непустые, без управляющих символов, уникальны без
+учёта регистра. Путь проекта — от манифеста. Стенд один; сроки разрешаются для
+каждого проекта по правилам `run`, ключи CLI переопределяют сроки каждого сценария.
+
+Исполнение последовательное: полный `run` и новая копия базы для каждого профиля
+с `[configuration]`. `configuration.keep_copy = true` запрещён для набора.
+Общие отчёты находятся в новом каталоге `DIR/ID`
+(по умолчанию `.artifacts/suites/<UUID>`), дочерние результаты — рядом:
+
+- `suite.json`: `schema_version=1`, `operation=suite`, `suite_id`, `name`, `inputs`,
+  `platform`, `layout=shared-runs-v1`, `runs_dir`, время, `complete`, `cancelled`, итоговые `status`/`exit_code`, `counts`,
+  `scenarios` в порядке манифеста и свидетельство `junit` с хешем XML;
+- `DIR/runs/<run_id>/`: обычный результат `run`, его сборка и свидетельства;
+- `junit.xml`: структура `testsuites/testsuite/testcase`, один testcase на сценарий,
+  `classname` — имя набора.
+
+Строка `scenarios`: `id`, идентификатор профиля `project`, `run_id`, `report`
+(путь к перечитанному `run.json`, размер, SHA-256, полнота), `status`, `reason`,
+`duration_s`, `stages`, `problems`, `platform_checked`, `cancelled`, `timeout_phase`.
+У незапущенного сценария `run_id`/`report` — null; ошибка профиля также не создаёт
+дочерний запуск. Существующий каталог набора не перезаписывается. `--suite-id`
+допускает только ASCII-буквы, цифры, `_`, `-`, начиная с буквы или цифры, до 128 знаков.
+Имя `runs` зарезервировано. Все дочерние пути имеют одинаковую глубину независимо
+от длины имени набора. `report.path` — относительный путь `../runs/<run_id>/run.json`;
+для переноса результатов сохраняют каталог набора и указанные в нём дочерние каталоги.
+
+Общие JSON и XML публикуются атомарно каждый в своём файле: до первого запуска,
+перед запуском сценария, после него и по завершении набора. Между двумя файлами
+нет общей транзакции: потребитель проверяет `complete` и SHA-256 `junit` в JSON.
+Промежуточный JSON — `complete=false`, `status=blocked`, код 2; выполняемый сценарий
+также `blocked`, с пояснением об отсутствии полного результата.
+
+JUnit: `passed` — без дочернего исхода, `failed` — `failure`, `blocked` — `error`,
+незапущенный — `skipped`. `tests`, `failures`, `errors`, `skipped` дублируются на
+корне и testsuite. `system-out` содержит `run_id` и свидетельство дочернего отчёта.
+Кириллица сохраняется в UTF-8; недопустимые XML 1.0 символы заменяются U+FFFD.
+Проверенный ожидаемый отрицательный исход — `passed`, как у `run`.
+
+Код 0 — все сценарии прошли; 1 — есть провал без блокировки; 2 — блокировка,
+отмена, неполный набор. После обычного провала или ошибки входа одного проекта
+следующий сценарий выполняется. При Ctrl+C или появлении `--cancel-file` текущий
+`run` получает отмену, остальные — `skipped`. При отсутствии/несовпадении дочернего
+отчёта или исключении исполнителя набор останавливается. Нативное продолжение
+требует `shutdown.cleanup_verified` и `others_preserved`; для созданной копии —
+`removal.removed`, `lock.released`, `source_check.unchanged`. Неподтверждённая очистка
+делает текущую строку `blocked`, даже если дочерний `run` сообщил успех.
+Автоматических повторов, общей сессии 1С, общих данных и параллельного запуска нет.
+
+[Пример и подготовка профилей](../examples/scenario-suite/README.md).
+
 ## MCP-сервер — команда `mcp` ([задача 014](tasks/014-mcp-server.md))
 
 `harness77 mcp` — сервер Model Context Protocol на stdio: JSON-RPC 2.0, одно
@@ -709,7 +770,10 @@ harness77 visual compare BASELINE.png ACTUAL.png --output NEW_DIR [--mask x,y,w,
 
 `*` — обязательный. Нет в MCP: `catalog`, `visual approve` (эталон утверждает
 человек в CLI), `--output` у `lint`, `compiler-protocol`, `triage` (отчёт — в ответе).
-Подсказки: `lint`, `compiler-protocol`, `triage` — `readOnlyHint`; `run` —
+Дополнительно инструмент `suite` принимает обязательные `suite`, `stand`,
+необязательные `output_root`, `suite_id` и те же ключи сроков, что `run`.
+
+Подсказки: `lint`, `compiler-protocol`, `triage` — `readOnlyHint`; `run`, `suite` —
 `destructiveHint` (исполняет модуль на базе стенда); остальные пишут только новые файлы.
 
 Вызов — дочерний процесс `python -m harness77 <команда>` тем же интерпретатором,
@@ -727,9 +791,9 @@ harness77 visual compare BASELINE.png ACTUAL.png --output NEW_DIR [--mask x,y,w,
 
 Вызовы идут параллельно. С `_meta.progressToken` запроса сервер каждые 10 с шлёт
 `notifications/progress` (секунды от начала, растут). `notifications/cancelled`:
-`run` получает файл отмены (`--cancel-file`) и отменяется как по Ctrl+C;
+`run` и `suite` получают файл отмены (`--cancel-file`) и отменяются как по Ctrl+C;
 остальные операции доходят до конца (новые файлы не остаются недописанными); ответ
-на отменённый запрос не отправляется. Закрытый stdin отменяет активные `run` так же,
+на отменённый запрос не отправляется. Закрытый stdin отменяет активные `run` и `suite` так же,
 остальные вызовы завершаются; ответы отправляются, пока клиент читает; затем сервер
 выходит. Клиент, снимающий дерево процессов сервера (официальный Python SDK на
 Windows — через 2 с после закрытия stdin), снимает и `run` со своей 1С (она дочерний
