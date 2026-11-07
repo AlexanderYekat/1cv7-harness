@@ -6,6 +6,70 @@ the prepared saved target before Enter. Both bind a fresh owned document HWND.
 import re
 from datetime import date
 
+UNPOST_COMMAND = 0x806E  # 1crcrus.dll menus 135/253: Сделать документ не проведенным
+UNPOST_QUESTION = 'Подтвердите отмену проведения документа !'
+
+
+def unpost_answer(window, cancel=False):
+    import scenario77
+    if window.get('class') != '#32770' or scenario77.dialog_text(window) != UNPOST_QUESTION:
+        raise RuntimeError('unexpected native unpost confirmation')
+    button, _, issue = scenario77.answer_plan(dict(target=UNPOST_QUESTION, button='Нет' if cancel else 'Да'), window)
+    if issue or button.get('id') != (7 if cancel else 6):
+        raise RuntimeError(issue or 'native unpost answer button identity differs')
+    return button
+
+
+def checked_cursor(trip, inspection):
+    if (not trip.get('returned') or not trip.get('complete') or trip.get('diagnostics')
+            or trip.get('journal_error') or trip.get('journal_match') != '1'
+            or not trip.get('journal_current') or trip.get('journal_posted') not in ('0', '1')
+            or not trip.get('journal_value') or str(trip.get('journal_hwnd')) not in
+            [str(w['hwnd']) for w in inspection.get('chain', [])[:2]]):
+        raise RuntimeError('journal target/state was not independently verified')
+
+
+def unpost_menu(form, inspection):
+    """Read the native menu and update its UI state before dispatching a user command."""
+    import ctypes as C
+    from ctypes import wintypes as W
+    chain = inspection.get('chain', [])
+    if len(chain) < 4 or chain[2].get('class') != 'MDIClient':
+        raise RuntimeError('unpost requires an inspected MDI journal')
+    main = chain[-1]['hwnd']
+    if not form.alive(main):
+        raise RuntimeError('journal main window is not owned/alive')
+    user = form.user
+    user.GetMenu.argtypes = [W.HWND]; user.GetMenu.restype = W.HMENU
+    user.GetSubMenu.argtypes = [W.HMENU, C.c_int]; user.GetSubMenu.restype = W.HMENU
+    user.GetMenuItemCount.argtypes = [W.HMENU]
+    user.GetMenuItemID.argtypes = [W.HMENU, C.c_int]; user.GetMenuItemID.restype = W.UINT
+    user.GetMenuState.argtypes = [W.HMENU, W.UINT, W.UINT]; user.GetMenuState.restype = W.UINT
+    user.GetMenuStringW.argtypes = [W.HMENU, W.UINT, W.LPWSTR, C.c_int, W.UINT]
+    found = []
+    def visit(menu, depth=0):
+        if depth > 5:
+            raise RuntimeError('native menu nesting exceeds bound')
+        count = user.GetMenuItemCount(menu)
+        if not 0 <= count <= 200:
+            raise RuntimeError('invalid native menu size')
+        for index in range(count):
+            sub = user.GetSubMenu(menu, index)
+            if sub:
+                if not form.send(main, 0x117, sub, index)[0]:  # WM_INITMENUPOPUP: update enabled state
+                    raise RuntimeError('native menu state update failed')
+                visit(sub, depth + 1)
+            elif user.GetMenuItemID(menu, index) == UNPOST_COMMAND:
+                title = C.create_unicode_buffer(512)
+                user.GetMenuStringW(menu, UNPOST_COMMAND, title, len(title), 0)
+                flags = user.GetMenuState(menu, UNPOST_COMMAND, 0)
+                found.append(dict(command=UNPOST_COMMAND, caption=title.value, flags=flags,
+                                  enabled=flags != 0xFFFFFFFF and not flags & 3, main=main))
+    visit(user.GetMenu(main))
+    if len(found) != 1 or 'не проведенным' not in found[0]['caption'].casefold():
+        raise RuntimeError('native unpost menu command is missing or ambiguous: ' + str(found))
+    return found[0]
+
 
 def validate_period(parameters, previous, step):
     validate(parameters, parameters.get('form_object'))
@@ -107,6 +171,25 @@ def controller(text, settings, expected):
 
 def branches(items, kind):
     result = []
+    if any(s['kind'] == 'journal_unpost' for s in items):
+        result.append(f'''    Если (Номер77Шага <= -105000) И (Номер77Шага > -107000) Тогда
+        Попытка
+            Ссылка77 = Контекст77Формы.ТекущийДокумент;
+            Если Ссылка77 <> Объект77Данных Тогда Возврат "journal-error:journal target changed"; КонецЕсли;
+            Док77Чтения = СоздатьОбъект("Документ.{kind}");
+            Если Док77Чтения.НайтиДокумент(Ссылка77) <> 1 Тогда Возврат "journal-error:target missing"; КонецЕсли;
+            Расш77 = СоздатьОбъект("РасширениеФормы");
+            Расш77.УстановитьФорму(Контекст77Формы.Форма);
+            Ответ77 = "journal-current:" + Harness77Строка(Ссылка77) + РазделительСтрок
+                + "journal-match:1" + РазделительСтрок
+                + "journal-hwnd:" + Строка(Расш77.Дескриптор) + РазделительСтрок
+                + "journal-posted:" + Строка(Док77Чтения.Проведен()) + РазделительСтрок
+                + "journal-value:" + Harness77ПроверитьДанные(Объект77Данных);
+        Исключение
+            Ответ77 = "journal-error:" + Harness77Строка(ОписаниеОшибки());
+        КонецПопытки;
+    КонецЕсли;
+''')
     if any(s['kind'] == 'journal_period' for s in items):
         result.append('''    Если (Номер77Шага <= -102000) И (Номер77Шага > -104000) Тогда
         Попытка

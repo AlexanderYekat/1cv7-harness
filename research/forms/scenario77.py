@@ -44,14 +44,15 @@ answer its save question.
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
            "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}, "create": {}, "created": {},
-           "find_document": {"limit": int}, "close_form": {"closes": bool},
-           "journal_period": {"start": str, "end": str, "cancel": bool}}
+           "find_document": {"limit": int, "open": bool}, "close_form": {"closes": bool},
+           "journal_period": {"start": str, "end": str, "cancel": bool},
+           "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
@@ -168,6 +169,11 @@ def steps(parameters):
         if kind == "journal_period":
             import journal77
             journal77.validate_period(parameters, result, step)
+        if kind == 'journal_unpost':
+            if not any(s['kind'] == 'find_document' and s.get('open') is False for s in result) or not step.get('expected'):
+                raise ValueError('journal_unpost requires find_document open=false and expected readback')
+        if any(s['kind'] == 'find_document' and s.get('open') is False for s in result) and kind != 'journal_unpost':
+            raise ValueError('only journal_unpost may follow a journal cursor selection')
         if kind == "find_document":
             import journal77
             journal77.validate(parameters, parameters.get("form_object"))
@@ -204,7 +210,7 @@ def _number(value, where, least):
 
 def _target(kind, value, where):
     """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
-    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form", "journal_period"):
+    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form", "journal_period", "journal_unpost"):
         if value is not True:
             raise ValueError(f"{where} ({kind}): write {kind} = true")
         return kind
@@ -487,6 +493,8 @@ def step_function(items, table=False, journal_kind=None):
     if choice:
         import choice77
     state = "    Ответ77 = Ответ77 + Harness77Таблица();\n" if table else ""
+    if any(s['kind'] == 'find_document' and s.get('open') is False for s in items):
+        state = ''  # the active context remains a journal, never a document table
     if state and any(s["kind"] == "find_document" for s in items):
         state = ('    Если (Номер77Шага > -101000) ИЛИ (Номер77Шага < -101200) Тогда\n'
                  + state + '    КонецЕсли;\n')
@@ -591,6 +599,7 @@ def answer(text):
              "journal-reference": "journal_reference", "journal-error": "journal_error",
              "journal-current": "journal_current", "journal-match": "journal_match", "journal-opened": "journal_opened",
              "journal-start": "journal_start", "journal-end": "journal_end",
+             "journal-posted": "journal_posted", "journal-value": "journal_value",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
     record = {}
@@ -766,6 +775,10 @@ def judge(step, record, pending, form_open):
             return f"{name}: new unsaved document form was not verified"
         if step["kind"] == "created" and (trip.get("journal_saved") != "1" or not trip.get("journal_reference")):
             return f"{name}: saved created reference was not verified"
+        if step['kind'] == 'find_document' and step.get('open') is False:
+            if trip.get('journal_match') != '1' or not record.get('cursor_verified'):
+                return f'{name}: selected journal reference was not verified'
+            return None
         if step["kind"] == "find_document" and (trip.get("journal_opened") != "1"
                 or trip.get("journal_match") != "1" or not trip.get("journal_reference")
                 or not record.get("existing_form_verified")):

@@ -575,6 +575,11 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             tabular = step["kind"] == "key" or scenario77.table_step(step)
             control = windows.get(ids[step["record_id"]]) if "record_id" in step else table if tabular else None
             try:
+                if step['kind'] == 'journal_unpost':
+                    self.journal_unpost(form, current_inspection, step, record)
+                    record.update(form_open=True, issue=None, status='passed')
+                    records.append(record)
+                    continue
                 if step['kind'] == 'journal_period':
                     self.journal_period(form, current_inspection, step, record)
                     record.update(form_open=True, issue=None, status='passed')
@@ -588,6 +593,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 if step["kind"] in ("create", "find_document"):
                     created = (self.create_document(form, current_inspection, step, record) if step["kind"] == "create"
                                else self.find_document(form, current_inspection, step, record))
+                    if step['kind'] == 'find_document' and step.get('open') is False:
+                        record['form_open'] = form.alive(dialog)
+                        record['issue'] = scenario77.judge(step, record, [], record['form_open'])
+                        record['status'] = 'failed' if record['issue'] else 'passed'
+                        records.append(record)
+                        if record['issue']:
+                            break
+                        continue
                     self.description = self.created_description
                     current_inspection = created
                     ids = window_ids(self.description)
@@ -717,6 +730,54 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             inspection["final_form"] = current_inspection
         return records
 
+    def journal_unpost(self, form, inspection, step, record):
+        """Only the exact selected saved reference may receive the native unpost command."""
+        import journal77
+        from form_window77 import Pending
+        number = -105000 - 2 * step['index']
+        before = self.round_trip(number)
+        record['before_unpost'] = before
+        record['calls'] = [dict(before, number=number)]
+        journal77.checked_cursor(before, inspection)
+        menu = record['menu'] = journal77.unpost_menu(form, inspection)
+        if menu['enabled'] != step.get('enabled', True):
+            raise RuntimeError('native unpost menu enabled state differs from expectation')
+        record['action'] = dict(requested=False, command=journal77.UNPOST_COMMAND)
+        if menu['enabled']:
+            action = dict(requested=True, command=journal77.UNPOST_COMMAND, hwnd=inspection['chain'][1]['hwnd'],
+                          message='WM_COMMAND', identity_rechecked=True)
+            chain = Chain(form, action, Pending(form, action['hwnd'], 0x111, journal77.UNPOST_COMMAND, 0),
+                          form.top_windows(), finish_click)
+            record['action'] = action
+            try:
+                chain.wait()
+                self.settle(form, chain, step)
+                record['confirmation'] = chain.window
+                if chain.window is not None:
+                    button = journal77.unpost_answer(chain.window, step.get('cancel', False))
+                    record['answer'] = form.answer(chain.window, button)
+                    if not record['answer'].get('requested'):
+                        raise RuntimeError('unpost confirmation was not answered')
+                    chain.wait()
+                    self.settle(form, chain, step)
+                elif step.get('cancel'):
+                    raise RuntimeError('native unpost command provided no confirmation to cancel')
+                if chain.window is not None or not action.get('returned'):
+                    raise RuntimeError('unpost command did not finish or opened another window')
+            finally:
+                record['calls'] += chain.trips
+                if chain.window is not None:
+                    record['dismissed'] = self.dismiss(form, chain, step)
+        after = self.round_trip(number - 1)
+        record['after_unpost'] = after
+        record['calls'].append(dict(after, number=number - 1))
+        journal77.checked_cursor(after, inspection)
+        if after['journal_current'] != before['journal_current']:
+            raise RuntimeError('journal target changed during unpost')
+        expected_posted = before['journal_posted'] if step.get('cancel') else '0'
+        if after['journal_posted'] != expected_posted or after['journal_value'] != step['expected']:
+            raise RuntimeError('saved document/entries after native unpost differ from expectation')
+
     def journal_period(self, form, inspection, step, record):
         """Invoke the platform's native Interval command on the inspected journal."""
         table = next(c for c in inspection['controls'] if c['id'] == scenario77.TABLE_WINDOW_ID)
@@ -809,6 +870,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 break
         else:
             raise RuntimeError("document not found within journal search limit")
+        if step.get('open') is False:
+            record.update(cursor_verified=True, round_trip=trip)
+            return inspection
         record["action"] = form.post_key(table["hwnd"], *scenario77.KEYS["enter"])
         if not record["action"].get("returned"):
             raise RuntimeError("journal Enter could not be posted")
