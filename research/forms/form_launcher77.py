@@ -1171,7 +1171,10 @@ class FormAdapter(launcher.Harness77Adapter):
         name = form_object(parameters)
         settings = fixture77.options(parameters, name)
         self.parameters = dict(parameters)
-        commands = list(COMMANDS) + (["verify"] if settings and settings["verify"] is not None else [])
+        commands = list(COMMANDS) + (["post"] if settings and settings["post"] else []) + (
+            ["verify"] if settings and settings["verify"] is not None else [])
+        if "post" in commands and "post" not in requested:
+            raise ValueError("fixture_post requires a declared platform test with command post")
         if "verify" in commands and "verify" not in requested:
             raise ValueError("fixture_verify requires a declared platform test with command verify")
         unknown = [command for command in requested if command not in commands]

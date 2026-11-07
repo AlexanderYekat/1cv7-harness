@@ -381,3 +381,22 @@ python -B scripts/verify_reference_choice77.py --evidence .artifacts/stage28-cho
 сравнивает ссылки; `cancel = true` отменяет Escape. Исходная форма протокола
 harness77 не требует. [Задание](../../docs/tasks/028-reference-choice.md),
 [пример](../../examples/reference-choice/README.md).
+
+Проведение документа и чтение проводок (задача 030, копия стенда задачи 021):
+
+```powershell
+python -B research/forms/probe_posting77.py --stand .local/stage21-native/stand.toml --work .local/stage30-native/NEW `
+  --evidence .artifacts/stage30-posting-YYYYMMDD-N.json
+python -B scripts/verify_posting77.py --evidence .artifacts/stage30-posting-YYYYMMDD-N.json `
+  --suite .artifacts/suites/SUITE_ID --output .artifacts/stage30-acceptance-NEW.json
+```
+
+`fixture_post = true` добавляет `post` между `result` и `verify`; требует ссылку
+существующего документа, проверенную копию и явные тесты обеих команд. Новый объект
+проводит записанный документ, другой читает признак проведения; `fixture_verify`
+читает сохранённые проводки по ссылке документа. Первый охват — «Готовая продукция»,
+Дт 43 Кт 40, количество, сумма и ссылка товара. Верификатор сверяет протоколы,
+ответы контроллера, JSON/JUnit и очистку. `--case` выбирает случаи из свидетельств
+серии и записывает исключённые прогоны отдельно; наборы всегда проверяются целиком.
+[Задание](../../docs/tasks/030-document-posting.md),
+[пример и два набора](../../examples/document-posting/README.md).
