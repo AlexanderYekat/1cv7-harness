@@ -78,7 +78,7 @@ def step_issues(records, wrong_reopen=False, comment='Harness77 форма 033')
     return issues
 
 
-def check(folder, kind='success', expected_hash=None, readback=READBACK, step_validator=None):
+def check(folder, kind='success', expected_hash=None, readback=READBACK, step_validator=None, allow_fixture_posting=False):
     issues = []
     def require(condition, reason):
         if not condition:
@@ -91,7 +91,11 @@ def check(folder, kind='success', expected_hash=None, readback=READBACK, step_va
     require(report['platform_checked'] is True, 'no native check')
     require(report.get('configuration', {}).get('sha256') == BASE_MD_SHA256, 'configuration modules/forms changed')
     controller = (folder / 'native/ert-controller.1s').read_text(encoding='utf-8')
-    require('.Провести(' not in controller and '.СделатьНеПроведенным(' not in controller,
+    checked_controller = controller
+    if allow_fixture_posting:
+        before, setup = controller.split('Функция Harness77ПодготовитьДанные()', 1)
+        checked_controller = before + setup.split('КонецФункции', 1)[1]
+    require('.Провести(' not in checked_controller and '.СделатьНеПроведенным(' not in checked_controller,
             'programmatic posting found in controller')
     if expected_hash:
         require(digest(folder / 'run.json') == expected_hash, 'run report changed')

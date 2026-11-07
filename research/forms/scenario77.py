@@ -34,18 +34,24 @@ the same saved reference. Subsequent steps resolve against the newly inspected w
 Task 034 starts journal mode with ``{ create = "<native kind caption>" }``:
 Insert, the native kind chooser, a new unsaved owned form. ``{ created = true }``
 captures and reads its reference after UI save, before closing or reopening.
+
+Task 035 adds ``find_document = true`` to start journal_existing: bounded End/Up
+navigation, exact saved reference check, Enter and a fresh owned document form.
+``close_form = true`` sends WM_CLOSE to the inspected MDI frame; dialog steps
+answer its save question.
 """
 
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
-           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}, "create": {}, "created": {}}
-ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose")
+           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}, "create": {}, "created": {},
+           "find_document": {"limit": int}, "close_form": {"closes": bool}}
+ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
 COLUMN_KINDS = ("cell", "total", "choose")
@@ -153,11 +159,18 @@ def steps(parameters):
                 raise ValueError(f"{where} (reopen): requires a preceding scenario action or check")
             if (not isinstance(parameters.get("form_object"), str)
                     or not re.fullmatch(r"Документ\.[^\W\d]\w*", parameters["form_object"], re.IGNORECASE)
-                    or (parameters.get("fixture_mode", "existing") != "existing" and not
+                    or (parameters.get("fixture_mode", "existing") not in ("existing", "journal_existing") and not
                         (parameters.get("fixture_mode") == "journal" and any(s["kind"] == "created" for s in result)))
                     or not parameters.get("fixture_setup") or not parameters.get("fixture_verify")):
                 raise ValueError(f"{where} (reopen): requires an existing document fixture with verification")
             closed = None
+        if kind == "find_document":
+            import journal77
+            journal77.validate(parameters, parameters.get("form_object"))
+            if parameters.get("fixture_mode") != "journal_existing" or not parameters.get("fixture_setup") or result:
+                raise ValueError(f"{where}: find_document must start journal_existing with fixture_setup")
+            if step.get("limit", 100) > 200:
+                raise ValueError(f"{where}: find_document limit must be 1…200")
         if kind in ("create", "created"):
             import journal77
             journal77.validate(parameters, parameters.get("form_object"))
@@ -174,6 +187,8 @@ def steps(parameters):
         result.append(step)
     if parameters.get("fixture_mode") == "journal" and result[0]["kind"] != "create":
         raise ValueError("journal mode requires create as its first step")
+    if parameters.get("fixture_mode") == "journal_existing" and result[0]["kind"] != "find_document":
+        raise ValueError("journal_existing requires find_document as its first step")
     return result
 
 
@@ -185,7 +200,7 @@ def _number(value, where, least):
 
 def _target(kind, value, where):
     """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
-    if kind in ("add_row", "delete_row", "reopen", "created"):
+    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form"):
         if value is not True:
             raise ValueError(f"{where} ({kind}): write {kind} = true")
         return kind
@@ -468,6 +483,9 @@ def step_function(items, table=False, journal_kind=None):
     if choice:
         import choice77
     state = "    Ответ77 = Ответ77 + Harness77Таблица();\n" if table else ""
+    if state and any(s["kind"] == "find_document" for s in items):
+        state = ('    Если (Номер77Шага > -101000) ИЛИ (Номер77Шага < -101200) Тогда\n'
+                 + state + '    КонецЕсли;\n')
     work = '    Ответ77 = Ответ77 + Harness77Выбор(Номер77Шага);\n' if choice else ''
     journal_helper = ''
     if journal_kind:
@@ -564,6 +582,7 @@ def answer(text):
              "reopen-close": "reopen_close",
              "journal-new": "journal_new", "journal-hwnd": "journal_hwnd", "journal-saved": "journal_saved",
              "journal-reference": "journal_reference", "journal-error": "journal_error",
+             "journal-current": "journal_current", "journal-match": "journal_match", "journal-opened": "journal_opened",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
     record = {}
@@ -732,13 +751,17 @@ def judge(step, record, pending, form_open):
             return f"{name}: the saved document was not reopened: {trip.get('reopen_error') or trip}"
         if not (record.get("reopened") or {}).get("found"):
             return f"{name}: no owned form inspection after reopening"
-    if step["kind"] in ("create", "created"):
+    if step["kind"] in ("create", "created", "find_document"):
         if trip.get("journal_error"):
             return f"{name}: {trip['journal_error']}"
         if step["kind"] == "create" and (trip.get("journal_new") != "1" or not record.get("new_form_verified")):
             return f"{name}: new unsaved document form was not verified"
         if step["kind"] == "created" and (trip.get("journal_saved") != "1" or not trip.get("journal_reference")):
             return f"{name}: saved created reference was not verified"
+        if step["kind"] == "find_document" and (trip.get("journal_opened") != "1"
+                or trip.get("journal_match") != "1" or not trip.get("journal_reference")
+                or not record.get("existing_form_verified")):
+            return f"{name}: existing document reference/window was not verified"
     if step.get("closes") and form_open:
         return f"{name}: the form did not close"
     if not form_open and not step.get("closes") and step["kind"] not in ("message", "no_message"):

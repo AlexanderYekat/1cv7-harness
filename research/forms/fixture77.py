@@ -1,4 +1,4 @@
-"""Prepare data once in a run's copy and verify after closing (tasks 024–034).
+"""Prepare data once in a run's copy and verify after closing (tasks 024–035).
 
 The snippets are ordinary trusted 1C test code, just like an ERT test module. The
 adapter must require the run's verified configuration copy before executing them.
@@ -18,13 +18,13 @@ def options(parameters, name):
     verify = parameters.get("fixture_verify")
     if not isinstance(setup, str) or not setup.strip():
         raise ValueError("fixture_setup must be a non-empty 1C function body returning a reference")
-    if mode not in ("existing", "owner", "journal"):
-        raise ValueError("fixture_mode must be existing, owner or journal")
-    if mode == "journal":
+    if mode not in ("existing", "owner", "journal", "journal_existing"):
+        raise ValueError("fixture_mode must be existing, owner, journal or journal_existing")
+    if mode in ("journal", "journal_existing"):
         import journal77
         journal77.validate(parameters, name)
     elif "journal_form" in parameters:
-        raise ValueError("journal_form requires fixture_mode journal")
+        raise ValueError("journal_form requires fixture_mode journal or journal_existing")
     if verify is not None and (not isinstance(verify, str) or not verify.strip()):
         raise ValueError("fixture_verify must be a non-empty 1C function body returning a string")
     for code in (setup, verify):
@@ -88,7 +88,7 @@ def context(name, settings, metadata):
 
 
 def open_arguments(name, settings):
-    if settings["mode"] == "journal":
+    if settings["mode"] in ("journal", "journal_existing"):
         parts = settings["journal"].split(".")
         return f'"Журнал.{parts[1]}.{parts[3]}", Контекст77'
     if settings["mode"] == "existing":
@@ -136,6 +136,12 @@ def controller(text, settings, expected):
     Если Ошибка77Данных <> "" Тогда
         Ответ77 = Ответ77 + "fixture-error:" + Ошибка77Данных + РазделительСтрок;
 '''
+    if settings["mode"] == "journal_existing":
+        prefix = prefix.replace('            Ошибка77Данных = Harness77ТипДанных(Объект77Данных);',
+                                '''            Ошибка77Данных = Harness77ТипДанных(Объект77Данных);
+            Если Ошибка77Данных = "" Тогда
+                Ответ77 = Ответ77 + "fixture-initial:" + Harness77ПроверитьДанные(Объект77Данных) + РазделительСтрок;
+            КонецЕсли;''')
     postings = ([{"action": "post", "command": "post"}] if settings.get("post") else []) + [
         dict(step, command=step["action"] + "-" + step["id"]) for step in settings.get("operations", [])]
     for step in postings:
@@ -181,7 +187,8 @@ def controller(text, settings, expected):
     branch = '    Если (Команда = "check") ИЛИ (Команда = "open") Тогда'
     if text.count(branch) != 1 or text.count("Функция Harness77Ert(") != 1:
         raise ValueError("unexpected form controller layout for fixtures")
-    return ("Перем Объект77Данных, Попытка77Данных, Ошибка77Данных;\n" + text.replace(
+    return (("Перем Объект77Подготовки;\n" if settings["mode"] == "journal_existing" else "")
+            + "Перем Объект77Данных, Попытка77Данных, Ошибка77Данных;\n" + text.replace(
         "Функция Harness77Ert(", helpers + "Функция Harness77Ert(").replace(
             branch, prefix + branch.replace("    Если", "    ИначеЕсли", 1))
             + '\nПопытка77Данных = 0; Ошибка77Данных = "";\n')

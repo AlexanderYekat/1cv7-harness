@@ -1,7 +1,7 @@
-"""Task 034: create through a journal's Insert and native document-kind chooser.
+"""Tasks 034–035: create or find/open through a journal's native keyboard commands.
 
-No document is created/written/posted by the controller. A captured reference
-comes only from the new form after a UI save, and is read back independently.
+034 captures a newly saved reference; 035 compares every cursor reference with
+the prepared saved target before Enter. Both bind a fresh owned document HWND.
 """
 import re
 
@@ -58,7 +58,42 @@ def controller(text, settings, expected):
 def branches(items, kind):
     result = []
     for step in items:
-        if step['kind'] == 'create':
+        if step['kind'] == 'find_document':
+            result.append('''    Если (Номер77Шага <= -101000) И (Номер77Шага >= -101200) Тогда
+        Попытка
+            Ссылка77 = Контекст77Формы.ТекущийДокумент;
+            Расш77 = СоздатьОбъект("РасширениеФормы");
+            Расш77.УстановитьФорму(Контекст77Формы.Форма);
+            Ответ77 = "journal-current:" + Harness77Строка(Ссылка77) + РазделительСтрок
+                + "journal-hwnd:" + Строка(Расш77.Дескриптор) + РазделительСтрок
+                + "journal-match:" + Строка(?(Ссылка77 = Объект77Данных, 1, 0));
+        Исключение
+            Ответ77 = "journal-error:" + Harness77Строка(ОписаниеОшибки());
+        КонецПопытки;
+    КонецЕсли;
+''')
+            body = f'''            Сервис77 = СоздатьОбъект("Сервис");
+            Новый77Контекст = 0;
+            Если Сервис77.АктивныйКонтекст(Новый77Контекст) <> 1 Тогда
+                Возврат "journal-error:no active document context";
+            КонецЕсли;
+            Ссылка77 = Новый77Контекст.ТекущийДокумент();
+            Если (ТипЗначенияСтр(Ссылка77) <> "Документ") ИЛИ (ВРег(Ссылка77.Вид()) <> ВРег("{kind}")) Тогда
+                Возврат "journal-error:opened document kind mismatch";
+            КонецЕсли;
+            Если Ссылка77 <> Объект77Данных Тогда Возврат "journal-error:opened another document"; КонецЕсли;
+            Док77Чтения = СоздатьОбъект("Документ.{kind}");
+            Если (Ссылка77.Выбран() <> 1) ИЛИ (Док77Чтения.НайтиДокумент(Ссылка77) <> 1) Тогда
+                Возврат "journal-error:opened document is not saved";
+            КонецЕсли;
+            Контекст77Формы = Новый77Контекст;
+            Расш77 = СоздатьОбъект("РасширениеФормы");
+            Расш77.УстановитьФорму(Контекст77Формы.Форма);
+            Ответ77 = "journal-opened:1" + РазделительСтрок + "journal-match:1" + РазделительСтрок
+                + "journal-reference:" + Harness77Строка(Ссылка77) + РазделительСтрок
+                + "journal-hwnd:" + Строка(Расш77.Дескриптор);
+'''
+        elif step['kind'] == 'create':
             body = f'''            Сервис77 = СоздатьОбъект("Сервис");
             Новый77Контекст = 0;
             Если Сервис77.АктивныйКонтекст(Новый77Контекст) <> 1 Тогда

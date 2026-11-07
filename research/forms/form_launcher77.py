@@ -81,6 +81,10 @@ document kind through its native chooser, verify the new unsaved context/HWND,
 then resolve steps against the document form. Capture its reference after UI save
 with ``created``; ``reopen`` and independent verification use that same reference.
 
+Task 035 adds journal_existing and find_document: navigate the journal with
+End/Up, read each current reference, Enter only on the exact fixture reference.
+close_form sends WM_CLOSE to the inspected MDI frame for a native save question.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -571,8 +575,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             tabular = step["kind"] == "key" or scenario77.table_step(step)
             control = windows.get(ids[step["record_id"]]) if "record_id" in step else table if tabular else None
             try:
-                if step["kind"] == "create":
-                    created = self.create_document(form, current_inspection, step, record)
+                if step["kind"] == "close_form":
+                    chain_windows = current_inspection.get("chain", [])
+                    if len(chain_windows) < 3 or chain_windows[2].get("class") != "MDIClient":
+                        raise RuntimeError("close_form requires an inspected MDI document frame")
+                    control = chain_windows[1]
+                if step["kind"] in ("create", "find_document"):
+                    created = (self.create_document(form, current_inspection, step, record) if step["kind"] == "create"
+                               else self.find_document(form, current_inspection, step, record))
                     self.description = self.created_description
                     current_inspection = created
                     ids = window_ids(self.description)
@@ -702,6 +712,60 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             inspection["final_form"] = current_inspection
         return records
 
+    def find_document(self, form, inspection, step, record):
+        """Search the owned journal by keyboard, read each reference, open the exact match with Enter."""
+        from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+        table = next(c for c in inspection["controls"] if c["id"] == scenario77.TABLE_WINDOW_ID)
+        journal_handles = [w["hwnd"] for w in inspection["chain"][:2]]
+        before = {w["hwnd"] for w in form.inventory()}
+        record["focus"] = form.give_focus(inspection["chain"][0]["hwnd"], table["hwnd"])
+        record["search"] = []
+        record["calls"] = []
+        for offset in range(step.get("limit", 100)):
+            if self.stopped.is_set():
+                raise RuntimeError("journal search cancelled")
+            key = "end" if offset == 0 else "up"
+            action = form.post_key(table["hwnd"], *scenario77.KEYS[key])
+            row = {"action": action}
+            record["search"].append(row)
+            if not action.get("returned"):
+                raise RuntimeError("journal navigation key could not be posted")
+            trip = self.round_trip(-101000 - offset)
+            row["round_trip"] = trip
+            record["calls"].append(dict(trip, number=-101000 - offset))
+            if (not trip.get("returned") or not trip.get("complete") or trip.get("diagnostics")
+                    or trip.get("journal_error") or trip.get("journal_match") not in ("0", "1")
+                    or "journal_current" not in trip or int(trip.get("journal_hwnd", "0")) not in journal_handles):
+                raise RuntimeError("journal cursor/reference could not be verified: " + str(trip))
+            if trip["journal_match"] == "1":
+                break
+        else:
+            raise RuntimeError("document not found within journal search limit")
+        record["action"] = form.post_key(table["hwnd"], *scenario77.KEYS["enter"])
+        if not record["action"].get("returned"):
+            raise RuntimeError("journal Enter could not be posted")
+        trip = self.round_trip(step["index"])
+        record["round_trip"] = trip
+        record["calls"].append(dict(trip, number=step["index"]))
+        if (not trip.get("returned") or not trip.get("complete") or trip.get("diagnostics")
+                or trip.get("journal_opened") != "1" or trip.get("journal_match") != "1"
+                or not trip.get("journal_reference") or trip.get("journal_error")):
+            raise RuntimeError("opened document reference mismatch: " + str(trip))
+        description = self.created_description
+        expected = expected_geometry(description)
+        opened = form.inspect(list(expected))
+        record["opened_form"] = opened
+        if not opened.get("found"):
+            raise RuntimeError("existing document form not found")
+        opened["units"] = fit_units(expected, {c["id"]: tuple(c["rect"]) for c in opened["controls"]},
+                                    edged=edged_ids(description))
+        issues = judge_layout(description, opened) + judge_captions(description, opened)
+        hwnd = int(trip.get("journal_hwnd", "0"))
+        if issues or hwnd not in [w["hwnd"] for w in opened["chain"][:2]] or hwnd in before:
+            raise RuntimeError("existing form identity/layout mismatch: " + str(issues))
+        record["existing_form_verified"] = True
+        return opened
+
     def create_document(self, form, inspection, step, record):
         """Insert in the owned journal, answer its kind chooser, bind the new unsaved form."""
         import journal77
@@ -794,6 +858,12 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     def begin(self, form, inspection, step, control, ids, windows):
         """The action of a step with its last message pending: the Chain after its return or first window."""
         seen = form.top_windows()
+        if step["kind"] == "close_form":
+            from form_window77 import Pending
+            record = dict(message="WM_CLOSE", hwnd=control["hwnd"], identity_rechecked=True, requested=True)
+            chain = Chain(form, record, Pending(form, control["hwnd"], 0x0010, 0, 0), seen, finish_click)
+            chain.wait()
+            return chain
         if step["kind"] == "choose":
             return self.begin_choice(form, inspection, step, control, seen)
         if step["kind"] in scenario77.ACTIONS and step["kind"] not in ("click", "input"):
@@ -1301,7 +1371,7 @@ class FormAdapter(launcher.Harness77Adapter):
             self.configuration = PINNED["1Cv7.MD"]
         if name is not None:
             self.form = configuration_description(base / "1Cv7.MD", name, fixture=settings)
-        if settings and settings["mode"] == "journal":
+        if settings and settings["mode"] in ("journal", "journal_existing"):
             self.journal_form = configuration_description(base / "1Cv7.MD", settings["journal"])
         if settings:
             from harness77.metadata77 import Metadata
@@ -1312,8 +1382,8 @@ class FormAdapter(launcher.Harness77Adapter):
         actions(parameters)
         name = form_object(parameters)
         settings = fixture77.options(parameters, name)
-        if settings and settings["mode"] == "journal" and parsed_steps is None:
-            raise ValueError("journal mode requires create steps")
+        if settings and settings["mode"] in ("journal", "journal_existing") and parsed_steps is None:
+            raise ValueError("journal mode requires create or find_document steps")
         self.parameters = dict(parameters)
         commands = list(COMMANDS) + fixture77.commands(settings)
         if settings and settings.get("operations"):
