@@ -104,6 +104,38 @@ class FixtureTests(unittest.TestCase):
             self.assertEqual(row["status"], "blocked")
             self.assertIn("fixture_setup_failed", error)
 
+    def test_lifecycle_requires_safe_document_and_all_declared_checks(self):
+        p = dict(form_object="Документ.ГотоваяПродукция", fixture_setup="Возврат 0;",
+                 fixture_verify='Возврат "0";', fixture_operations=[{"id": "cancel", "action": "unpost"}])
+        commands = ["unpost-cancel", "verify-cancel", "verify"]
+        adapter = form.FormAdapter()
+        self.assertEqual(adapter.commands(p, commands), ["check", "open", "result"] + commands)
+        for changes in ({"fixture_post": True}, {"fixture_verify": None}, {"fixture_operations": []},
+                        {"fixture_operations": "post"}, {"fixture_operations": [{"id": "x", "action": "delete"}]},
+                        {"fixture_operations": [{"id": "x", "action": "post"}] * 2},
+                        {"fixture_operations": [{"id": "../x", "action": "post"}]},
+                        {"fixture_operations": [{"id": "x", "action": "post", "before": 1}]},
+                        {"form_object": "Справочник.Банки.ФормаЭлемента"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                adapter.commands(dict(p, **changes), commands)
+        for command in commands:
+            with self.assertRaisesRegex(ValueError, "declared platform tests"):
+                adapter.commands(p, [c for c in commands if c != command])
+        adapter.commands(p, commands)
+        with self.assertRaisesRegex(ValueError, "verified base copy"):
+            adapter.select_base(Path("does-not-exist"))
+
+    def test_unposting_requires_successful_return_and_persisted_zero(self):
+        for returned, posted, status in ((1, 0, "passed"), (0, 0, "failed"), (1, 1, "failed"), (0, 1, "failed")):
+            row = {"diagnostics": []}
+            fixture77.operation("unpost-cancel", [f"post-return:{returned}", f"post-posted:{posted}"], row)
+            self.assertEqual(row["status"], status)
+        row = {"diagnostics": []}
+        self.assertIn("protocol_invalid", fixture77.operation("unpost-cancel", ["post-return:1"], row)[1])
+        row = {"diagnostics": []}
+        fixture77.operation("verify-cancel", ["fixture-value:0|0|1|"], row)
+        self.assertEqual((row["status"], row["value"]), ("passed", "0|0|1|"))
+
     def test_verification_is_not_a_form_marker_and_errors_fail(self):
         adapter = form.FormAdapter()
         for lines, status, value in [(["selected:x", "fixture-value:saved"], "passed", "saved"),

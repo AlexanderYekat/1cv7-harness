@@ -4,7 +4,9 @@ The snippets are ordinary trusted 1C test code, just like an ERT test module. Th
 adapter must require the run's verified configuration copy before executing them.
 """
 
-KEYS = ("fixture_setup", "fixture_mode", "fixture_verify", "fixture_post")
+import re
+
+KEYS = ("fixture_setup", "fixture_mode", "fixture_verify", "fixture_post", "fixture_operations")
 
 
 def options(parameters, name):
@@ -34,7 +36,36 @@ def options(parameters, name):
         raise ValueError("fixture_post must be true when specified")
     if post and (not document or mode != "existing" or verify is None):
         raise ValueError("fixture_post requires an existing document and fixture_verify")
-    return {"setup": setup, "verify": verify, "mode": mode, "post": post}
+    operations = parameters.get("fixture_operations", [])
+    if "fixture_operations" in parameters:
+        if post or not document or mode != "existing" or verify is None:
+            raise ValueError("fixture_operations requires an existing document, fixture_verify and no fixture_post")
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 20:
+            raise ValueError("fixture_operations must contain 1 to 20 operations")
+        ids = set()
+        for step in operations:
+            if not isinstance(step, dict) or set(step) - {"id", "action", "before"}:
+                raise ValueError("invalid fixture operation fields")
+            id_ = step.get("id")
+            if not isinstance(id_, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,23}", id_) or id_ in ids:
+                raise ValueError("fixture operation needs a unique short ASCII id")
+            ids.add(id_)
+            if step.get("action") not in ("post", "unpost"):
+                raise ValueError("fixture operation action must be post or unpost")
+            before = step.get("before", "")
+            if not isinstance(before, str) or "\0" in before:
+                raise ValueError("fixture operation before must be 1C code without NUL")
+            before.encode("cp1251")
+    return {"setup": setup, "verify": verify, "mode": mode, "post": post, "operations": operations}
+
+
+def commands(settings):
+    if not settings:
+        return []
+    result = ["post"] if settings["post"] else []
+    for step in settings.get("operations", []):
+        result += [step["action"] + "-" + step["id"], "verify-" + step["id"]]
+    return result + (["verify"] if settings["verify"] is not None else [])
 
 
 def context(name, settings, metadata):
@@ -92,14 +123,17 @@ def controller(text, settings, expected):
     Если Ошибка77Данных <> "" Тогда
         Ответ77 = Ответ77 + "fixture-error:" + Ошибка77Данных + РазделительСтрок;
 '''
-    if settings.get("post"):
-        prefix += '''    ИначеЕсли Команда = "post" Тогда
+    postings = ([{"action": "post", "command": "post"}] if settings.get("post") else []) + [
+        dict(step, command=step["action"] + "-" + step["id"]) for step in settings.get("operations", [])]
+    for step in postings:
+        branch_text = '''    ИначеЕсли Команда = "__COMMAND__" Тогда
         Попытка
             Док77Проведения = СоздатьОбъект("Документ." + Объект77Данных.Вид());
             Если Док77Проведения.НайтиДокумент(Объект77Данных) <> 1 Тогда
                 Ответ77 = Ответ77 + "post-error:prepared document not found" + РазделительСтрок;
             Иначе
-                Результат77Проведения = Док77Проведения.Провести(1);
+                __BEFORE__
+                Результат77Проведения = Док77Проведения.__METHOD__;
                 Ответ77 = Ответ77 + "post-return:" + Строка(Результат77Проведения) + РазделительСтрок;
                 // Read persisted state through a new object, not the posting object's cached state.
                 Док77Проверки = СоздатьОбъект("Документ." + Объект77Данных.Вид());
@@ -113,8 +147,13 @@ def controller(text, settings, expected):
             Ответ77 = Ответ77 + "post-error:" + ОписаниеОшибки() + РазделительСтрок;
         КонецПопытки;
 '''
+        prefix += branch_text.replace("__COMMAND__", step["command"]).replace(
+            "__BEFORE__", step.get("before", "")).replace("__METHOD__", "Провести(1)" if step["action"] == "post"
+                                                        else "СделатьНеПроведенным()")
     if settings["verify"] is not None:
-        prefix += '''    ИначеЕсли Команда = "verify" Тогда
+        verify_commands = ["verify"] + ["verify-" + step["id"] for step in settings.get("operations", [])]
+        condition = " ИЛИ ".join('(Команда = ' + literal(cmd) + ')' for cmd in verify_commands)
+        prefix += '''    ИначеЕсли __VERIFY__ Тогда
         Попытка
             Итог77Данных = Harness77ПроверитьДанные(Объект77Данных);
             Если ТипЗначенияСтр(Итог77Данных) = "Строка" Тогда
@@ -125,7 +164,7 @@ def controller(text, settings, expected):
         Исключение
             Ответ77 = Ответ77 + "fixture-verify-error:" + ОписаниеОшибки() + РазделительСтрок;
         КонецПопытки;
-'''
+'''.replace("__VERIFY__", condition)
     branch = '    Если (Команда = "check") ИЛИ (Команда = "open") Тогда'
     if text.count(branch) != 1 or text.count("Функция Harness77Ert(") != 1:
         raise ValueError("unexpected form controller layout for fixtures")
@@ -142,7 +181,7 @@ def operation(command, lines, row):
         row.update(status="blocked" if errors[0].startswith("fixture-error:") else "failed",
                    fixture_errors=errors)
         return True, "fixture_setup_failed: " + errors[0] if row["status"] == "blocked" else None
-    if command == "post":
+    if command == "post" or command.startswith(("post-", "unpost-")):
         returned = [line[12:].strip() for line in lines if line.startswith("post-return:")]
         posted = [line[12:].strip() for line in lines if line.startswith("post-posted:")]
         errors = [line[len("post-error:"):] for line in lines if line.startswith("post-error:")]
@@ -159,9 +198,9 @@ def operation(command, lines, row):
             row["status"] = "blocked"
             return True, "fixture_post_protocol_invalid: missing or malformed posting result"
         else:
-            row["status"] = "passed" if returned == posted == ["1"] else "failed"
+            row["status"] = "passed" if returned == ["1"] and posted == (["0"] if command.startswith("unpost-") else ["1"]) else "failed"
         return True, None
-    if command == "verify":
+    if command == "verify" or command.startswith("verify-"):
         values = [line[len("fixture-value:"):] for line in lines if line.startswith("fixture-value:")]
         valid = len(values) == 1 and not row["diagnostics"] and all(
             line.startswith(("selected:", "fixture-value:")) for line in lines)

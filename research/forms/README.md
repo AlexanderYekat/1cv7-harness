@@ -400,3 +400,10 @@ python -B scripts/verify_posting77.py --evidence .artifacts/stage30-posting-YYYY
 серии и записывает исключённые прогоны отдельно; наборы всегда проверяются целиком.
 [Задание](../../docs/tasks/030-document-posting.md),
 [пример и два набора](../../examples/document-posting/README.md).
+
+Задача 031 — [перепроведение и отмена проведения](../../docs/tasks/031-document-lifecycle.md).
+`fixture_operations` выполняет последовательность `post`/`unpost` на одной ссылке
+документа с проверкой сохранённых проводок после каждого действия. Пример,
+генератор профилей и два набора — [document-lifecycle](../../examples/document-lifecycle/README.md).
+`scripts/verify_lifecycle77.py` независимо сверяет ответы контроллера, протоколы,
+проводки каждого состояния, JSON/JUnit и очистку.
