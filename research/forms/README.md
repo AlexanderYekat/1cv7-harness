@@ -364,3 +364,20 @@ python -B scripts/verify_table_part77.py --evidence .artifacts/stage27-table-par
 
 Случаи и ожидания — в [задании](../../docs/tasks/027-table-part-steps.md), сценарий на неизменённой
 форме документа — в [examples/table-part](../../examples/table-part/README.md).
+
+Выбор ссылочного значения (задача 028, тот же стенд и отдельная копия на каждый случай):
+
+```powershell
+python -B research/forms/probe_reference77.py --stand .local/stage21-native/stand.toml --work .local/stage28-native/NEW `
+  --evidence .artifacts/stage28-choice-YYYYMMDD-N.json [--case q-select ...] [--dry-run]
+python -B scripts/verify_reference_choice77.py --evidence .artifacts/stage28-choice-YYYYMMDD-2.json `
+  --example-run <run_id> --example-run <run_id> --regression 027=<run_id> --regression 026=<run_id> `
+  --regression 025=<run_id> --output .artifacts/stage28-acceptance-NEW.json
+```
+
+Контроллер и проверка новых MDI-окон — `choice77.py`; имя не совпадает с
+`platform77/reference77.py`. Шаг `choose` работает со ссылочной колонкой документа,
+ставит курсор списка на единственный элемент с полным именем, выбирает Enter и
+сравнивает ссылки; `cancel = true` отменяет Escape. Исходная форма протокола
+harness77 не требует. [Задание](../../docs/tasks/028-reference-choice.md),
+[пример](../../examples/reference-choice/README.md).

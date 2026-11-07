@@ -31,16 +31,16 @@ controller reports the rows, the current row and column with every call of a tab
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
-           "key": {"closes": bool}}
-ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key")
+           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}}
+ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose")
 # Steps of the table part of a document's form (task 027); key also works in a list.
-TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total")
-COLUMN_KINDS = ("cell", "total")
+TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
+COLUMN_KINDS = ("cell", "total", "choose")
 # Keys of a table part or a list: (virtual-key code, extended); F2…F9 are 0x71…0x78.
 KEYS = {"insert": ("Insert", 0x2D, True), "delete": ("Delete", 0x2E, True), "enter": ("Enter", 0x0D, False),
         "escape": ("Escape", 0x1B, False), "tab": ("Tab", 0x09, False), "up": ("Up", 0x26, True),
@@ -111,6 +111,9 @@ def steps(parameters):
                 step[key] = _text(item[key], f"{where} {key}") if expected is str else item[key]
         if kind in ("input", "value", "cell", "total") and "text" not in step:
             raise ValueError(f"{where} ({kind}): text is required")
+        if kind == "choose" and not (("text" in step and step["text"].strip() and "cancel" not in step)
+                                      or (step.get("cancel") is True and "text" not in step)):
+            raise ValueError(f"{where} (choose): either non-empty text or cancel = true")
         if kind == "dialog" and "button" in step:
             if not step["button"].strip():
                 raise ValueError(f"{where} (dialog): button is the caption of a button of the window")
@@ -198,6 +201,9 @@ def column(step, table):
         # A reference is chosen in a form of its own (F4, selection), which the steps do not open.
         raise ValueError(f"{where}: column {field['identifier']!r} holds a reference ({field['type']}); "
                          "text goes into a string, number or date column")
+    if step["kind"] == "choose" and (field.get("type") != "B" or not field.get("kind")
+                                     or field["class"] not in CLASSES["input"] or not NAME.match(field["identifier"] or "")):
+        raise ValueError(f"{where}: choose needs a column of a named catalog reference")
     return field
 
 
@@ -222,6 +228,8 @@ def resolve(items, description):
         if step["kind"] in COLUMN_KINDS:
             field = column(step, table)
             step.update(column=field["identifier"], column_class=field["class"], column_window=field.get("window_id"))
+            if step["kind"] == "choose":
+                step["catalog"] = field["kind"]
         if step["kind"] in ("click", "input", "check"):
             where = f"step {step['index']} ({step['kind']} {step['target']!r})"
             wanted = step["target"].casefold()
@@ -397,16 +405,20 @@ def step_function(items, table=False):
         КонецПопытки;
     КонецЕсли;
 ''' if step["kind"] == "value" and "row" not in step else _table_branch(step) for step in items)
+    choice = any(s["kind"] == "choose" for s in items)
+    if choice:
+        import choice77
     state = "    Ответ77 = Ответ77 + Harness77Таблица();\n" if table else ""
+    work = '    Ответ77 = Ответ77 + Harness77Выбор(Номер77Шага);\n' if choice else ''
     return f'''Функция Harness77Строка(Значение77)
     Возврат СтрЗаменить(СтрЗаменить(Строка(Значение77), "\\", "\\\\"), РазделительСтрок, "\\n");
 КонецФункции
 
-{TABLE_STATE if table else ""}Функция Harness77Step(Номер77Шага, Протокол, Метка) Экспорт
+{TABLE_STATE if table else ""}{choice77.function(items) if choice else ""}Функция Harness77Step(Номер77Шага, Протокол, Метка) Экспорт
     Сообщения77 = СоздатьОбъект("MessageView");
     Сообщения77.SetSystemMessages();
     Ответ77 = "";
-{branches}{state}    Сообщить("{STEP_MARKER}" + Метка);
+{branches}{work}{state}    Сообщить("{STEP_MARKER}" + Метка);
     Сообщения77.SaveToFile(Протокол);
     Сообщения77.Clear();
     Возврат Ответ77;
@@ -424,6 +436,9 @@ def controller(text, items, table=False):
         raise ValueError("unexpected form controller layout for steps")
     text = text.replace(SAVE, SAVE.replace("    Возврат", '    Если Команда = "open" Тогда\n'
                                                      "        Сообщения77.Clear();\n    КонецЕсли;\n    Возврат", 1))
+    if any(s["kind"] == "choose" for s in items):
+        import choice77
+        text = choice77.GLOBALS + text
     return text.replace("Функция Harness77Ert(", step_function(items, table) + "Функция Harness77Ert(", 1)
 
 
@@ -481,7 +496,8 @@ def answer(text):
     1C refused in a table step's own work.
     """
     names = {"rows": "rows", "row": "row", "column": "column", "total": "total", "error": "table_error",
-             "state-error": "state_error"}
+             "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
+             "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
     record = {}
     for line in text.splitlines():
         if line.startswith(VALUE):
@@ -493,9 +509,9 @@ def answer(text):
             if not separator or name not in names:
                 continue
             rest = _unescape(rest)
-            if name in ("rows", "row"):
+            if name in ("rows", "row", "choice-hwnd", "choice-ready", "choice-result"):
                 try:
-                    record[name] = int(rest.strip())
+                    record[names[name]] = int(rest.strip())
                 except ValueError:
                     pass
                 continue
@@ -539,7 +555,7 @@ def merge_trips(trips):
     if error:
         merged["error"] = error
     merged.update({key: trips[-1][key] for key in ("rows", "row", "column", "state_error", "table_error", "value",
-                                                   "value_error", "total") if key in trips[-1]})
+                                                   "value_error", "total", "choice_result", "choice_value") if key in trips[-1]})
     return merged
 
 
@@ -617,6 +633,8 @@ def judge(step, record, pending, form_open):
                 return (f"{name}: {action['failed_stage']} failed{after}: "
                         + (action.get("reason") or "the message did not return"))
             return f"{name}: {action.get('message') or 'the message'} did not return{after}"
+        if action.get("choice") and not action.get("choice_verified"):
+            return f"{name}: the returned reference was not verified"
     trip = record.get("round_trip") or {}
     if not trip.get("returned"):
         return f"{name}: 1C did not answer after the step: {trip.get('error') or 'no answer'}"

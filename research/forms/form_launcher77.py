@@ -348,6 +348,7 @@ def configuration_description(md_path, name, fixture=None):
             for field in table["fields"]:
                 found = attributes.get((field["identifier"] or "").casefold())
                 field["type"] = found.code if found is not None else None
+                field["kind"] = found.kind if found is not None else None
         description["browser"] = table
     return description, {"form_object": name, "md_sha256": sha256(md_path), "path": form.path, "file": form.file}
 
@@ -550,6 +551,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         table = windows.get(scenario77.TABLE_WINDOW_ID)
         records, pending, chain = [], [], None
         self.calls = {}
+        self.pending_choice = None
         for step in self.steps:
             record = dict(step)
             # A step of the table part (task 027) works with its window, as an element step with its control's.
@@ -567,11 +569,15 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                                                                               shown["enabled"] else "the element is hidden"),
                                             "state": shown}
                     else:
+                        before_windows = {w["hwnd"] for w in form.inventory()}
                         chain = self.begin(form, inspection, step, control, ids, windows)
                         record["action"] = chain.record
                         if chain.before is not None:
                             record["before"] = chain.before
                         self.settle(form, chain, step)
+                        if step["kind"] != "choose" and chain.window is None:
+                            next_step = self.steps[step["index"]] if step["index"] < len(self.steps) else None
+                            self.unexpected_form(form, chain, step, before_windows, next_step)
                         if step["kind"] == "cell":
                             self.committed(form, chain)
                         record["calls"] = list(chain.trips)
@@ -610,6 +616,10 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 record["issue"] = scenario77.judge(step, record, pending, record.get("form_open", True))
             except Exception as error:  # noqa: BLE001 - a failed step still closes its window (series 0b)
                 record["issue"] = f"{scenario77.label(step)}: {type(error).__name__}: {error}"
+            if record["issue"] and self.pending_choice is not None and chain is not None:
+                chain.choice_window, chain.choice_step = self.pending_choice, step
+                self.pending_choice = None
+                record["pending_choice_cleanup"] = self.cancel_choice(form, chain)
             if record["issue"] and chain is not None and chain.window is not None:
                 record["dismissed"] = self.dismiss(form, chain, step)
             record["status"] = "failed" if record["issue"] else "passed"
@@ -631,6 +641,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if window is not None:
             chain.window = dict(window, after_return=True)
             chain.seen.add(window["hwnd"])
+        if chain.window is None and chain.record.get("choice") and not chain.record.get("choice_checked"):
+            # Enter may run the column's formula and its dialog chain first. Only then compare references.
+            self.verify_choice(form, chain)
 
     def call(self, step):
         """The step's next call to 1C, numbered by ``trip_number``: its own number first."""
@@ -642,6 +655,8 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     def begin(self, form, inspection, step, control, ids, windows):
         """The action of a step with its last message pending: the Chain after its return or first window."""
         seen = form.top_windows()
+        if step["kind"] == "choose":
+            return self.begin_choice(form, inspection, step, control, seen)
         if step["kind"] in scenario77.ACTIONS and step["kind"] not in ("click", "input"):
             return self.begin_table(form, inspection, step, control, seen)
         if step["kind"] == "click":
@@ -655,6 +670,154 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if pending is not None:
             chain.wait()
         return chain
+
+    def choice_call(self, step, stage):
+        import choice77
+        number = choice77.request(step["index"], stage)
+        return dict(self.round_trip(number), number=number)
+
+    def unexpected_form(self, form, chain, step, seen, next_step=None):
+        """A nested choice opened by a raw key is not an answered dialog or a successful action."""
+        import choice77
+        windows = form.inventory()
+        frames = choice77.new_frames(windows, seen)
+        if not frames:
+            return
+        choice, issue = choice77.choice_window(windows, seen)
+        if issue is None and step["kind"] == "add_row" and next_step and next_step["kind"] == "choose":
+            # The unchanged document form may begin the reference choice immediately on Insert.
+            self.pending_choice = choice
+            chain.record["pending_choice"] = choice
+            return
+        chain.record["refused"] = "an unexpected nested form opened: " + repr([w.get("text") for w in frames])
+        if issue is None:
+            chain.choice_window, chain.choice_step = choice, step
+            chain.record["nested_cleanup"] = self.cancel_choice(form, chain)
+
+    @staticmethod
+    def choice_issue(trip):
+        if not trip.get("returned") or not trip.get("complete"):
+            return "1C did not complete the choice call: " + str(trip.get("error") or "no complete answer")
+        if trip.get("diagnostics"):
+            return "1C reported an error during choice: " + str(trip["diagnostics"][0])
+        return trip.get("table_error")
+
+    def begin_choice(self, form, inspection, step, table, seen):
+        """F4 in a reference editor, position the verified choice list, then Enter or Escape (task 028)."""
+        import choice77
+        from form_window77 import Posted
+        preopened, self.pending_choice = self.pending_choice, None
+        if preopened is not None:
+            # Save the old reference without activating the parent while its choice is open.
+            trip = self.choice_call(step, 5)
+            self.calls[step["index"]] = 1
+        else:
+            trip = self.call(step)
+        chain = Chain(form, {"returned": False, "choice": True}, None, seen, finish_click)
+        chain.before, chain.trips, chain.choice_step = trip, [trip], step
+        issue = self.choice_issue(trip)
+        if preopened is not None:
+            chain.choice_window = preopened
+            chain.record["choice_window"] = preopened
+            if (trip.get("column") or "").casefold() != step["column"].casefold():
+                issue = issue or "the open choice belongs to another column"
+        focus = form.focused()
+        editor = form.editor_of(focus, table["hwnd"])
+        if issue or (preopened is None and (editor is None or editor["id"] != step["column_window"])):
+            chain.record["refused"] = issue or "the reference column's editor did not open"
+            if preopened is not None:
+                chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
+            return chain
+        chain.record.update(editor=editor, focus_before=focus)
+        if preopened is None:
+            before_windows = form.inventory()
+            record = form.post_key(focus["hwnd"], *scenario77.KEYS["f4"])
+            chain.record.update(record)
+            chain.pending = Posted(record)
+            chain.wait()
+            # The posted F4 runs before the call, just as a table key does.
+            chain.trips.append(self.call(step))
+            modal = form.modal_window(chain.seen)
+            if modal is not None:
+                chain.window = modal
+                chain.seen.add(modal["hwnd"])
+                chain.record["refused"] = "an unexpected modal window opened instead of the choice form"
+                return chain
+            windows = form.inventory()
+            choice, issue = choice77.choice_window(windows, {w["hwnd"] for w in before_windows})
+            chain.record["choice_windows"] = [w for w in windows if w["hwnd"] not in {b["hwnd"] for b in before_windows}]
+            if issue:
+                chain.record["refused"] = issue
+                return chain
+        else:
+            choice = preopened
+            chain.record["preopened"] = True
+        chain.choice_window = choice
+        chain.record["choice_window"] = choice
+        try:
+            focused = form.give_focus(choice["dialog"]["hwnd"], choice["list"]["hwnd"])
+            if focused is None or not form.within(focused["hwnd"], choice["list"]["hwnd"]):
+                raise RuntimeError("the choice list did not take the focus")
+            positioned = self.choice_call(step, 1)
+            chain.trips.append(positioned)
+            issue = self.choice_issue(positioned)
+            if issue:
+                raise RuntimeError(issue)
+            if positioned.get("choice_hwnd") != choice["frame"]["hwnd"]:
+                raise RuntimeError("the active choice context belongs to another window")
+            positioned = self.choice_call(step, 2)
+            chain.trips.append(positioned)
+            issue = self.choice_issue(positioned)
+            if issue:
+                raise RuntimeError(issue)
+            current = self.choice_call(step, 3)
+            chain.trips.append(current)
+            issue = self.choice_issue(current)
+            if issue or current.get("choice_ready") != 1:
+                raise RuntimeError(issue or "the requested element did not become current in the choice list")
+            chain.record["choice_current"] = current.get("choice_current")
+            key = "escape" if step.get("cancel") else "enter"
+            record = form.post_key(choice["list"]["hwnd"], *scenario77.KEYS[key])
+            chain.record.update(record)
+            chain.pending = Posted(record)
+            chain.wait()
+        except Exception as error:
+            chain.record["refused"] = f"{type(error).__name__}: {error}"
+            chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
+        return chain
+
+    def cancel_choice(self, form, chain):
+        """Cancel only the choice frame we identified, using its own list, then verify it closed."""
+        choice = chain.choice_window
+        record = {}
+        try:
+            if form.alive(choice["frame"]["hwnd"]):
+                record["key"] = form.post_key(choice["list"]["hwnd"], *scenario77.KEYS["escape"])
+                chain.trips.append(self.call(chain.choice_step))
+            record["closed"] = not form.alive(choice["frame"]["hwnd"])
+        except Exception as error:
+            record["error"] = f"{type(error).__name__}: {error}"
+        return record
+
+    def verify_choice(self, form, chain):
+        step, record = chain.choice_step, chain.record
+        record["choice_checked"] = True
+        if not hasattr(chain, "choice_window") or record.get("refused"):
+            return
+        choice = chain.choice_window
+        record["choice_closed"] = not form.alive(choice["frame"]["hwnd"])
+        if not record["choice_closed"]:
+            record["refused"] = "the choice form did not close"
+            record["choice_cleanup"] = self.cancel_choice(form, chain)
+            return
+        trip = self.choice_call(step, 4)
+        chain.trips.append(trip)
+        issue = self.choice_issue(trip)
+        record["choice_value"] = trip.get("choice_value")
+        record["choice_verified"] = not issue and trip.get("choice_result") == 1
+        if not record["choice_verified"]:
+            record["refused"] = issue or ("cancelling changed the reference" if step.get("cancel")
+                                           else "the returned reference differs from the requested element")
 
     def begin_table(self, form, inspection, step, table, seen):
         """The action of a table step (task 027): 1C first, then a key to the table part or the cell's editor.
@@ -1032,6 +1195,14 @@ class FormAdapter(launcher.Harness77Adapter):
     def client(self, text):
         if text.count(CALL) != 1:
             raise ValueError("unexpected client layout: the ERT call is not found once")
+        # Keep the platform's diagnostics when the generated controller itself does not compile.
+        text = text.replace('If result <> 1 Then Fail "compile-controller", CStr(result)', '''If result <> 1 Then
+    Dim controllerMessages
+    Set controllerMessages = v.CreateObject("MessageView")
+    controllerMessages.SetSystemMessages
+    controllerMessages.SaveToFile fso.BuildPath(fso.GetParentFolderName(eventPath), "controller-errors.txt")
+    Fail "compile-controller", CStr(result)
+End If''')
         text = text.replace(CALL, '    If command = "result" Then AwaitClick\n' + CALL)
         if scenario77.steps(self.parameters) is not None:
             return text + scenario77.client(DONE, CLICK_WAIT_S * 1000)
