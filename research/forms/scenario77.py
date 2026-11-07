@@ -26,17 +26,21 @@ Task 027 adds the table part of a document's form: ``{ add_row = true }``, ``{ r
 ``{ total = "<column>", text = "…" }``, ``row = 2`` of a value step, and ``{ key = "Down" }`` in a
 table part or a list. A column is one of the Browser section's, by identifier or caption. The
 controller reports the rows, the current row and column with every call of a table step.
+
+Task 033 adds ``{ reopen = true }`` for an existing document fixture: 1C++ closes
+without saving; the watcher requires the old HWNDs gone, then the controller opens
+the same saved reference. Subsequent steps resolve against the newly inspected windows.
 """
 
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
-           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}}
+           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
@@ -140,6 +144,15 @@ def steps(parameters):
                 previous["dialogs"] = 0
             result[step["chain"] - 1]["dialogs"] += 1
             step["last"] = True
+        if kind == "reopen":
+            if not result or result[-1]["kind"] == "reopen":
+                raise ValueError(f"{where} (reopen): requires a preceding scenario action or check")
+            if (not isinstance(parameters.get("form_object"), str)
+                    or not re.fullmatch(r"Документ\.[^\W\d]\w*", parameters["form_object"], re.IGNORECASE)
+                    or parameters.get("fixture_mode", "existing") != "existing"
+                    or not parameters.get("fixture_setup") or not parameters.get("fixture_verify")):
+                raise ValueError(f"{where} (reopen): requires an existing document fixture with verification")
+            closed = None
         if closed is not None and kind not in ("message", "no_message"):
             raise ValueError(f"{where} ({kind}): the form is closed at step {closed}; only message steps follow")
         if step.get("closes"):
@@ -156,7 +169,7 @@ def _number(value, where, least):
 
 def _target(kind, value, where):
     """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
-    if kind in ("add_row", "delete_row"):
+    if kind in ("add_row", "delete_row", "reopen"):
         if value is not True:
             raise ValueError(f"{where} ({kind}): write {kind} = true")
         return kind
@@ -399,6 +412,36 @@ def step_function(items, table=False):
     """
     branches = "".join(f'''    Если Номер77Шага = {step["index"]} Тогда
         Попытка
+            Система77 = СоздатьОбъект("System");
+            Закрыта77 = Система77.CloseForm(Контекст77Формы, 0);
+            Контекст77Формы = 0;
+            Параметры77Формы = 0;
+            Ответ77 = "reopen-close:" + Строка(Закрыта77) + РазделительСтрок;
+        Исключение
+            Ответ77 = "reopen-error:" + ОписаниеОшибки() + РазделительСтрок;
+        КонецПопытки;
+    КонецЕсли;
+    Если Номер77Шага = {trip_number(step["index"], 1)} Тогда
+        Попытка
+            Параметры77 = СоздатьОбъект("СписокЗначений");
+            Контекст77 = Параметры77;
+            Открыта77 = ОткрытьФорму(Объект77Данных, Контекст77, 0);
+            Ответ77 = "reopen-return:" + Строка(Открыта77) + РазделительСтрок;
+            Если Открыта77 = 1 Тогда
+                Контекст77Формы = Контекст77;
+                Параметры77Формы = Параметры77;
+                Если Контекст77Формы.ТекущийДокумент() = Объект77Данных Тогда
+                    Ответ77 = Ответ77 + "reopen-same:1" + РазделительСтрок;
+                Иначе
+                    Ответ77 = Ответ77 + "reopen-same:0" + РазделительСтрок;
+                КонецЕсли;
+            КонецЕсли;
+        Исключение
+            Ответ77 = "reopen-error:" + ОписаниеОшибки() + РазделительСтрок;
+        КонецПопытки;
+    КонецЕсли;
+''' if step["kind"] == "reopen" else f'''    Если Номер77Шага = {step["index"]} Тогда
+        Попытка
             Ответ77 = "{VALUE}" + Harness77Строка(Контекст77Формы.{step["target"]});
         Исключение
             Ответ77 = "{VALUE_ERROR}" + ОписаниеОшибки();
@@ -496,6 +539,8 @@ def answer(text):
     1C refused in a table step's own work.
     """
     names = {"rows": "rows", "row": "row", "column": "column", "total": "total", "error": "table_error",
+             "reopen-return": "reopen_return", "reopen-same": "reopen_same", "reopen-error": "reopen_error",
+             "reopen-close": "reopen_close",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
     record = {}
@@ -508,6 +553,8 @@ def answer(text):
             name, separator, rest = line.partition(":")
             if not separator or name not in names:
                 continue
+            if name.startswith("reopen-") and names[name] in record:
+                record["reopen_error"] = "duplicate reopening response"
             rest = _unescape(rest)
             if name in ("rows", "row", "choice-hwnd", "choice-ready", "choice-result"):
                 try:
@@ -555,7 +602,8 @@ def merge_trips(trips):
     if error:
         merged["error"] = error
     merged.update({key: trips[-1][key] for key in ("rows", "row", "column", "state_error", "table_error", "value",
-                                                   "value_error", "total", "choice_result", "choice_value") if key in trips[-1]})
+                                                   "value_error", "total", "choice_result", "choice_value",
+                                                   "reopen_return", "reopen_same", "reopen_error") if key in trips[-1]})
     return merged
 
 
@@ -643,6 +691,13 @@ def judge(step, record, pending, form_open):
     if trip.get("diagnostics"):
         first = trip["diagnostics"][0]
         return f"{name}: 1C reported an error: line {first['line']}: {first['message']}"
+    if step["kind"] == "reopen":
+        if record.get("closed_before_reopen") is not True:
+            return f"{name}: previous form closing was not confirmed"
+        if trip.get("reopen_error") or trip.get("reopen_return") != "1" or trip.get("reopen_same") != "1":
+            return f"{name}: the saved document was not reopened: {trip.get('reopen_error') or trip}"
+        if not (record.get("reopened") or {}).get("found"):
+            return f"{name}: no owned form inspection after reopening"
     if step.get("closes") and form_open:
         return f"{name}: the form did not close"
     if not form_open and not step.get("closes") and step["kind"] not in ("message", "no_message"):
@@ -687,7 +742,8 @@ def judge_result(items, records, closed_by_controller):
         issues.append(failed["issue"])
     elif len(records) != len(items):
         issues.append(f"only {len(records)} of {len(items)} steps ran")
-    closed_by_step = any(r.get("closes") and r.get("form_open") is False for r in records)
+    last_open = max((i for i, r in enumerate(records) if r.get("kind") == "reopen"), default=0)
+    closed_by_step = any(r.get("closes") and r.get("form_open") is False for r in records[last_open:])
     if not (closed_by_controller or closed_by_step):
         issues.append("the form was not closed")
     return issues

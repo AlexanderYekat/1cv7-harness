@@ -71,6 +71,11 @@ Down/Up or the cell's text and Enter, and calls 1C again. 1C makes the cursor th
 its idle update, which reaches a visible main window only: while the steps of such a form run, the main window
 is shown on the run's private desktop without activation, as for the captures of task 010.
 
+Task 033 adds ``reopen``: on the verified copy, close the existing document form with
+the pinned 1C++ System.CloseForm, require its dialog/frame HWNDs to disappear, then
+open the same fixture reference and inspect the new windows before continuing.
+It does not save or post the document; those actions remain the scenario's UI steps.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -549,6 +554,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         ids, dialog = window_ids(self.description), inspection["chain"][0]["hwnd"]
         windows = {c["id"]: c for c in inspection["controls"]}
         table = windows.get(scenario77.TABLE_WINDOW_ID)
+        current_inspection = inspection
         records, pending, chain = [], [], None
         self.calls = {}
         self.pending_choice = None
@@ -570,7 +576,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                                             "state": shown}
                     else:
                         before_windows = {w["hwnd"] for w in form.inventory()}
-                        chain = self.begin(form, inspection, step, control, ids, windows)
+                        chain = self.begin(form, current_inspection, step, control, ids, windows)
                         record["action"] = chain.record
                         if chain.before is not None:
                             record["before"] = chain.before
@@ -596,8 +602,47 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                             self.opened(step, record, chain)
                             if step["last"] and chain.window is None:
                                 record["action"] = chain.record
-                if step["kind"] == "row":
-                    record["round_trip"] = self.go_to_row(form, inspection, step, record, control["hwnd"])
+                if step["kind"] == "reopen":
+                    if any(w["exists"] for w in self.form_presence(form, current_inspection)["windows"]):
+                        closing = self.call(step)
+                        record["calls"] = [closing]
+                        if (closing.get("reopen_close") != "1" or closing.get("reopen_error")
+                                or closing.get("diagnostics") or not closing.get("complete")):
+                            raise RuntimeError("the controller did not close the previous form: " + str(closing))
+                    else:
+                        record["calls"] = []
+                        self.calls[step["index"]] = 1  # skip the close call of an already closed form
+                    record["before_reopen"] = self.form_presence(form, current_inspection)
+                    started = time.monotonic()
+                    while any(w["exists"] for w in record["before_reopen"]["windows"]) and time.monotonic() - started < ACTION_WAIT_S:
+                        if self.stopped.wait(0.05):
+                            break
+                        record["before_reopen"] = self.form_presence(form, current_inspection)
+                    record["closing_wait_s"] = round(time.monotonic() - started, 3)
+                    record["closed_before_reopen"] = all(not w["exists"] for w in record["before_reopen"]["windows"])
+                    if not record["closed_before_reopen"]:
+                        raise RuntimeError("the previous form is still open after controller closing")
+                    record["calls"].append(self.call(step))
+                    record["round_trip"] = scenario77.merge_trips(record["calls"])
+                    pending = list(record["round_trip"].get("messages", []))
+                    from form_window77 import edged_ids, expected_geometry, fit_units, judge_captions, judge_layout
+                    expected = expected_geometry(self.description)
+                    reopened = form.inspect(list(expected))
+                    record["reopened"] = reopened
+                    if reopened.get("found"):
+                        reopened["units"] = fit_units(expected, {c["id"]: tuple(c["rect"]) for c in reopened["controls"]},
+                                                       edged=edged_ids(self.description))
+                        issues = judge_layout(self.description, reopened) + judge_captions(self.description, reopened)
+                        if issues:
+                            raise RuntimeError("reopened form: " + "; ".join(issues))
+                        dialog = reopened["chain"][0]["hwnd"]
+                        current_inspection = reopened
+                        windows = {c["id"]: c for c in reopened["controls"]}
+                        table = windows.get(scenario77.TABLE_WINDOW_ID)
+                        record["fields_open"] = self.fields(form, reopened)
+                        chain = None
+                elif step["kind"] == "row":
+                    record["round_trip"] = self.go_to_row(form, current_inspection, step, record, control["hwnd"])
                     pending = pending + record["round_trip"].get("messages", [])
                 elif step["kind"] not in scenario77.ACTIONS + ("dialog",):
                     record["round_trip"] = self.round_trip(step["index"])
@@ -627,6 +672,21 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             if record["issue"]:
                 break
         return records
+
+    @staticmethod
+    def form_presence(form, inspection):
+        """Snapshot owned dialog/frame existence and visibility before reopening.
+
+        Check the dialog and its own frame, excluding MDIClient and the main window:
+        the harness may hide the main window while leaving the form open. Reopening
+        requires both HWNDs gone; visibility alone is insufficient.
+        """
+        windows = []
+        for entry in inspection["chain"][:2]:
+            exists = form.alive(entry["hwnd"])
+            windows.append(dict(form.state(entry["hwnd"]) if exists else {"hwnd": entry["hwnd"]}, exists=exists))
+        return {"windows": windows, "open": bool(windows) and all(
+            w["exists"] and w.get("ws_visible") is True for w in windows)}
 
     def settle(self, form, chain, step):
         """Once the action's message returned: ask 1C, then look for a window the action opened meanwhile.
