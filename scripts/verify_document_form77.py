@@ -23,7 +23,7 @@ def read(path):
     return data.decode('utf-16' if data.startswith(b'\xff\xfe') else 'cp1251')
 
 
-def step_issues(records, wrong_reopen=False):
+def step_issues(records, wrong_reopen=False, comment='Harness77 форма 033'):
     """Require actual UI save/post, a new owned inspection, field readbacks and final closing."""
     issues = []
     def require(condition, reason):
@@ -58,12 +58,12 @@ def step_issues(records, wrong_reopen=False):
             'an action before/during reopening failed')
     if wrong_reopen:
         require(len(later) == 1 and later[0].get('kind') == 'check' and later[0].get('status') == 'failed'
-                and later[0].get('state', {}).get('text', '').strip() == 'Harness77 форма 033',
+                and later[0].get('state', {}).get('text', '').strip() == comment,
                 'negative reopened field check not demonstrated')
         return issues
     require(all(r.get('status') == 'passed' and not r.get('issue') for r in later), 'reopened checks failed')
     require(any(r.get('kind') == 'check' and r.get('target') == 'Комментарий'
-                and r.get('state', {}).get('text', '').strip() == 'Harness77 форма 033' for r in later),
+                and r.get('state', {}).get('text', '').strip() == comment for r in later),
             'comment window not read after reopening')
     expected = {('Количество', 1): '3', ('Стоимость', 1): '10', ('Сумма', 1): '30',
                 ('Количество', 2): '2', ('Стоимость', 2): '20', ('Сумма', 2): '40'}
@@ -78,7 +78,7 @@ def step_issues(records, wrong_reopen=False):
     return issues
 
 
-def check(folder, kind='success', expected_hash=None):
+def check(folder, kind='success', expected_hash=None, readback=READBACK, step_validator=None):
     issues = []
     def require(condition, reason):
         if not condition:
@@ -115,12 +115,12 @@ def check(folder, kind='success', expected_hash=None):
     ops = {o['name']: o for o in operations}
     require(all(ops.get(name, {}).get('status') == 'passed' for name in ('check', 'open', 'verify')), 'open/read failed')
     require(ops.get('result', {}).get('status') == ('failed' if kind == 'wrong-reopen' else 'passed'), 'wrong step outcome')
-    require(ops.get('verify', {}).get('value') == READBACK, 'saved document/entries differ')
+    require(ops.get('verify', {}).get('value') == readback, 'saved document/entries differ')
     inspection = json.loads((folder / 'form/form-window.json').read_text(encoding='utf-8'))
     require(inspection.get('run_id') == run_id, 'foreign form inspection')
     records = inspection.get('steps') or []
     require(records == ops.get('result', {}).get('steps'), 'watcher/result steps differ')
-    issues += step_issues(records, kind == 'wrong-reopen')
+    issues += (step_validator(records, kind) if step_validator else step_issues(records, kind == 'wrong-reopen'))
     events = [json.loads(line) for line in read(folder / 'native/ert-events.jsonl').splitlines()]
     responses = {number: [] for number in range(1, len(records) + 1)}
     for event in events:
@@ -134,8 +134,8 @@ def check(folder, kind='success', expected_hash=None):
                     and protocol[-1:] == ['HARNESS77-END:' + run_id + ':' + name], name + ': invalid protocol markers')
             if name == 'verify':
                 require([v[len('fixture-value:'):] for v in event['value'].splitlines() if v.startswith('fixture-value:')]
-                        == [READBACK], 'verify response differs')
-            if name == 'result':
+                        == [readback], 'verify response differs')
+            if name == 'result' and kind != 'cancel':
                 require(event['value'].splitlines().count('closed:1') == 1, 'final controller closing not confirmed')
         elif event.get('kind') == 'phase' and event.get('name', '').startswith('step-') and event.get('value') == 'ok':
             number = int(event['name'][5:])

@@ -30,17 +30,21 @@ controller reports the rows, the current row and column with every call of a tab
 Task 033 adds ``{ reopen = true }`` for an existing document fixture: 1C++ closes
 without saving; the watcher requires the old HWNDs gone, then the controller opens
 the same saved reference. Subsequent steps resolve against the newly inspected windows.
+
+Task 034 starts journal mode with ``{ create = "<native kind caption>" }``:
+Insert, the native kind chooser, a new unsaved owned form. ``{ created = true }``
+captures and reads its reference after UI save, before closing or reopening.
 """
 
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
-           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}}
+           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}, "create": {}, "created": {}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
@@ -149,15 +153,27 @@ def steps(parameters):
                 raise ValueError(f"{where} (reopen): requires a preceding scenario action or check")
             if (not isinstance(parameters.get("form_object"), str)
                     or not re.fullmatch(r"Документ\.[^\W\d]\w*", parameters["form_object"], re.IGNORECASE)
-                    or parameters.get("fixture_mode", "existing") != "existing"
+                    or (parameters.get("fixture_mode", "existing") != "existing" and not
+                        (parameters.get("fixture_mode") == "journal" and any(s["kind"] == "created" for s in result)))
                     or not parameters.get("fixture_setup") or not parameters.get("fixture_verify")):
                 raise ValueError(f"{where} (reopen): requires an existing document fixture with verification")
             closed = None
+        if kind in ("create", "created"):
+            import journal77
+            journal77.validate(parameters, parameters.get("form_object"))
+            if parameters.get("fixture_mode") != "journal" or not parameters.get("fixture_setup"):
+                raise ValueError(f"{where}: requires journal mode and fixture_setup")
+            if kind == "create" and result:
+                raise ValueError(f"{where}: create must be the first step")
+            if kind == "created" and (not result or not any(s["kind"] == "create" for s in result)):
+                raise ValueError(f"{where}: created requires an earlier create")
         if closed is not None and kind not in ("message", "no_message"):
             raise ValueError(f"{where} ({kind}): the form is closed at step {closed}; only message steps follow")
         if step.get("closes"):
             closed = number
         result.append(step)
+    if parameters.get("fixture_mode") == "journal" and result[0]["kind"] != "create":
+        raise ValueError("journal mode requires create as its first step")
     return result
 
 
@@ -169,7 +185,7 @@ def _number(value, where, least):
 
 def _target(kind, value, where):
     """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
-    if kind in ("add_row", "delete_row", "reopen"):
+    if kind in ("add_row", "delete_row", "reopen", "created"):
         if value is not True:
             raise ValueError(f"{where} ({kind}): write {kind} = true")
         return kind
@@ -405,7 +421,7 @@ TABLE_STATE = '''Функция Harness77Таблица()
 '''
 
 
-def step_function(items, table=False):
+def step_function(items, table=False, journal_kind=None):
     """``Harness77Step`` of the controller: messages of the step and the requested attribute.
 
     ``table``: the form is a document's with a table part (task 027); every answer ends with its state.
@@ -453,11 +469,16 @@ def step_function(items, table=False):
         import choice77
     state = "    Ответ77 = Ответ77 + Harness77Таблица();\n" if table else ""
     work = '    Ответ77 = Ответ77 + Harness77Выбор(Номер77Шага);\n' if choice else ''
+    journal_helper = ''
+    if journal_kind:
+        import journal77
+        journal_helper = journal77.function(items, journal_kind)
+        work += '    Ответ77 = Ответ77 + Harness77Журнал(Номер77Шага);\n'
     return f'''Функция Harness77Строка(Значение77)
     Возврат СтрЗаменить(СтрЗаменить(Строка(Значение77), "\\", "\\\\"), РазделительСтрок, "\\n");
 КонецФункции
 
-{TABLE_STATE if table else ""}{choice77.function(items) if choice else ""}Функция Harness77Step(Номер77Шага, Протокол, Метка) Экспорт
+{TABLE_STATE if table else ""}{choice77.function(items) if choice else ""}{journal_helper}Функция Harness77Step(Номер77Шага, Протокол, Метка) Экспорт
     Сообщения77 = СоздатьОбъект("MessageView");
     Сообщения77.SetSystemMessages();
     Ответ77 = "";
@@ -473,7 +494,7 @@ def step_function(items, table=False):
 SAVE = "    Сообщения77.SaveToFile(Протокол);\n    Возврат Ответ77;\nКонецФункции\n"
 
 
-def controller(text, items, table=False):
+def controller(text, items, table=False, journal_kind=None):
     """The form controller with the step function; ``open`` clears the messages it saved."""
     if text.count(SAVE) != 1 or text.count("Функция Harness77Ert(") != 1:
         raise ValueError("unexpected form controller layout for steps")
@@ -482,7 +503,7 @@ def controller(text, items, table=False):
     if any(s["kind"] == "choose" for s in items):
         import choice77
         text = choice77.GLOBALS + text
-    return text.replace("Функция Harness77Ert(", step_function(items, table) + "Функция Harness77Ert(", 1)
+    return text.replace("Функция Harness77Ert(", step_function(items, table, journal_kind) + "Функция Harness77Ert(", 1)
 
 
 # The client's wait before ``result`` (task 008) serves the watcher's step requests meanwhile: each
@@ -541,9 +562,12 @@ def answer(text):
     names = {"rows": "rows", "row": "row", "column": "column", "total": "total", "error": "table_error",
              "reopen-return": "reopen_return", "reopen-same": "reopen_same", "reopen-error": "reopen_error",
              "reopen-close": "reopen_close",
+             "journal-new": "journal_new", "journal-hwnd": "journal_hwnd", "journal-saved": "journal_saved",
+             "journal-reference": "journal_reference", "journal-error": "journal_error",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
     record = {}
+    journal_problem = None
     for line in text.splitlines():
         if line.startswith(VALUE):
             record["value"] = _unescape(line[len(VALUE):])
@@ -551,10 +575,16 @@ def answer(text):
             record["value_error"] = line[len(VALUE_ERROR):].strip()
         else:
             name, separator, rest = line.partition(":")
+            if separator and name.startswith("journal-") and name not in names:
+                journal_problem = "unknown journal response field"
             if not separator or name not in names:
                 continue
             if name.startswith("reopen-") and names[name] in record:
                 record["reopen_error"] = "duplicate reopening response"
+            if name.startswith("journal-") and names[name] in record:
+                journal_problem = "duplicate journal response"
+            if name == "journal-error":
+                journal_problem = journal_problem or rest.strip() or "empty journal error response"
             rest = _unescape(rest)
             if name in ("rows", "row", "choice-hwnd", "choice-ready", "choice-result"):
                 try:
@@ -563,6 +593,8 @@ def answer(text):
                     pass
                 continue
             record[names[name]] = rest if name == "total" else rest.strip()
+    if journal_problem:
+        record["journal_error"] = journal_problem
     return record
 
 
@@ -604,6 +636,8 @@ def merge_trips(trips):
     merged.update({key: trips[-1][key] for key in ("rows", "row", "column", "state_error", "table_error", "value",
                                                    "value_error", "total", "choice_result", "choice_value",
                                                    "reopen_return", "reopen_same", "reopen_error") if key in trips[-1]})
+    merged.update({key: trips[-1][key] for key in ("journal_new", "journal_hwnd", "journal_saved",
+                                                 "journal_reference", "journal_error") if key in trips[-1]})
     return merged
 
 
@@ -698,6 +732,13 @@ def judge(step, record, pending, form_open):
             return f"{name}: the saved document was not reopened: {trip.get('reopen_error') or trip}"
         if not (record.get("reopened") or {}).get("found"):
             return f"{name}: no owned form inspection after reopening"
+    if step["kind"] in ("create", "created"):
+        if trip.get("journal_error"):
+            return f"{name}: {trip['journal_error']}"
+        if step["kind"] == "create" and (trip.get("journal_new") != "1" or not record.get("new_form_verified")):
+            return f"{name}: new unsaved document form was not verified"
+        if step["kind"] == "created" and (trip.get("journal_saved") != "1" or not trip.get("journal_reference")):
+            return f"{name}: saved created reference was not verified"
     if step.get("closes") and form_open:
         return f"{name}: the form did not close"
     if not form_open and not step.get("closes") and step["kind"] not in ("message", "no_message"):

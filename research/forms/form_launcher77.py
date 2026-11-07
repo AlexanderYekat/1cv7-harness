@@ -76,6 +76,11 @@ the pinned 1C++ System.CloseForm, require its dialog/frame HWNDs to disappear, t
 open the same fixture reference and inspect the new windows before continuing.
 It does not save or post the document; those actions remain the scenario's UI steps.
 
+Task 034 adds journal mode: open the configured journal, Insert and select a
+document kind through its native chooser, verify the new unsaved context/HWND,
+then resolve steps against the document form. Capture its reference after UI save
+with ``created``; ``reopen`` and independent verification use that same reference.
+
 ``check`` passes when the form loaded, opened and closed; ``open`` passes when
 the form opened, loaded and matched its description (layout and the captions
 of buttons, labels, check boxes and group boxes); ``result`` with actions passes
@@ -423,13 +428,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     """After ``open`` returns: inspect the owned form, run the actions, then release the client."""
 
     def __init__(self, out, lifecycle, desktop, description, actions, evidence_dir, visual_probe=False,
-                 captures=(), configuration=None, steps=None, show=False):
+                 captures=(), configuration=None, steps=None, show=False, created_description=None):
         super().__init__(name="harness77-form-watcher", daemon=True)
         self.out, self.lifecycle, self.desktop = out, lifecycle, desktop
         self.description, self.actions, self.evidence_dir = description, list(actions), evidence_dir
         self.visual_probe = visual_probe
         self.captures, self.configuration = list(captures), configuration
         self.steps = steps  # resolved steps of task 025, or None
+        self.created_description = created_description
         # Task 027: 1C makes the cursor of a table part the document's current row in its idle update, which MFC
         # sends to a visible main window only (series 1b–1e): shown while the steps of such a form run.
         self.show = show
@@ -498,8 +504,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     inspection["fields_open"] = self.fields(form, inspection)
                 if self.steps and inspection["found"]:
                     inspection["steps"] = self.run_steps(form, inspection)
-                    if form.alive(inspection["chain"][0]["hwnd"]):
-                        inspection["fields_after"] = self.fields(form, inspection)
+                    final_form = inspection.get("final_form", inspection)
+                    if form.alive(final_form["chain"][0]["hwnd"]):
+                        inspection["fields_after"] = self.fields(form, final_form)
                 elif self.actions:
                     done = self.act(form, inspection)
                     if inspection["found"]:
@@ -564,6 +571,21 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             tabular = step["kind"] == "key" or scenario77.table_step(step)
             control = windows.get(ids[step["record_id"]]) if "record_id" in step else table if tabular else None
             try:
+                if step["kind"] == "create":
+                    created = self.create_document(form, current_inspection, step, record)
+                    self.description = self.created_description
+                    current_inspection = created
+                    ids = window_ids(self.description)
+                    dialog = created["chain"][0]["hwnd"]
+                    windows = {c["id"]: c for c in created["controls"]}
+                    table = windows.get(scenario77.TABLE_WINDOW_ID)
+                    record["form_open"] = form.alive(dialog)
+                    record["issue"] = scenario77.judge(step, record, [], record["form_open"])
+                    record["status"] = "failed" if record["issue"] else "passed"
+                    records.append(record)
+                    if record["issue"]:
+                        break
+                    continue
                 if "record_id" in step and control is None:
                     raise RuntimeError(f"no window of element {step['record_id']} in the form")
                 if tabular and control is None:
@@ -661,6 +683,11 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 record["issue"] = scenario77.judge(step, record, pending, record.get("form_open", True))
             except Exception as error:  # noqa: BLE001 - a failed step still closes its window (series 0b)
                 record["issue"] = f"{scenario77.label(step)}: {type(error).__name__}: {error}"
+                if step["kind"] == "create" and record.get("kind_window"):
+                    window = record["kind_window"]
+                    if form.alive(window["hwnd"]):
+                        button, _, refusal = scenario77.answer_plan(dict(target=window["text"], button="Отмена"), window)
+                        record["kind_cleanup"] = {"refused": refusal} if refusal else form.answer(window, button)
             if record["issue"] and self.pending_choice is not None and chain is not None:
                 chain.choice_window, chain.choice_step = self.pending_choice, step
                 self.pending_choice = None
@@ -671,7 +698,59 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             records.append(record)
             if record["issue"]:
                 break
+        if current_inspection is not inspection:
+            inspection["final_form"] = current_inspection
         return records
+
+    def create_document(self, form, inspection, step, record):
+        """Insert in the owned journal, answer its kind chooser, bind the new unsaved form."""
+        import journal77
+        from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+        table = next(c for c in inspection["controls"] if c["id"] == scenario77.TABLE_WINDOW_ID)
+        before = {w["hwnd"] for w in form.inventory()}
+        seen = form.top_windows()
+        record["focus"] = form.give_focus(inspection["chain"][0]["hwnd"], table["hwnd"])
+        record["action"] = form.post_key(table["hwnd"], *scenario77.KEYS["insert"])
+        if not record["action"].get("returned"):
+            raise RuntimeError("Insert could not be posted")
+        started = time.monotonic()
+        chooser = None
+        while time.monotonic() - started < ACTION_WAIT_S:
+            chooser = form.modal_window(seen)
+            if chooser:
+                break
+            if self.stopped.wait(0.05):
+                break
+        record["kind_window"] = chooser
+        if chooser is None:
+            raise RuntimeError("no native document-kind chooser opened")
+        record["kind_selection"] = journal77.select_kind(form, chooser, step["target"])
+        if not record["kind_selection"]["answer"].get("requested"):
+            raise RuntimeError("document-kind chooser was not answered")
+        started = time.monotonic()
+        while form.alive(chooser["hwnd"]) and time.monotonic() - started < ACTION_WAIT_S:
+            if self.stopped.wait(0.05):
+                break
+        if form.alive(chooser["hwnd"]):
+            raise RuntimeError("document-kind chooser did not close")
+        record["round_trip"] = self.round_trip(step["index"])
+        trip = record["round_trip"]
+        if trip.get("journal_new") != "1" or trip.get("journal_error"):
+            raise RuntimeError("new document context: " + str(trip))
+        description = self.created_description
+        expected = expected_geometry(description)
+        created = form.inspect(list(expected))
+        record["created_form"] = created
+        if not created.get("found"):
+            raise RuntimeError("new document form not found: " + str(created))
+        created["units"] = fit_units(expected, {c["id"]: tuple(c["rect"]) for c in created["controls"]},
+                                     edged=edged_ids(description))
+        issues = judge_layout(description, created) + judge_captions(description, created)
+        hwnd = int(trip.get("journal_hwnd", "0"))
+        if issues or hwnd not in [w["hwnd"] for w in created["chain"][:2]] or hwnd in before:
+            raise RuntimeError("new form identity/layout mismatch: " + str(issues))
+        record["new_form_verified"] = True
+        return created
 
     @staticmethod
     def form_presence(form, inspection):
@@ -1202,6 +1281,7 @@ class FormAdapter(launcher.Harness77Adapter):
         self.configuration = None
         self.form = None  # (description, source) of a configuration form (task 022)
         self.fixture_context = None
+        self.journal_form = None
 
     def request_captures(self, requests):
         self.requests = capture_requests(requests)
@@ -1221,15 +1301,19 @@ class FormAdapter(launcher.Harness77Adapter):
             self.configuration = PINNED["1Cv7.MD"]
         if name is not None:
             self.form = configuration_description(base / "1Cv7.MD", name, fixture=settings)
+        if settings and settings["mode"] == "journal":
+            self.journal_form = configuration_description(base / "1Cv7.MD", settings["journal"])
         if settings:
             from harness77.metadata77 import Metadata
             self.fixture_context = fixture77.context(name, settings, Metadata((base / "1Cv7.MD").read_bytes()))
 
     def commands(self, parameters, requested):
-        scenario77.steps(parameters)
+        parsed_steps = scenario77.steps(parameters)
         actions(parameters)
         name = form_object(parameters)
         settings = fixture77.options(parameters, name)
+        if settings and settings["mode"] == "journal" and parsed_steps is None:
+            raise ValueError("journal mode requires create steps")
         self.parameters = dict(parameters)
         commands = list(COMMANDS) + fixture77.commands(settings)
         if settings and settings.get("operations"):
@@ -1256,7 +1340,9 @@ class FormAdapter(launcher.Harness77Adapter):
                 raise ValueError("table steps need a form of the configuration with a table part or a list")
             # The code of the table steps names their columns: resolved before 1C starts (task 027).
             steps = scenario77.resolve(steps, self.form[0])
-        return scenario77.controller(text, steps, table=bool(table.get("document")))
+        return scenario77.controller(text, steps, table=bool(table.get("document")),
+                                     journal_kind=self.parameters["form_object"].split(".")[1]
+                                     if self.journal_form is not None else None)
 
     def client(self, text):
         if text.count(CALL) != 1:
@@ -1302,13 +1388,21 @@ End If''')
             # Every element resolves in the form's description before 1C starts (task 025).
             steps = scenario77.resolve(steps, description)
             atomic_json(self.run_dir / "form" / "steps.json", steps)
+        created_description = None
+        if self.journal_form is not None:
+            created_description = description
+            atomic_json(self.run_dir / "form" / "created-description.json", description)
+            description = self.journal_form[0]
+            atomic_json(self.run_dir / "form" / "description.json", description)
+            atomic_json(self.run_dir / "form" / "journal-source.json", self.journal_form[1])
 
         @contextlib.contextmanager
         def watching():
             watcher = FormWatcher(out, lifecycle, desktop, description, actions(self.parameters),
                                   self.run_dir / "form", visual_probe=self.parameters.get("visual_probe") is True,
                                   captures=self.requests, configuration=self.configuration, steps=steps,
-                                  show=steps is not None and bool(description.get("browser")))
+                                  show=steps is not None and bool(description.get("browser")),
+                                  created_description=created_description)
             watcher.start()
             try:
                 yield

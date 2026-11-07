@@ -1,12 +1,13 @@
-"""Task 024: prepare data once in a run's copy, open its reference, verify after closing.
+"""Prepare data once in a run's copy and verify after closing (tasks 024–034).
 
 The snippets are ordinary trusted 1C test code, just like an ERT test module. The
 adapter must require the run's verified configuration copy before executing them.
+Journal mode prepares prerequisites; its document reference comes from a UI save.
 """
 
 import re
 
-KEYS = ("fixture_setup", "fixture_mode", "fixture_verify", "fixture_post", "fixture_operations")
+KEYS = ("fixture_setup", "fixture_mode", "fixture_verify", "fixture_post", "fixture_operations", "journal_form")
 
 
 def options(parameters, name):
@@ -17,8 +18,13 @@ def options(parameters, name):
     verify = parameters.get("fixture_verify")
     if not isinstance(setup, str) or not setup.strip():
         raise ValueError("fixture_setup must be a non-empty 1C function body returning a reference")
-    if mode not in ("existing", "owner"):
-        raise ValueError("fixture_mode must be existing or owner")
+    if mode not in ("existing", "owner", "journal"):
+        raise ValueError("fixture_mode must be existing, owner or journal")
+    if mode == "journal":
+        import journal77
+        journal77.validate(parameters, name)
+    elif "journal_form" in parameters:
+        raise ValueError("journal_form requires fixture_mode journal")
     if verify is not None and (not isinstance(verify, str) or not verify.strip()):
         raise ValueError("fixture_verify must be a non-empty 1C function body returning a string")
     for code in (setup, verify):
@@ -56,7 +62,8 @@ def options(parameters, name):
             if not isinstance(before, str) or "\0" in before:
                 raise ValueError("fixture operation before must be 1C code without NUL")
             before.encode("cp1251")
-    return {"setup": setup, "verify": verify, "mode": mode, "post": post, "operations": operations}
+    return {"setup": setup, "verify": verify, "mode": mode, "post": post, "operations": operations,
+            "journal": parameters.get("journal_form")}
 
 
 def commands(settings):
@@ -81,6 +88,9 @@ def context(name, settings, metadata):
 
 
 def open_arguments(name, settings):
+    if settings["mode"] == "journal":
+        parts = settings["journal"].split(".")
+        return f'"Журнал.{parts[1]}.{parts[3]}", Контекст77'
     if settings["mode"] == "existing":
         return "Объект77Данных, Контекст77, 0"
     parts = name.split(".")
@@ -90,6 +100,9 @@ def open_arguments(name, settings):
 
 def controller(text, settings, expected):
     """Insert setup ahead of check/open and a separate verification command after result."""
+    if settings["mode"] == "journal":
+        import journal77
+        return journal77.controller(text, settings, expected)
     literal = lambda value: '"' + value.replace('"', '""') + '"'
     checks = f'''    Если ТипЗначенияСтр(Объект77) <> {literal(expected["type"])} Тогда
         Возврат "reference type does not match form_object";
