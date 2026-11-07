@@ -575,6 +575,11 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             tabular = step["kind"] == "key" or scenario77.table_step(step)
             control = windows.get(ids[step["record_id"]]) if "record_id" in step else table if tabular else None
             try:
+                if step['kind'] == 'journal_period':
+                    self.journal_period(form, current_inspection, step, record)
+                    record.update(form_open=True, issue=None, status='passed')
+                    records.append(record)
+                    continue
                 if step["kind"] == "close_form":
                     chain_windows = current_inspection.get("chain", [])
                     if len(chain_windows) < 3 or chain_windows[2].get("class") != "MDIClient":
@@ -711,6 +716,69 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if current_inspection is not inspection:
             inspection["final_form"] = current_inspection
         return records
+
+    def journal_period(self, form, inspection, step, record):
+        """Invoke the platform's native Interval command on the inspected journal."""
+        table = next(c for c in inspection['controls'] if c['id'] == scenario77.TABLE_WINDOW_ID)
+        before_number = -102000 - step['index'] * 2
+        record['before_period'] = self.round_trip(before_number)
+        record['calls'] = [dict(record['before_period'], number=before_number)]
+        import journal77
+        journal77.read_period(record['before_period'])
+        if len(inspection['chain']) < 3 or inspection['chain'][2].get('class') != 'MDIClient':
+            raise RuntimeError('journal_period requires an inspected MDI journal')
+        record['focus'] = form.give_focus(inspection['chain'][0]['hwnd'], table['hwnd'])
+        seen = form.top_windows()
+        posted, error = form.post(inspection['chain'][1]['hwnd'], 0x111, 0x8071)
+        record['action'] = dict(posted=posted, last_error=error, command=0x8071)
+        if not posted:
+            raise RuntimeError('native Interval command could not be posted')
+        window = None
+        started = time.monotonic()
+        while time.monotonic() - started < ACTION_WAIT_S and not self.stopped.is_set():
+            window = form.modal_window(seen)
+            if window:
+                break
+            self.stopped.wait(0.05)
+        record['period_window'] = window
+        if window is None:
+            raise RuntimeError('native journal period dialog did not open')
+        try:
+            fields = journal77.period_fields(window)
+            button, _, issue = scenario77.answer_plan(dict(target=window['text'], button='Отмена' if step.get('cancel') else 'ОК'), window)
+            if issue:
+                raise RuntimeError(issue)
+            record['inputs'] = []
+            for key, field in zip(('start', 'end'), fields):
+                editors = [c for c in window['children'] if c.get('parent') == field['hwnd']]
+                if len(editors) != 1 or editors[0]['class'].casefold() != '1ceditspr':
+                    raise RuntimeError('journal date editor is ambiguous')
+                form.give_focus(window['hwnd'], editors[0]['hwnd'])
+                from datetime import date
+                value = date.fromisoformat(step[key]).strftime('%d%m%y')
+                typed = form.replace_text(editors[0]['hwnd'], value)
+                record['inputs'].append(dict(typed, boundary=key))
+                if not typed.get('typed'):
+                    raise RuntimeError('journal date input did not return')
+                form.give_focus(window['hwnd'], button['hwnd'])
+            record['edited_window'] = form.window_record(window['hwnd'])
+            record['answer'] = form.answer(window, button)
+            if not record['answer'].get('requested'):
+                raise RuntimeError('journal period dialog was not answered')
+            started = time.monotonic()
+            while form.alive(window['hwnd']) and time.monotonic() - started < ACTION_WAIT_S:
+                if self.stopped.wait(0.05):
+                    break
+            if form.alive(window['hwnd']):
+                raise RuntimeError('journal period dialog did not close')
+            record['period_closed'] = True
+            record['after_period'] = self.round_trip(before_number - 1)
+            record['calls'].append(dict(record['after_period'], number=before_number - 1))
+            journal77.check_period(step, record)
+        finally:
+            if form.alive(window['hwnd']):
+                button, _, issue = scenario77.answer_plan(dict(target=window['text'], button='Отмена'), window)
+                record['period_cleanup'] = {'refused': issue} if issue else form.answer(window, button)
 
     def find_document(self, form, inspection, step, record):
         """Search the owned journal by keyboard, read each reference, open the exact match with Enter."""

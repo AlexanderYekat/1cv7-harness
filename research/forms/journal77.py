@@ -4,6 +4,56 @@
 the prepared saved target before Enter. Both bind a fresh owned document HWND.
 """
 import re
+from datetime import date
+
+
+def validate_period(parameters, previous, step):
+    validate(parameters, parameters.get('form_object'))
+    if (parameters.get('fixture_mode') != 'journal_existing' or not parameters.get('fixture_setup')
+            or any(s['kind'] != 'journal_period' for s in previous)):
+        raise ValueError('journal_period requires journal_existing before find_document')
+    try:
+        start, end = (date.fromisoformat(step[k]) for k in ('start', 'end'))
+        if any(step[k] != d.isoformat() for k, d in (('start', start), ('end', end))) or start > end:
+            raise ValueError()
+    except (KeyError, ValueError):
+        raise ValueError('journal_period requires start <= end, ISO dates YYYY-MM-DD') from None
+
+
+def read_period(trip):
+    if (not trip.get('returned') or not trip.get('complete') or trip.get('diagnostics')
+            or trip.get('journal_error')):
+        raise RuntimeError('journal period response was not verified')
+    try:
+        values = tuple(date(*map(int, trip['journal_' + key].split(':'))) for key in ('start', 'end'))
+        if values[0] > values[1]:
+            raise ValueError()
+        return values
+    except (KeyError, ValueError, TypeError):
+        raise RuntimeError('invalid journal period response') from None
+
+
+def period_fields(window):
+    if window.get('text') != 'Параметры журнала' or window.get('class') != '#32770':
+        raise RuntimeError('expected native journal parameters dialog')
+    fields = []
+    for id_ in (4674, 4676):
+        matches = [c for c in window.get('children', []) if c.get('parent') == window['hwnd']
+                   and c.get('id') == id_ and c.get('class', '').casefold() == 'bmasked'
+                   and c.get('visible') and c.get('enabled')]
+        if len(matches) != 1:
+            raise RuntimeError('native journal date field is missing or ambiguous')
+        fields.append(matches[0])
+    return fields
+
+
+def check_period(step, record):
+    before, after = (read_period(record[k]) for k in ('before_period', 'after_period'))
+    wanted = before if step.get('cancel') else tuple(date.fromisoformat(step[k]) for k in ('start', 'end'))
+    if after != wanted:
+        raise RuntimeError(f'journal period mismatch: {after}, expected {wanted}')
+    if not record.get('period_closed') or not record.get('answer', {}).get('requested'):
+        raise RuntimeError('journal period dialog closing was not verified')
 
 
 def validate(parameters, name):
@@ -57,6 +107,16 @@ def controller(text, settings, expected):
 
 def branches(items, kind):
     result = []
+    if any(s['kind'] == 'journal_period' for s in items):
+        result.append('''    Если (Номер77Шага <= -102000) И (Номер77Шага > -104000) Тогда
+        Попытка
+            Ответ77 = "journal-start:" + Harness77ДатаИнтервала(Контекст77Формы.НачалоИнтервала()) + РазделительСтрок
+                + "journal-end:" + Harness77ДатаИнтервала(Контекст77Формы.КонецИнтервала());
+        Исключение
+            Ответ77 = "journal-error:" + Harness77Строка(ОписаниеОшибки());
+        КонецПопытки;
+    КонецЕсли;
+''')
     for step in items:
         if step['kind'] == 'find_document':
             result.append('''    Если (Номер77Шага <= -101000) И (Номер77Шага >= -101200) Тогда
@@ -137,7 +197,7 @@ def branches(items, kind):
 
 
 def function(items, kind):
-    return ('Функция Harness77Журнал(Номер77Шага)\n    Ответ77 = "";\n' + branches(items, kind)
+    return ('Функция Harness77ДатаИнтервала(Дата77)\n    Возврат Строка(ДатаГод(Дата77)) + ":" + Строка(ДатаМесяц(Дата77)) + ":" + Строка(ДатаЧисло(Дата77));\nКонецФункции\n\nФункция Harness77Журнал(Номер77Шага)\n    Ответ77 = "";\n' + branches(items, kind)
             + '    Возврат Ответ77;\nКонецФункции\n\n')
 
 

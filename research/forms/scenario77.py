@@ -44,13 +44,14 @@ answer its save question.
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
            "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}, "create": {}, "created": {},
-           "find_document": {"limit": int}, "close_form": {"closes": bool}}
+           "find_document": {"limit": int}, "close_form": {"closes": bool},
+           "journal_period": {"start": str, "end": str, "cancel": bool}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
@@ -164,10 +165,13 @@ def steps(parameters):
                     or not parameters.get("fixture_setup") or not parameters.get("fixture_verify")):
                 raise ValueError(f"{where} (reopen): requires an existing document fixture with verification")
             closed = None
+        if kind == "journal_period":
+            import journal77
+            journal77.validate_period(parameters, result, step)
         if kind == "find_document":
             import journal77
             journal77.validate(parameters, parameters.get("form_object"))
-            if parameters.get("fixture_mode") != "journal_existing" or not parameters.get("fixture_setup") or result:
+            if parameters.get("fixture_mode") != "journal_existing" or not parameters.get("fixture_setup") or any(s['kind'] != 'journal_period' for s in result):
                 raise ValueError(f"{where}: find_document must start journal_existing with fixture_setup")
             if step.get("limit", 100) > 200:
                 raise ValueError(f"{where}: find_document limit must be 1…200")
@@ -187,7 +191,7 @@ def steps(parameters):
         result.append(step)
     if parameters.get("fixture_mode") == "journal" and result[0]["kind"] != "create":
         raise ValueError("journal mode requires create as its first step")
-    if parameters.get("fixture_mode") == "journal_existing" and result[0]["kind"] != "find_document":
+    if parameters.get("fixture_mode") == "journal_existing" and not any(s['kind'] == 'find_document' for s in result):
         raise ValueError("journal_existing requires find_document as its first step")
     return result
 
@@ -200,7 +204,7 @@ def _number(value, where, least):
 
 def _target(kind, value, where):
     """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
-    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form"):
+    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form", "journal_period"):
         if value is not True:
             raise ValueError(f"{where} ({kind}): write {kind} = true")
         return kind
@@ -486,6 +490,9 @@ def step_function(items, table=False, journal_kind=None):
     if state and any(s["kind"] == "find_document" for s in items):
         state = ('    Если (Номер77Шага > -101000) ИЛИ (Номер77Шага < -101200) Тогда\n'
                  + state + '    КонецЕсли;\n')
+    if state and any(s['kind'] == 'journal_period' for s in items):
+        excluded = [s['index'] for s in items if s['kind'] == 'journal_period']
+        state = '    Если ((Номер77Шага > -102000) ИЛИ (Номер77Шага <= -104000)) И ' + ' И '.join(f'(Номер77Шага <> {n})' for n in excluded) + ' Тогда\n' + state + '    КонецЕсли;\n'
     work = '    Ответ77 = Ответ77 + Harness77Выбор(Номер77Шага);\n' if choice else ''
     journal_helper = ''
     if journal_kind:
@@ -583,6 +590,7 @@ def answer(text):
              "journal-new": "journal_new", "journal-hwnd": "journal_hwnd", "journal-saved": "journal_saved",
              "journal-reference": "journal_reference", "journal-error": "journal_error",
              "journal-current": "journal_current", "journal-match": "journal_match", "journal-opened": "journal_opened",
+             "journal-start": "journal_start", "journal-end": "journal_end",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
     record = {}

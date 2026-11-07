@@ -1,10 +1,16 @@
-# Формы ERT и 1Cv7.MD в настоящей 1С 7.7 (задачи 008, 010–013, 022–035)
+# Формы ERT и 1Cv7.MD в настоящей 1С 7.7 (задачи 008, 010–013, 022–036)
 
 Исследовательская часть [задачи 008](../../docs/tasks/008-form-description.md):
 открыть форму собранной ERT видимой в своём сеансе 1С, сверить окна элементов
 с описанием формы и нажать кнопку. Описание и сборка формы — в продукте
 (`harness77 form-extract`, `build --form`); здесь только нативная проверка
 поверх launcher этапа 4.
+
+Задача 036 — [период журнала через UI](../../examples/journal-period/README.md):
+`journal_period = true`, `start`/`end` в ISO, опционально `cancel = true`,
+перед `find_document`. Штатный диалог «Параметры журнала», два поля даты,
+OK/«Отмена»; до и после независимое чтение границ через 1С++.
+Тесты — `tests/test_journal_period77.py`; сверка — `scripts/verify_journal_period77.py`.
 
 Задача 035 — [поиск существующего документа в журнале](../../examples/journal-existing/README.md):
 `fixture_mode = "journal_existing"`, первый шаг `find_document` с пределом
