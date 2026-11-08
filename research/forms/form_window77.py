@@ -444,7 +444,7 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                 windows.append(info)
         return windows
 
-    def inspect(self, expected_ids, budget_s=10.0):
+    def inspect(self, expected_ids, budget_s=10.0, frame=None):
         """The form: the parent whose children carry every expected control ID."""
         windows = self.inventory(budget_s)
         children = {}
@@ -457,6 +457,16 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                    "top_level": [{k: w[k] for k in ("hwnd", "class", "text", "visible", "enabled")}
                                  for w in windows if w["parent"] is None]}
         by_handle = {w["hwnd"]: w for w in windows}
+        if frame is not None:
+            def in_frame(hwnd):
+                seen = set()
+                while hwnd and hwnd not in seen:
+                    if hwnd == frame:
+                        return True
+                    seen.add(hwnd)
+                    hwnd = by_handle.get(hwnd, {}).get('parent')
+                return False
+            candidates = [parent for parent in candidates if in_frame(parent)]
         if len(candidates) != 1:
             # The child IDs of the windows with most children tell how 1C numbered a form (task 022).
             parents = sorted(children.items(), key=lambda pair: -len(pair[1]))[:10]

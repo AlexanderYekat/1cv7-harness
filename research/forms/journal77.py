@@ -176,9 +176,10 @@ def controller(text, settings, expected):
 def branches(items, kind):
     result = []
     basis = next((s for s in items if s['kind'] == 'journal_basis'), None)
-    source_kind = basis['source'] if basis else kind
+    children = next((s for s in items if s['kind'] == 'journal_children'), None)
+    source_kind = basis['source'] if basis else children['source'] if children else kind
     copying = any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in items)
-    if any(s['kind'] in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis') for s in items):
+    if any(s['kind'] in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis', 'journal_children') for s in items):
         result.append(f'''    Если (Номер77Шага <= -105000) И (Номер77Шага > -109000) Тогда
         Попытка
             Ссылка77 = Контекст77Формы.ТекущийДокумент;
@@ -224,6 +225,9 @@ def branches(items, kind):
         КонецПопытки;
     КонецЕсли;
 ''')
+    if children:
+        import journal_children77
+        result.append(journal_children77.branches(children, kind))
     for step in items:
         number = step["index"]
         if step['kind'] == 'find_document':
@@ -334,7 +338,11 @@ def branches(items, kind):
 
 
 def function(items, kind):
-    return ('Функция Harness77ДатаИнтервала(Дата77)\n    Возврат Строка(ДатаГод(Дата77)) + ":" + Строка(ДатаМесяц(Дата77)) + ":" + Строка(ДатаЧисло(Дата77));\nКонецФункции\n\nФункция Harness77Журнал(Номер77Шага)\n    Ответ77 = "";\n' + branches(items, kind)
+    references = ''
+    if any(s['kind'] == 'journal_children' for s in items):
+        import journal_children77
+        references = journal_children77.reference_function()
+    return (references + 'Функция Harness77ДатаИнтервала(Дата77)\n    Возврат Строка(ДатаГод(Дата77)) + ":" + Строка(ДатаМесяц(Дата77)) + ":" + Строка(ДатаЧисло(Дата77));\nКонецФункции\n\nФункция Harness77Журнал(Номер77Шага)\n    Ответ77 = "";\n' + branches(items, kind)
             + '    Возврат Ответ77;\nКонецФункции\n\n')
 
 

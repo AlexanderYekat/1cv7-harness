@@ -64,7 +64,8 @@ def options(parameters, name):
             before.encode("cp1251")
     return {"setup": setup, "verify": verify, "mode": mode, "post": post, "operations": operations,
             "journal": parameters.get("journal_form"),
-            "basis_source": next((s.get("source") for s in (parameters.get("steps") or []) if "journal_basis" in s), None)}
+            "basis_source": next((s.get("source") for s in (parameters.get("steps") or [])
+                                  if "journal_basis" in s or "journal_children" in s), None)}
 
 
 def commands(settings):

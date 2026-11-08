@@ -575,6 +575,12 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             tabular = step["kind"] == "key" or scenario77.table_step(step)
             control = windows.get(ids[step["record_id"]]) if "record_id" in step else table if tabular else None
             try:
+                if step['kind'] == 'journal_children':
+                    import journal_children77
+                    journal_children77.execute(self, form, current_inspection, step, record)
+                    record.update(form_open=True, issue=None, status='passed')
+                    records.append(record)
+                    continue
                 if step['kind'] == 'journal_deletion':
                     self.journal_deletion(form, current_inspection, step, record)
                     record.update(form_open=True, issue=None, status='passed')
@@ -1606,6 +1612,7 @@ class FormAdapter(launcher.Harness77Adapter):
         self.fixture_context = None
         self.journal_form = None
         self.return_form = None
+        self.children_form = None
 
     def request_captures(self, requests):
         self.requests = capture_requests(requests)
@@ -1632,6 +1639,13 @@ class FormAdapter(launcher.Harness77Adapter):
             metadata = Metadata((base / "1Cv7.MD").read_bytes())
             self.fixture_context = fixture77.context(name, settings, metadata)
             for step in scenario77.steps(self.parameters) or []:
+                if step['kind'] == 'journal_children':
+                    field = metadata.attributes('Документ', name.split('.')[1]).get(step['link'].casefold())
+                    if field is None or field.code != 'O' or (field.kind and field.kind.casefold() != step['source'].casefold()):
+                        raise ValueError('journal_children link must accept the source document kind')
+                    self.children_form = configuration_description(base / '1Cv7.MD', step['journal'])
+                    import journal_basis77
+                    journal_basis77.runtime_description(self.form[0], step)
                 if step['kind'] == 'journal_basis':
                     field = metadata.attributes('Документ', name.split('.')[1]).get(step['link'].casefold())
                     if field is None or field.code != 'O' or (field.kind and field.kind.casefold() != step['source'].casefold()):
@@ -1738,6 +1752,10 @@ End If''')
                                   captures=self.requests, configuration=self.configuration, steps=steps,
                                   show=steps is not None and bool(description.get("browser")),
                                   created_description=created_description)
+            if getattr(self, 'children_form', None):
+                watcher.children_description = self.children_form[0]
+                atomic_json(self.run_dir / 'form' / 'children-description.json', self.children_form[0])
+                atomic_json(self.run_dir / 'form' / 'children-source.json', self.children_form[1])
             if getattr(self, 'return_form', None):
                 watcher.return_description = self.return_form[0]
                 atomic_json(self.run_dir / 'form' / 'return-journal-description.json', self.return_form[0])

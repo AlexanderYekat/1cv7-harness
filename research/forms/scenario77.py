@@ -44,7 +44,7 @@ answer its save question.
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis", "journal_children")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
@@ -53,7 +53,10 @@ OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": 
            "find_document": {"limit": int, "open": bool}, "close_form": {"closes": bool},
            "journal_period": {"start": str, "end": str, "cancel": bool},
            "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
-           "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str}, "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
+           "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str},
+           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool,
+                                "journal": str, "expected": str, "caption_control": str, "caption_text": str},
+           "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
@@ -181,6 +184,9 @@ def steps(parameters):
                 raise ValueError(kind + ' requires find_document open=false and expected readback')
             if kind == 'journal_deletion' and 'deleted' not in step:
                 raise ValueError('journal_deletion requires explicit deleted = true/false')
+        if kind == 'journal_children':
+            import journal_children77
+            journal_children77.validate(parameters, result, step)
         if kind == 'journal_basis':
             import journal_basis77
             journal_basis77.validate(parameters, result, step)
@@ -189,7 +195,7 @@ def steps(parameters):
             journal_copy77.validate(parameters, result)
         if (any(s['kind'] == 'find_document' and s.get('open') is False for s in result)
                 and not any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in result)
-                and kind not in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis')):
+                and kind not in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis', 'journal_children')):
             raise ValueError('only journal commands may follow a journal cursor selection')
         if kind == "find_document":
             import journal77
@@ -231,7 +237,7 @@ def _number(value, where, least):
 
 def _target(kind, value, where):
     """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
-    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy"):
+    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_children"):
         if value is not True:
             raise ValueError(f"{where} ({kind}): write {kind} = true")
         return kind
@@ -625,6 +631,9 @@ def answer(text):
              "journal-copy": "journal_copy", "journal-source": "journal_source",
              "journal-basis": "journal_basis", "journal-link": "journal_link", "journal-comment": "journal_comment",
              "journal-return": "journal_return",
+             "journal-id": "journal_id", "journal-source-id": "journal_source_id",
+             "journal-expected-id": "journal_expected_id", "journal-link-id": "journal_link_id",
+             "journal-empty": "journal_empty",
              "journal-date": "journal_date", "journal-number": "journal_number",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
