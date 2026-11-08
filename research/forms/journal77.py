@@ -30,6 +30,10 @@ def checked_cursor(trip, inspection):
 
 
 def unpost_menu(form, inspection):
+    return native_menu(form, inspection, UNPOST_COMMAND, 'не проведенным')
+
+
+def native_menu(form, inspection, command, caption):
     """Read the native menu and update its UI state before dispatching a user command."""
     import ctypes as C
     from ctypes import wintypes as W
@@ -59,15 +63,15 @@ def unpost_menu(form, inspection):
                 if not form.send(main, 0x117, sub, index)[0]:  # WM_INITMENUPOPUP: update enabled state
                     raise RuntimeError('native menu state update failed')
                 visit(sub, depth + 1)
-            elif user.GetMenuItemID(menu, index) == UNPOST_COMMAND:
+            elif user.GetMenuItemID(menu, index) == command:
                 title = C.create_unicode_buffer(512)
-                user.GetMenuStringW(menu, UNPOST_COMMAND, title, len(title), 0)
-                flags = user.GetMenuState(menu, UNPOST_COMMAND, 0)
-                found.append(dict(command=UNPOST_COMMAND, caption=title.value, flags=flags,
+                user.GetMenuStringW(menu, command, title, len(title), 0)
+                flags = user.GetMenuState(menu, command, 0)
+                found.append(dict(command=command, caption=title.value, flags=flags,
                                   enabled=flags != 0xFFFFFFFF and not flags & 3, main=main))
     visit(user.GetMenu(main))
-    if len(found) != 1 or 'не проведенным' not in found[0]['caption'].casefold():
-        raise RuntimeError('native unpost menu command is missing or ambiguous: ' + str(found))
+    if len(found) != 1 or caption not in found[0]['caption'].casefold():
+        raise RuntimeError('native journal menu command is missing or ambiguous: ' + str(found))
     return found[0]
 
 
@@ -171,8 +175,8 @@ def controller(text, settings, expected):
 
 def branches(items, kind):
     result = []
-    if any(s['kind'] == 'journal_unpost' for s in items):
-        result.append(f'''    Если (Номер77Шага <= -105000) И (Номер77Шага > -107000) Тогда
+    if any(s['kind'] in ('journal_unpost', 'journal_deletion') for s in items):
+        result.append(f'''    Если (Номер77Шага <= -105000) И (Номер77Шага > -109000) Тогда
         Попытка
             Ссылка77 = Контекст77Формы.ТекущийДокумент;
             Если Ссылка77 <> Объект77Данных Тогда Возврат "journal-error:journal target changed"; КонецЕсли;
@@ -184,6 +188,7 @@ def branches(items, kind):
                 + "journal-match:1" + РазделительСтрок
                 + "journal-hwnd:" + Строка(Расш77.Дескриптор) + РазделительСтрок
                 + "journal-posted:" + Строка(Док77Чтения.Проведен()) + РазделительСтрок
+                + "journal-deleted:" + Строка(Док77Чтения.ПометкаУдаления()) + РазделительСтрок
                 + "journal-value:" + Harness77ПроверитьДанные(Объект77Данных);
         Исключение
             Ответ77 = "journal-error:" + Harness77Строка(ОписаниеОшибки());

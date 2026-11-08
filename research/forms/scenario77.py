@@ -44,7 +44,7 @@ answer its save question.
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
@@ -52,7 +52,8 @@ OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": 
            "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}, "create": {}, "created": {},
            "find_document": {"limit": int, "open": bool}, "close_form": {"closes": bool},
            "journal_period": {"start": str, "end": str, "cancel": bool},
-           "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str}}
+           "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
+           "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
@@ -169,11 +170,13 @@ def steps(parameters):
         if kind == "journal_period":
             import journal77
             journal77.validate_period(parameters, result, step)
-        if kind == 'journal_unpost':
+        if kind in ('journal_unpost', 'journal_deletion'):
             if not any(s['kind'] == 'find_document' and s.get('open') is False for s in result) or not step.get('expected'):
-                raise ValueError('journal_unpost requires find_document open=false and expected readback')
-        if any(s['kind'] == 'find_document' and s.get('open') is False for s in result) and kind != 'journal_unpost':
-            raise ValueError('only journal_unpost may follow a journal cursor selection')
+                raise ValueError(kind + ' requires find_document open=false and expected readback')
+            if kind == 'journal_deletion' and 'deleted' not in step:
+                raise ValueError('journal_deletion requires explicit deleted = true/false')
+        if any(s['kind'] == 'find_document' and s.get('open') is False for s in result) and kind not in ('journal_unpost', 'journal_deletion'):
+            raise ValueError('only journal commands may follow a journal cursor selection')
         if kind == "find_document":
             import journal77
             journal77.validate(parameters, parameters.get("form_object"))
@@ -210,7 +213,7 @@ def _number(value, where, least):
 
 def _target(kind, value, where):
     """The value of a step's kind: true for add_row and delete_row, a number for row and rows, a key name for key."""
-    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form", "journal_period", "journal_unpost"):
+    if kind in ("add_row", "delete_row", "reopen", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion"):
         if value is not True:
             raise ValueError(f"{where} ({kind}): write {kind} = true")
         return kind
@@ -599,7 +602,7 @@ def answer(text):
              "journal-reference": "journal_reference", "journal-error": "journal_error",
              "journal-current": "journal_current", "journal-match": "journal_match", "journal-opened": "journal_opened",
              "journal-start": "journal_start", "journal-end": "journal_end",
-             "journal-posted": "journal_posted", "journal-value": "journal_value",
+             "journal-posted": "journal_posted", "journal-deleted": "journal_deleted", "journal-value": "journal_value",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
     record = {}

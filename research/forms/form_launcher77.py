@@ -575,6 +575,11 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             tabular = step["kind"] == "key" or scenario77.table_step(step)
             control = windows.get(ids[step["record_id"]]) if "record_id" in step else table if tabular else None
             try:
+                if step['kind'] == 'journal_deletion':
+                    self.journal_deletion(form, current_inspection, step, record)
+                    record.update(form_open=True, issue=None, status='passed')
+                    records.append(record)
+                    continue
                 if step['kind'] == 'journal_unpost':
                     self.journal_unpost(form, current_inspection, step, record)
                     record.update(form_open=True, issue=None, status='passed')
@@ -729,6 +734,53 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if current_inspection is not inspection:
             inspection["final_form"] = current_inspection
         return records
+
+    def journal_deletion(self, form, inspection, step, record):
+        """Toggle only a freshly verified saved target with the native journal command."""
+        import journal77
+        import journal_deletion77 as deletion
+        from form_window77 import Pending
+        number = -107000 - 2 * step['index']
+        before = record['before_deletion'] = self.round_trip(number)
+        record['calls'] = [dict(before, number=number)]
+        deletion.checked_state(before, inspection)
+        if before['journal_deleted'] == str(int(step['deleted'])):
+            raise RuntimeError('document already has the requested deletion mark; refusing toggle')
+        menu = record['menu'] = journal77.native_menu(form, inspection, deletion.DELETE_COMMAND, 'удал')
+        if not menu['enabled']:
+            raise RuntimeError('native deletion menu is disabled')
+        action = record['action'] = dict(requested=True, command=deletion.DELETE_COMMAND,
+            hwnd=inspection['chain'][1]['hwnd'], message='WM_COMMAND', identity_rechecked=True)
+        seen = form.top_windows()
+        chain = Chain(form, action, Pending(form, action['hwnd'], 0x111, deletion.DELETE_COMMAND, 0),
+                      seen, finish_click)
+        try:
+            chain.wait()
+            self.settle(form, chain, step)
+            record['confirmation'] = chain.window
+            if chain.window is not None:
+                button = deletion.answer(chain.window, step['deleted'], step.get('cancel', False))
+                record['answer'] = form.answer(chain.window, button)
+                if not record['answer'].get('requested'):
+                    raise RuntimeError('deletion confirmation was not answered')
+                chain.wait()
+                self.settle(form, chain, step)
+            elif step.get('cancel'):
+                raise RuntimeError('native deletion command provided no confirmation to cancel')
+            if chain.window is not None or not action.get('returned'):
+                raise RuntimeError('deletion command did not finish or opened another window')
+        finally:
+            record['calls'] += chain.trips
+            if chain.window is not None:
+                record['dismissed'] = self.dismiss(form, chain, step)
+        after = record['after_deletion'] = self.round_trip(number - 1)
+        record['calls'].append(dict(after, number=number - 1))
+        deletion.checked_state(after, inspection)
+        if after['journal_current'] != before['journal_current']:
+            raise RuntimeError('journal target changed during deletion toggle')
+        expected_mark = before['journal_deleted'] if step.get('cancel') else str(int(step['deleted']))
+        if after['journal_deleted'] != expected_mark or after['journal_value'] != step['expected']:
+            raise RuntimeError('saved deletion mark/document/entries differ from expectation')
 
     def journal_unpost(self, form, inspection, step, record):
         """Only the exact selected saved reference may receive the native unpost command."""
