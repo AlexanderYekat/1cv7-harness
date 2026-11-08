@@ -54,7 +54,7 @@ OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": 
            "journal_period": {"start": str, "end": str, "cancel": bool},
            "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
            "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str},
-           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int, "kinds": str,
+           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int, "kinds": str, "edit": bool, "expected_after": str,
                                 "journal": str, "expected": str, "caption_control": str, "caption_text": str, "browser_visible": bool},
            "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
@@ -163,8 +163,8 @@ def steps(parameters):
         if kind == "reopen":
             import journal_basis77
             journal_basis77.validate_caption(step)
-            if 'caption_control' in step and not any(s['kind'] == 'journal_basis' for s in result):
-                raise ValueError('reopen runtime caption requires journal_basis')
+            if 'caption_control' in step and not any(s['kind'] == 'journal_basis' or (s['kind'] == 'journal_children' and s.get('edit')) for s in result):
+                raise ValueError('reopen runtime caption requires journal_basis or editable journal_children')
             if not result or result[-1]["kind"] == "reopen":
                 raise ValueError(f"{where} (reopen): requires a preceding scenario action or check")
             if (not isinstance(parameters.get("form_object"), str)
@@ -196,7 +196,7 @@ def steps(parameters):
             import journal_copy77
             journal_copy77.validate(parameters, result)
         if (any(s['kind'] == 'find_document' and s.get('open') is False for s in result)
-                and not any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in result)
+                and not any((s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel')) or (s['kind'] == 'journal_children' and s.get('edit')) for s in result)
                 and kind not in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis', 'journal_children')):
             raise ValueError('only journal commands may follow a journal cursor selection')
         if kind == "find_document":
@@ -228,6 +228,13 @@ def steps(parameters):
         raise ValueError("journal mode requires create as its first step")
     if parameters.get("fixture_mode") == "journal_existing" and not any(s['kind'] == 'find_document' for s in result):
         raise ValueError("journal_existing requires find_document as its first step")
+    editing = [s for s in result if s['kind'] == 'journal_children' and s.get('edit')]
+    if editing:
+        tail = result[editing[0]['index']:]
+        if len(editing) != 1 or not any(s['kind'] == 'reopen' for s in tail):
+            raise ValueError('editable journal_children requires one handoff and subsequent reopen')
+        if any(s['kind'] in ('journal_period', 'find_document', 'journal_children', 'journal_copy', 'journal_basis', 'journal_unpost', 'journal_deletion', 'created', 'create') for s in tail):
+            raise ValueError('editable journal_children tail requires document form steps only')
     return result
 
 
@@ -518,6 +525,12 @@ def step_function(items, table=False, journal_kind=None):
         КонецПопытки;
     КонецЕсли;
 ''' if step["kind"] == "value" and "row" not in step else _table_branch(step) for step in items)
+    editing = next((s for s in items if s['kind'] == 'journal_children' and s.get('edit')), None)
+    if editing:
+        # Keep Объект77Данных bound to the source for journal return and fixture checks.
+        reference = f"Объект77Подготовки.ПолучитьЗначение({editing['reference']})"
+        branches = branches.replace('ОткрытьФорму(Объект77Данных, Контекст77, 0)', f'ОткрытьФорму({reference}, Контекст77, 0)')
+        branches = branches.replace('Контекст77Формы.ТекущийДокумент() = Объект77Данных', f'Контекст77Формы.ТекущийДокумент() = {reference}')
     choice = any(s["kind"] == "choose" for s in items)
     if choice:
         import choice77

@@ -569,6 +569,8 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         records, pending, chain = [], [], None
         self.calls = {}
         self.pending_choice = None
+        child_navigation = None
+        source_description = self.description
         for step in self.steps:
             record = dict(step)
             # A step of the table part (task 027) works with its window, as an element step with its control's.
@@ -577,7 +579,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             try:
                 if step['kind'] == 'journal_children':
                     import journal_children77
-                    journal_children77.execute(self, form, current_inspection, step, record)
+                    handoff = journal_children77.execute(self, form, current_inspection, step, record)
+                    if step.get('edit'):
+                        current_inspection, child_navigation = handoff
+                        self.description = journal_children77.runtime_description(self.created_description, step)
+                        ids = window_ids(self.description)
+                        dialog = current_inspection['chain'][0]['hwnd']
+                        windows = {c['id']: c for c in current_inspection['controls']}
+                        table = windows.get(scenario77.TABLE_WINDOW_ID)
                     record.update(form_open=True, issue=None, status='passed')
                     records.append(record)
                     continue
@@ -749,6 +758,16 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             records.append(record)
             if record["issue"]:
                 break
+        if child_navigation is not None:
+            import journal_children77
+            returned = child_navigation['opening']['editing_return'] = {}
+            try:
+                current_inspection = journal_children77.finish_edit(self, form, current_inspection, child_navigation, returned)
+                self.description = source_description
+            except Exception as error:
+                returned['issue'] = f'{type(error).__name__}: {error}'
+                records[-1]['issue'] = (records[-1].get('issue') or '') + '; subordinate return: ' + returned['issue']
+                records[-1]['status'] = 'failed'
         if current_inspection is not inspection:
             inspection["final_form"] = current_inspection
         return records

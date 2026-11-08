@@ -37,6 +37,10 @@ def validate(parameters, previous, step):
         raise ValueError('journal_children requires distinct source and child kinds')
     import journal_basis77
     journal_basis77.validate_caption(step)
+    if 'edit' in step or 'expected_after' in step:
+        if (step.get('edit') is not True or 'kinds' not in step or step.get('cancel') or step.get('empty')
+                or not step.get('expected_after') or not parameters.get('fixture_verify')):
+            raise ValueError('editable journal_children requires mixed kinds, expected_after, verification and no cancel/empty')
 
 
 def branches(step, kind):
@@ -101,6 +105,11 @@ def branches(step, kind):
         child = child.replace('                Док77Чтения = СоздатьОбъект("Документ."', '''                Ответ77 = Ответ77 + "journal-kind:" + Ссылка77.Вид() + РазделительСтрок
                     + "journal-expected-kind:" + Ожидаемая77Ссылка.Вид() + РазделительСтрок;
                 Док77Чтения = СоздатьОбъект("Документ."''')
+    if step.get('edit'):
+        source += '''            Если Номер77Шага <= -113000 Тогда Контекст77Формы = Новый77Контекст; КонецЕсли;
+'''
+        child = child.replace('                    Ответ77 = Ответ77 + "journal-opened:1"',
+                              '                    Контекст77Формы = Новый77Контекст;\n                    Ответ77 = Ответ77 + "journal-opened:1"')
     result = []
     for condition, body in [
         ('((Номер77Шага <= -110000) И (Номер77Шага > -111000)) ИЛИ ((Номер77Шага <= -113000) И (Номер77Шага > -114000))', source),
@@ -275,6 +284,34 @@ def close_frame(watcher, form, frame):
     raise RuntimeError('read-only subordinate frame did not close')
 
 
+def opened_frame(watcher, form, mdi, previous, record):
+    """Enter is posted: require a new owned MDI frame before querying its context."""
+    started = time.monotonic()
+    old = {w['hwnd'] for w in previous}
+    record['opened_window_polls'] = 0
+    record['opened_window_busy'] = []
+    while True:
+        record['opened_window_polls'] += 1
+        try:
+            inventory = record['opened_windows'] = form.inventory(budget_s=1.0)
+        except RuntimeError as error:
+            # Opening handlers can temporarily stop answering WM_GETTEXT. Retry only
+            # this passive observation, within the same deadline; never resend Enter.
+            if str(error) != 'owned window text did not respond':
+                raise
+            record['opened_window_busy'].append(str(error))
+            inventory = []
+        frames = [w for w in inventory if w.get('parent') == mdi and w['hwnd'] not in old
+                  and w.get('visible') and w.get('enabled')]
+        if len(frames) > 1:
+            raise RuntimeError('new saved child document frame is ambiguous')
+        record['opened_wait_s'] = round(time.monotonic() - started, 3)
+        if frames:
+            return frames[0]['hwnd']
+        if record['opened_wait_s'] >= 10 or watcher.stopped.wait(.05):
+            raise RuntimeError('new saved child document frame did not appear')
+
+
 def execute(watcher, form, inspection, step, record):
     import scenario77
     from form_window77 import Pending
@@ -336,20 +373,22 @@ def execute(watcher, form, inspection, step, record):
             record['open_action'] = form.post_key(table['hwnd'], *scenario77.KEYS['enter'])
             if not record['open_action'].get('returned'):
                 raise RuntimeError('subordinate Enter failed')
+            document_frame = opened_frame(watcher, form, mdi, inventory, record)
             opened = record['opened_child'] = call(-112001)
             checked(opened, before['journal_value'])
-            new_inventory = record['opened_windows'] = form.inventory()
-            new_frames = [w for w in new_inventory if w.get('parent') == mdi
-                          and w['hwnd'] not in {w['hwnd'] for w in inventory} and w.get('visible') and w.get('enabled')]
-            if len(new_frames) != 1:
-                raise RuntimeError('new saved child document frame missing/ambiguous')
-            document_frame = new_frames[0]['hwnd']
             description = runtime_description(watcher.created_description, step)
             document = record['opened_form'] = inspect_frame(form, description, document_frame)
             checked_child(opened, before, [w['hwnd'] for w in document['chain'][:2]], opened=True)
             checked_kind(opened, step, target=True)
             if opened['journal_id'] != selected['journal_id']:
                 raise RuntimeError('Enter opened another child')
+            if step.get('edit'):
+                # Transfer ownership only after every opened-form identity/layout gate passed.
+                navigation = dict(source=inspection, children=children, children_frame=frame,
+                                  mdi=mdi, old_handles=old_handles, before=before, step=step, opening=record)
+                record['edit_handoff_verified'] = True
+                frame = document_frame = None
+                return document, navigation
             record['document_close'] = close_frame(watcher, form, document_frame)
             document_frame = None
             record['returned_child'] = call(-111901 if 'limit' in step else -111002)
@@ -372,3 +411,39 @@ def execute(watcher, form, inspection, step, record):
         raise RuntimeError('subordinate navigation left an extra MDI frame')
     record['round_trip'] = after
     record['return_verified'] = True
+
+
+def finish_edit(watcher, form, inspection, navigation, record):
+    """044: close the current (possibly reopened) document, then return to its source."""
+    before, step = navigation['before'], navigation['step']
+    expected = step['expected_after']
+    record['calls'] = []
+    def call(number):
+        trip = watcher.round_trip(number)
+        record['calls'].append(dict(trip, number=number))
+        return trip
+    # Verify the current form's exact saved reference/link before closing any HWND.
+    if form.alive(inspection['chain'][1]['hwnd']):
+        opened = record['before_close'] = call(-112002)
+        checked_child(opened, dict(before, journal_value=expected),
+                      [w['hwnd'] for w in inspection['chain'][:2]], opened=True)
+        checked_kind(opened, step, target=True)
+        record['before_windows'] = form.inventory()
+        record['document_close'] = close_frame(watcher, form, inspection['chain'][1]['hwnd'])
+    else:
+        raise RuntimeError('editable subordinate must be reopened and inspected before return')
+    returned = record['returned_child'] = call(-111902)
+    checked_child(returned, dict(before, journal_value=expected),
+                  [w['hwnd'] for w in navigation['children']['chain'][:2]])
+    checked_kind(returned, step, target=True)
+    record['children_close'] = close_frame(watcher, form, navigation['children_frame'])
+    after = record['after_children'] = call(-113002)
+    journal77.checked_cursor(after, navigation['source'])
+    checked(after, expected)
+    if any(after.get(k) != before.get(k) for k in ('journal_current', 'journal_id', 'journal_posted', 'journal_deleted', 'journal_hwnd')):
+        raise RuntimeError('editable subordinate return changed source identity')
+    record['after_windows'] = form.inventory()
+    if any(w.get('parent') == navigation['mdi'] and w['hwnd'] not in navigation['old_handles'] for w in record['after_windows']):
+        raise RuntimeError('editable subordinate left an extra MDI frame')
+    record['return_verified'] = True
+    return navigation['source']
