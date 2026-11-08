@@ -54,8 +54,8 @@ OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": 
            "journal_period": {"start": str, "end": str, "cancel": bool},
            "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
            "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str},
-           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int,
-                                "journal": str, "expected": str, "caption_control": str, "caption_text": str},
+           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int, "kinds": str,
+                                "journal": str, "expected": str, "caption_control": str, "caption_text": str, "browser_visible": bool},
            "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
@@ -187,6 +187,8 @@ def steps(parameters):
         if kind == 'journal_children':
             import journal_children77
             journal_children77.validate(parameters, result, step)
+            if 'kinds' in step:
+                step['target_kind'] = parameters['form_object'].split('.')[1]
         if kind == 'journal_basis':
             import journal_basis77
             journal_basis77.validate(parameters, result, step)
@@ -634,6 +636,7 @@ def answer(text):
              "journal-id": "journal_id", "journal-source-id": "journal_source_id",
              "journal-expected-id": "journal_expected_id", "journal-link-id": "journal_link_id",
              "journal-empty": "journal_empty",
+             "journal-kind": "journal_kind", "journal-expected-kind": "journal_expected_kind",
              "journal-date": "journal_date", "journal-number": "journal_number",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}

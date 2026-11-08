@@ -1,4 +1,4 @@
-"""041: read-only UI navigation through a native subordinate-document journal."""
+"""041–043: read-only exact selection in single-kind and mixed native child journals."""
 import re
 import time
 import journal77
@@ -21,6 +21,18 @@ def validate(parameters, previous, step):
         raise ValueError('journal_children empty and cancel are separate cases')
     if 'limit' in step and (type(step['limit']) is not int or not 1 <= step['limit'] <= 100 or step.get('empty')):
         raise ValueError('journal_children limit requires 1..100 and a nonempty search')
+    if 'kinds' in step:
+        kinds = [k.strip() for k in step['kinds'].split(',')]
+        if (not 2 <= len(kinds) <= 10
+                or any(not isinstance(k, str) or not re.fullmatch(r'[^\W\d]\w*', k) for k in kinds)
+                or len({k.casefold() for k in kinds}) != len(kinds)
+                or parameters['form_object'].split('.')[1] not in kinds
+                or step['source'].casefold() in {k.casefold() for k in kinds}
+                or 'limit' not in step):
+            raise ValueError('journal_children kinds requires 2..10 distinct identifiers including the target, excluding source, and limit')
+        step['kinds'] = kinds
+    if 'browser_visible' in step and 'kinds' not in step:
+        raise ValueError('journal_children browser_visible requires explicit mixed kinds')
     if step['source'].casefold() == parameters['form_object'].split('.')[1].casefold():
         raise ValueError('journal_children requires distinct source and child kinds')
     import journal_basis77
@@ -73,6 +85,22 @@ def branches(step, kind):
                 КонецЕсли;
             КонецЕсли;
 '''
+    if 'kinds' in step:
+        allowed = ' ИЛИ '.join(f'(Ссылка77.Вид() = "{name}")' for name in step['kinds'])
+        child = child.replace(
+            f'(Ссылка77.Вид() <> "{kind}")', f'НЕ ({allowed})').replace(
+            f'Док77Чтения = СоздатьОбъект("Документ.{kind}");',
+            'Док77Чтения = СоздатьОбъект("Документ." + Ссылка77.Вид());')
+        child = child.replace('            Ответ77 = "journal-hwnd:', f'''            Если (ТипЗначенияСтр(Ожидаемая77Ссылка) <> "Документ") Тогда
+                Возврат "journal-error:expected subordinate is not a document";
+            КонецЕсли;
+            Если Ожидаемая77Ссылка.Вид() <> "{kind}" Тогда
+                Возврат "journal-error:expected subordinate kind differs";
+            КонецЕсли;
+            Ответ77 = "journal-hwnd:''')
+        child = child.replace('                Док77Чтения = СоздатьОбъект("Документ."', '''                Ответ77 = Ответ77 + "journal-kind:" + Ссылка77.Вид() + РазделительСтрок
+                    + "journal-expected-kind:" + Ожидаемая77Ссылка.Вид() + РазделительСтрок;
+                Док77Чтения = СоздатьОбъект("Документ."''')
     result = []
     for condition, body in [
         ('((Номер77Шага <= -110000) И (Номер77Шага > -111000)) ИЛИ ((Номер77Шага <= -113000) И (Номер77Шага > -114000))', source),
@@ -87,6 +115,25 @@ def branches(step, kind):
     КонецЕсли;
 ''')
     return ''.join(result).replace('ЗначениеВСтрокуВнутр(', 'Harness77КодСсылки(')
+
+
+def validate_metadata(metadata, name, step):
+    for child_kind in step.get('kinds', [name.split('.')[1]]):
+        if child_kind.casefold() not in metadata.objects()['Документ']:
+            raise ValueError('journal_children unknown child kind: ' + child_kind)
+        field = metadata.attributes('Документ', child_kind).get(step['link'].casefold())
+        if field is None or field.code != 'O' or (field.kind and field.kind.casefold() != step['source'].casefold()):
+            raise ValueError('journal_children link must accept the source document kind: ' + child_kind)
+
+
+def runtime_description(description, step):
+    import journal_basis77
+    result = journal_basis77.runtime_description(description, step, allow_button='kinds' in step)
+    if 'browser_visible' in step:
+        if not result.get('browser'):
+            raise ValueError('journal_children browser_visible requires a described browser')
+        result['browser']['expected_visible'] = step['browser_visible']
+    return result
 
 
 def reference_function():
@@ -136,6 +183,16 @@ def checked_candidate(trip, before, handles):
         raise RuntimeError('subordinate search row identity/link/window differs')
 
 
+def checked_kind(trip, step, target=False):
+    """043: admit declared row kinds, but gate opening on the target kind as well."""
+    if 'kinds' not in step:
+        return
+    actual, expected = trip.get('journal_kind'), trip.get('journal_expected_kind')
+    if (actual not in step['kinds'] or expected != step['target_kind']
+            or (target and actual != expected)):
+        raise RuntimeError('subordinate row/target kind differs')
+
+
 def search_child(form, table, before, handles, step, record, call):
     """Bounded End/Up navigation; never dispatch Enter here."""
     import scenario77
@@ -149,14 +206,17 @@ def search_child(form, table, before, handles, step, record, call):
             raise RuntimeError('subordinate search key failed')
         trip = row['round_trip'] = call(-111001-index)
         checked_candidate(trip, before, handles)
+        checked_kind(trip, step)
         if index and trip['journal_expected_id'] != rows[0]['round_trip']['journal_expected_id']:
             raise RuntimeError('subordinate expected reference changed during search')
         if trip['journal_match'] == '1':
             checked_child(trip, before, handles)
+            checked_kind(trip, step, target=True)
             record['selected_child'] = trip
             # A fresh response after the last movement gates Enter (or cancellation).
             recheck = record['selection_recheck'] = call(-111900)
             checked_child(recheck, before, handles)
+            checked_kind(recheck, step, target=True)
             if {k: v for k, v in recheck.items() if k.startswith('journal_')} != {k: v for k, v in trip.items() if k.startswith('journal_')}:
                 raise RuntimeError('subordinate selection changed before Enter')
             return trip
@@ -177,10 +237,10 @@ def inspect_frame(form, description, frame):
     if description.get('browser'):
         tables = [c for c in opened['controls'] if c.get('id') == 4151]
         if (len(tables) != 1 or tables[0].get('class', '').casefold() != 'browse'
-                or not tables[0].get('visible') or not tables[0].get('enabled')
+                or tables[0].get('visible') is not description['browser'].get('expected_visible', True) or not tables[0].get('enabled')
                 or not inside(tuple(tables[0]['rect']), opened['chain'][0]['client_size'])
                 or any(v <= 0 for v in tables[0]['rect'][2:])):
-            issues.append('journal browse rectangle/class/state is invalid')
+            issues.append('journal browse rectangle/class/state is invalid: ' + str(tables))
     if issues:
         raise RuntimeError('subordinate frame layout/captions differ: ' + str(issues))
     return opened
@@ -217,7 +277,6 @@ def close_frame(watcher, form, frame):
 
 def execute(watcher, form, inspection, step, record):
     import scenario77
-    import journal_basis77
     from form_window77 import Pending
     def call(number):
         trip = watcher.round_trip(number)
@@ -285,15 +344,17 @@ def execute(watcher, form, inspection, step, record):
             if len(new_frames) != 1:
                 raise RuntimeError('new saved child document frame missing/ambiguous')
             document_frame = new_frames[0]['hwnd']
-            description = journal_basis77.runtime_description(watcher.created_description, step)
+            description = runtime_description(watcher.created_description, step)
             document = record['opened_form'] = inspect_frame(form, description, document_frame)
             checked_child(opened, before, [w['hwnd'] for w in document['chain'][:2]], opened=True)
+            checked_kind(opened, step, target=True)
             if opened['journal_id'] != selected['journal_id']:
                 raise RuntimeError('Enter opened another child')
             record['document_close'] = close_frame(watcher, form, document_frame)
             document_frame = None
             record['returned_child'] = call(-111901 if 'limit' in step else -111002)
             checked_child(record['returned_child'], before, [w['hwnd'] for w in children['chain'][:2]])
+            checked_kind(record['returned_child'], step, target=True)
         record['children_close'] = close_frame(watcher, form, frame)
         frame = None
     finally:

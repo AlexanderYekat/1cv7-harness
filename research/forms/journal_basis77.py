@@ -29,15 +29,16 @@ def validate_caption(step):
         raise ValueError('runtime caption requires a control identifier')
 
 
-def runtime_description(description, step):
+def runtime_description(description, step, allow_button=False):
     """Explicit scenario expectation for a caption changed by the original form module."""
     import copy
     result = copy.deepcopy(description)
     if 'caption_control' in step:
         identifier = step['caption_control']
         controls = [c for c in result['controls'] if c.get('identifier', '').casefold() == identifier.casefold()]
-        if len(controls) != 1 or controls[0]['class'] != 'STATIC' or controls[0].get('formula'):
-            raise ValueError('runtime caption must name one static label without a formula: ' + identifier)
+        if len(controls) != 1 or not ((controls[0]['class'] == 'STATIC' and not controls[0].get('formula'))
+                                    or (allow_button and controls[0]['class'] == 'BUTTON')):
+            raise ValueError('runtime caption must name one static label without a formula or an explicitly allowed button: ' + identifier)
         controls[0]['caption'] = step['caption_text']
     return result
 

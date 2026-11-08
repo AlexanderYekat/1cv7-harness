@@ -1640,12 +1640,10 @@ class FormAdapter(launcher.Harness77Adapter):
             self.fixture_context = fixture77.context(name, settings, metadata)
             for step in scenario77.steps(self.parameters) or []:
                 if step['kind'] == 'journal_children':
-                    field = metadata.attributes('Документ', name.split('.')[1]).get(step['link'].casefold())
-                    if field is None or field.code != 'O' or (field.kind and field.kind.casefold() != step['source'].casefold()):
-                        raise ValueError('journal_children link must accept the source document kind')
+                    import journal_children77
+                    journal_children77.validate_metadata(metadata, name, step)
                     self.children_form = configuration_description(base / '1Cv7.MD', step['journal'])
-                    import journal_basis77
-                    journal_basis77.runtime_description(self.form[0], step)
+                    journal_children77.runtime_description(self.form[0], step)
                 if step['kind'] == 'journal_basis':
                     field = metadata.attributes('Документ', name.split('.')[1]).get(step['link'].casefold())
                     if field is None or field.code != 'O' or (field.kind and field.kind.casefold() != step['source'].casefold()):
