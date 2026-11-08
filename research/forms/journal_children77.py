@@ -19,6 +19,8 @@ def validate(parameters, previous, step):
     journal77.validate(dict(parameters, journal_form=step.get('journal')), parameters['form_object'])
     if step.get('empty') and step.get('cancel'):
         raise ValueError('journal_children empty and cancel are separate cases')
+    if 'limit' in step and (type(step['limit']) is not int or not 1 <= step['limit'] <= 100 or step.get('empty')):
+        raise ValueError('journal_children limit requires 1..100 and a nonempty search')
     if step['source'].casefold() == parameters['form_object'].split('.')[1].casefold():
         raise ValueError('journal_children requires distinct source and child kinds')
     import journal_basis77
@@ -122,6 +124,48 @@ def checked_child(trip, before, handles, empty=False, opened=False):
         raise RuntimeError('exact saved child reference/link was not verified')
 
 
+def checked_candidate(trip, before, handles):
+    """042: an unselected row must still belong to this source and owned list."""
+    checked(trip, before['journal_value'])
+    if (str(trip.get('journal_hwnd')) not in {str(h) for h in handles}
+            or trip.get('journal_source_id') != before.get('journal_id')
+            or not trip.get('journal_expected_id') or not trip.get('journal_id')
+            or trip.get('journal_empty') != '0' or trip.get('journal_link') != '1'
+            or trip.get('journal_link_id') != before.get('journal_id')
+            or trip.get('journal_match') != str(int(trip['journal_id'] == trip['journal_expected_id']))):
+        raise RuntimeError('subordinate search row identity/link/window differs')
+
+
+def search_child(form, table, before, handles, step, record, call):
+    """Bounded End/Up navigation; never dispatch Enter here."""
+    import scenario77
+    rows = record['child_search'] = []
+    seen = set()
+    for index in range(step['limit']):
+        action = form.post_key(table['hwnd'], *scenario77.KEYS['end' if index == 0 else 'up'])
+        row = dict(action=action)
+        rows.append(row)
+        if not action.get('returned'):
+            raise RuntimeError('subordinate search key failed')
+        trip = row['round_trip'] = call(-111001-index)
+        checked_candidate(trip, before, handles)
+        if index and trip['journal_expected_id'] != rows[0]['round_trip']['journal_expected_id']:
+            raise RuntimeError('subordinate expected reference changed during search')
+        if trip['journal_match'] == '1':
+            checked_child(trip, before, handles)
+            record['selected_child'] = trip
+            # A fresh response after the last movement gates Enter (or cancellation).
+            recheck = record['selection_recheck'] = call(-111900)
+            checked_child(recheck, before, handles)
+            if {k: v for k, v in recheck.items() if k.startswith('journal_')} != {k: v for k, v in trip.items() if k.startswith('journal_')}:
+                raise RuntimeError('subordinate selection changed before Enter')
+            return trip
+        if trip['journal_id'] in seen:
+            raise RuntimeError('subordinate reference not found at list boundary')
+        seen.add(trip['journal_id'])
+    raise RuntimeError('subordinate search limit exhausted before exact reference')
+
+
 def inspect_frame(form, description, frame):
     from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, inside
     expected = expected_geometry(description)
@@ -212,18 +256,22 @@ def execute(watcher, form, inspection, step, record):
         children = record['children_form'] = inspect_frame(form, watcher.children_description, frame)
         table = next(c for c in children['controls'] if c['id'] == scenario77.TABLE_WINDOW_ID)
         record['focus'] = form.give_focus(children['chain'][0]['hwnd'], table['hwnd'])
-        record['selection_key'] = form.post_key(table['hwnd'], *scenario77.KEYS['end'])
-        if not record['selection_key'].get('returned'):
-            raise RuntimeError('subordinate selection key failed')
-        selected = record['selected_child'] = call(-111001)
-        checked_child(selected, before, [w['hwnd'] for w in children['chain'][:2]], empty=step.get('empty', False))
-        record['boundary_key'] = form.post_key(table['hwnd'], *scenario77.KEYS['up'])
-        if not record['boundary_key'].get('returned'):
-            raise RuntimeError('subordinate boundary key failed')
-        boundary = record['boundary_child'] = call(-111003)
-        checked_child(boundary, before, [w['hwnd'] for w in children['chain'][:2]], empty=step.get('empty', False))
-        if boundary.get('journal_id') != selected.get('journal_id'):
-            raise RuntimeError('subordinate journal contains more than the declared single child')
+        handles = [w['hwnd'] for w in children['chain'][:2]]
+        if 'limit' in step:
+            selected = search_child(form, table, before, handles, step, record, call)
+        else:
+            record['selection_key'] = form.post_key(table['hwnd'], *scenario77.KEYS['end'])
+            if not record['selection_key'].get('returned'):
+                raise RuntimeError('subordinate selection key failed')
+            selected = record['selected_child'] = call(-111001)
+            checked_child(selected, before, handles, empty=step.get('empty', False))
+            record['boundary_key'] = form.post_key(table['hwnd'], *scenario77.KEYS['up'])
+            if not record['boundary_key'].get('returned'):
+                raise RuntimeError('subordinate boundary key failed')
+            boundary = record['boundary_child'] = call(-111003)
+            checked_child(boundary, before, handles, empty=step.get('empty', False))
+            if boundary.get('journal_id') != selected.get('journal_id'):
+                raise RuntimeError('subordinate journal contains more than the declared single child')
         record['exact_selection_verified'] = True
         if not (step.get('empty') or step.get('cancel')):
             record['open_action'] = form.post_key(table['hwnd'], *scenario77.KEYS['enter'])
@@ -244,7 +292,7 @@ def execute(watcher, form, inspection, step, record):
                 raise RuntimeError('Enter opened another child')
             record['document_close'] = close_frame(watcher, form, document_frame)
             document_frame = None
-            record['returned_child'] = call(-111002)
+            record['returned_child'] = call(-111901 if 'limit' in step else -111002)
             checked_child(record['returned_child'], before, [w['hwnd'] for w in children['chain'][:2]])
         record['children_close'] = close_frame(watcher, form, frame)
         frame = None

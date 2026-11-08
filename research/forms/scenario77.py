@@ -54,7 +54,7 @@ OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": 
            "journal_period": {"start": str, "end": str, "cancel": bool},
            "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
            "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str},
-           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool,
+           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int,
                                 "journal": str, "expected": str, "caption_control": str, "caption_text": str},
            "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
