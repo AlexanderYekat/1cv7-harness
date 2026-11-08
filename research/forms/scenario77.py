@@ -585,47 +585,12 @@ def controller(text, items, table=False, journal_kind=None):
 # The client's wait before ``result`` (task 008) serves the watcher's step requests meanwhile: each
 # request is one controller call, its answer a UTF-16 file the watcher waits for. The wait for the
 # end restarts after every served step.
-CLIENT = """
-Sub AwaitClick()
-    Dim donePath, requestPath, waitStarted, request, number, answer, stream, folder, answerPath
-    folder = fso.GetParentFolderName(eventPath)
-    donePath = fso.BuildPath(folder, "__DONE__")
-    requestPath = fso.BuildPath(folder, "__REQUEST__")
-    waitStarted = CDbl(Timer)
-    Do While Not fso.FileExists(donePath)
-        If fso.FileExists(requestPath) Then
-            Set stream = fso.OpenTextFile(requestPath, 1)
-            request = stream.ReadLine
-            stream.Close
-            fso.DeleteFile requestPath
-            CheckCOM "step-request"
-            If Left(request, Len(runId) + 1) <> runId & ":" Then Fail "step-request", "foreign step request"
-            number = CLng(Mid(request, Len(runId) + 2))
-            answer = controller.Harness77Step(number, fso.BuildPath(fso.GetParentFolderName(evidencePath), _
-                "step-" & number & ".txt"), runId & ":step:" & number)
-            CheckCOM "step-" & number
-            answerPath = fso.BuildPath(folder, "form-step-" & number)
-            Set stream = fso.CreateTextFile(answerPath & ".tmp", True, True)
-            stream.Write CStr(answer)
-            stream.Close
-            fso.MoveFile answerPath & ".tmp", answerPath & "-done"
-            CheckCOM "step-answer"
-            Emit "phase", "step-" & number, "ok", Elapsed(waitStarted)
-            waitStarted = CDbl(Timer)
-        End If
-        WScript.Sleep 20
-        If Elapsed(waitStarted) > __WAIT_MS__ Then
-            Emit "phase", "click-wait", "timeout", Elapsed(waitStarted)
-            Exit Sub
-        End If
-    Loop
-    Emit "phase", "click-wait", "ok", Elapsed(waitStarted)
-End Sub
-"""
+from step_exchange77 import CLIENT
 
 
 def client(done, wait_ms):
-    return CLIENT.replace("__DONE__", done).replace("__REQUEST__", REQUEST).replace("__WAIT_MS__", str(wait_ms))
+    import step_exchange77
+    return step_exchange77.client(done, REQUEST, wait_ms)
 
 
 def answer(text):

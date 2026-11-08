@@ -1,5 +1,14 @@
 # Проверки без 1С
 
+Задача 045: `test_step_exchange77.py` проверяет привязку диагностики к run_id
+и шагу, запрет повтора по старому ответу, ограниченное чтение ответа при
+отказе доступа и сохранение неопределённости исполнения. Настоящие Windows/FSO
+пробы без 1С: `research/forms/probe_step_exchange77.py --mode controlled` и
+`--mode stress --count 5000`, с новым `--output`. Независимое чтение сырых
+свидетельств — `scripts/verify_step_exchange77.py`, подмены на отдельных копиях —
+`scripts/verify_step_exchange_controls77.py`.
+[Результаты и границы проверки](tasks/045-step-exchange-acceptance.md).
+
 Задача 044: `research/forms/tests/test_journal_children_edit77.py` проверяет
 явный контракт передачи формы (`edit`, `expected_after`, смешанные виды),
 обязательное повторное открытие именно выбранного подчинённого, сохранение

@@ -1470,19 +1470,32 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     def round_trip(self, number):
         """One controller call by the client after a step: its answer, the step's messages and 1C errors."""
         run_id = self.lifecycle["run_id"]
+        import step_exchange77
+        failed = step_exchange77.failed_trip(self.out, run_id, number)
+        if failed is not None:
+            return failed
         request = self.out / scenario77.REQUEST
         temporary = self.out / (scenario77.REQUEST + ".tmp")
+        done = self.out / f"form-step-{number}-done"
+        if done.exists() or done.with_name(f'form-step-{number}.tmp').exists():
+            return {"returned": False, "error": "step response already exists; refusing replay", "number": number}
         temporary.write_text(f"{run_id}:{number}", encoding="ascii")
         temporary.replace(request)
-        done = self.out / f"form-step-{number}-done"
         started = time.monotonic()
         while not done.exists():
             if self.stopped.wait(0.02):
-                return {"returned": False, "error": "the session ended"}
+                return step_exchange77.failed_trip(self.out, run_id, number) or {"returned": False, "error": "the session ended"}
             if time.monotonic() - started > STEP_WAIT_S:
                 return {"returned": False, "error": f"no answer in {STEP_WAIT_S} s"}
         record = {"returned": True, "elapsed_s": round(time.monotonic() - started, 3)}
-        record.update(scenario77.answer(done.read_text(encoding="utf-16")))
+        answer, retries, error = step_exchange77.read_answer(done, run_id, number)
+        if error is not None:
+            return {"returned": False, "error": "step exchange answer-read: " + error['error_description'],
+                    "exchange_error": error, "exchange_retries": retries}
+        if retries:
+            record['exchange_retries'] = retries
+        record['elapsed_s'] = round(time.monotonic() - started, 3)
+        record.update(scenario77.answer(answer))
         try:
             data = (self.out / launcher.PROTOCOL_DIRECTORY / f"step-{number}.txt").read_bytes()
             protocol = data.decode("utf-16" if data.startswith(b"\xff\xfe") else "cp1251")
