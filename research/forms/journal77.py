@@ -175,13 +175,15 @@ def controller(text, settings, expected):
 
 def branches(items, kind):
     result = []
-    copying = any(s['kind'] == 'journal_copy' for s in items)
-    if any(s['kind'] in ('journal_unpost', 'journal_deletion', 'journal_copy') for s in items):
+    basis = next((s for s in items if s['kind'] == 'journal_basis'), None)
+    source_kind = basis['source'] if basis else kind
+    copying = any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in items)
+    if any(s['kind'] in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis') for s in items):
         result.append(f'''    Если (Номер77Шага <= -105000) И (Номер77Шага > -109000) Тогда
         Попытка
             Ссылка77 = Контекст77Формы.ТекущийДокумент;
             Если Ссылка77 <> Объект77Данных Тогда Возврат "journal-error:journal target changed"; КонецЕсли;
-            Док77Чтения = СоздатьОбъект("Документ.{kind}");
+            Док77Чтения = СоздатьОбъект("Документ.{source_kind}");
             Если Док77Чтения.НайтиДокумент(Ссылка77) <> 1 Тогда Возврат "journal-error:target missing"; КонецЕсли;
             Расш77 = СоздатьОбъект("РасширениеФормы");
             Расш77.УстановитьФорму(Контекст77Формы.Форма);
@@ -191,6 +193,22 @@ def branches(items, kind):
                 + "journal-posted:" + Строка(Док77Чтения.Проведен()) + РазделительСтрок
                 + "journal-deleted:" + Строка(Док77Чтения.ПометкаУдаления()) + РазделительСтрок
                 + "journal-value:" + Harness77ПроверитьДанные(Объект77Данных);
+        Исключение
+            Ответ77 = "journal-error:" + Harness77Строка(ОписаниеОшибки());
+        КонецПопытки;
+    КонецЕсли;
+''')
+    if basis and basis.get('return_journal'):
+        result.append('''    Если (Номер77Шага <= -109000) И (Номер77Шага > -110000) Тогда
+        Попытка
+            Сервис77 = СоздатьОбъект("Сервис"); Контекст77Возврата = 0;
+            Если Сервис77.АктивныйКонтекст(Контекст77Возврата) <> 1 Тогда Возврат "journal-error:no returned journal context"; КонецЕсли;
+            Если Контекст77Возврата.ТекущийДокумент <> Объект77Данных Тогда Возврат "journal-error:returned journal reference differs"; КонецЕсли;
+            Расш77 = СоздатьОбъект("РасширениеФормы"); Расш77.УстановитьФорму(Контекст77Возврата.Форма);
+            Ответ77 = "journal-return:1" + РазделительСтрок + "journal-reference:" + Harness77Строка(Контекст77Возврата.ТекущийДокумент)
+                + РазделительСтрок + "journal-hwnd:" + Строка(Расш77.Дескриптор)
+                + РазделительСтрок + "journal-start:" + Harness77ДатаИнтервала(Контекст77Возврата.НачалоИнтервала())
+                + РазделительСтрок + "journal-end:" + Harness77ДатаИнтервала(Контекст77Возврата.КонецИнтервала());
         Исключение
             Ответ77 = "journal-error:" + Harness77Строка(ОписаниеОшибки());
         КонецПопытки;
@@ -207,6 +225,7 @@ def branches(items, kind):
     КонецЕсли;
 ''')
     for step in items:
+        number = step["index"]
         if step['kind'] == 'find_document':
             result.append('''    Если (Номер77Шага <= -101000) И (Номер77Шага >= -101200) Тогда
         Попытка
@@ -242,6 +261,9 @@ def branches(items, kind):
                 + "journal-reference:" + Harness77Строка(Ссылка77) + РазделительСтрок
                 + "journal-hwnd:" + Строка(Расш77.Дескриптор);
 '''
+        elif step['kind'] == 'journal_basis':
+            import journal_basis77
+            body = journal_basis77.body(kind, step)
         elif step['kind'] == 'journal_copy':
             import journal_copy77
             body = journal_copy77.body(kind)
@@ -287,9 +309,21 @@ def branches(items, kind):
                 + "journal-deleted:" + Строка(Док77Чтения.ПометкаУдаления()) + РазделительСтрок
                 + "journal-value:" + Harness77ПроверитьДанные(Объект77Данных);
 '''
+            if basis:
+                body += '            Если Док77Чтения.' + basis['link'] + ' <> Объект77Источник Тогда Возврат "journal-error:saved basis link differs"; КонецЕсли;\n'
+                body += '            Ответ77 = Ответ77 + РазделительСтрок + "journal-link:" + Harness77Строка(Док77Чтения.' + basis['link'] + ');\n'
+        elif step['kind'] == 'reopen' and basis:
+            import scenario77
+            number = scenario77.trip_number(step['index'], 1)
+            body = f'''            Если Контекст77Формы.{basis['link']} <> Объект77Источник Тогда
+                Возврат "journal-error:reopened basis link differs";
+            КонецЕсли;
+            Ответ77 = "journal-link:" + Harness77Строка(Контекст77Формы.{basis['link']}) + РазделительСтрок
+                + "journal-source:" + Harness77Строка(Объект77Источник);
+'''
         else:
             continue
-        result.append(f'''    Если Номер77Шага = {step['index']} Тогда
+        result.append(f'''    Если Номер77Шага = {number} Тогда
         Попытка
 {body}        Исключение
             Ответ77 = "journal-error:" + Harness77Строка(ОписаниеОшибки());
@@ -304,7 +338,7 @@ def function(items, kind):
             + '    Возврат Ответ77;\nКонецФункции\n\n')
 
 
-def select_kind(form, window, caption):  # native; system listbox messages marshal strings
+def select_kind(form, window, caption, evidence=None, cancel=False):  # native; listbox messages marshal strings
     import ctypes as C
     import scenario77
     if window.get('text') != 'Выбор вида документа':
@@ -327,6 +361,14 @@ def select_kind(form, window, caption):  # native; system listbox messages marsh
         if not ok or read != length:
             raise RuntimeError('document-kind text could not be read')
         names.append(buffer.value)
+    evidence = evidence if evidence is not None else {}
+    evidence['names'] = names
+    if cancel:
+        button, _, issue = scenario77.answer_plan(dict(target=window['text'], button='Отмена'), window)
+        if issue:
+            raise RuntimeError(issue)
+        evidence.update(cancel=True, answer=form.answer(window, button))
+        return evidence
     matches = [i for i, name in enumerate(names) if name.strip().casefold() == caption.strip().casefold()]
     if len(matches) != 1:
         raise RuntimeError(f'document kind {caption!r} is not unique in {names!r}')
@@ -339,4 +381,5 @@ def select_kind(form, window, caption):  # native; system listbox messages marsh
     if issue:
         raise RuntimeError(issue)
     answer = form.answer(window, button)
-    return dict(names=names, selected=index, caption=names[index], answer=answer)
+    evidence.update(selected=index, caption=names[index], answer=answer)
+    return evidence

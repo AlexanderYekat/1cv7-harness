@@ -44,16 +44,16 @@ answer its save question.
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy")
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis")
 OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
-           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {}, "create": {}, "created": {},
+           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {"caption_control": str, "caption_text": str}, "create": {}, "created": {},
            "find_document": {"limit": int, "open": bool}, "close_form": {"closes": bool},
            "journal_period": {"start": str, "end": str, "cancel": bool},
            "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
-           "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str}, "journal_copy": {}}
+           "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str}, "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
@@ -158,6 +158,10 @@ def steps(parameters):
             result[step["chain"] - 1]["dialogs"] += 1
             step["last"] = True
         if kind == "reopen":
+            import journal_basis77
+            journal_basis77.validate_caption(step)
+            if 'caption_control' in step and not any(s['kind'] == 'journal_basis' for s in result):
+                raise ValueError('reopen runtime caption requires journal_basis')
             if not result or result[-1]["kind"] == "reopen":
                 raise ValueError(f"{where} (reopen): requires a preceding scenario action or check")
             if (not isinstance(parameters.get("form_object"), str)
@@ -171,18 +175,21 @@ def steps(parameters):
             import journal77
             journal77.validate_period(parameters, result, step)
         if kind in ('journal_unpost', 'journal_deletion'):
-            if any(s['kind'] == 'journal_copy' for s in result):
+            if any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in result):
                 raise ValueError('journal commands cannot follow the transition to a copied document form')
             if not any(s['kind'] == 'find_document' and s.get('open') is False for s in result) or not step.get('expected'):
                 raise ValueError(kind + ' requires find_document open=false and expected readback')
             if kind == 'journal_deletion' and 'deleted' not in step:
                 raise ValueError('journal_deletion requires explicit deleted = true/false')
+        if kind == 'journal_basis':
+            import journal_basis77
+            journal_basis77.validate(parameters, result, step)
         if kind == 'journal_copy':
             import journal_copy77
             journal_copy77.validate(parameters, result)
         if (any(s['kind'] == 'find_document' and s.get('open') is False for s in result)
-                and not any(s['kind'] == 'journal_copy' for s in result)
-                and kind not in ('journal_unpost', 'journal_deletion', 'journal_copy')):
+                and not any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in result)
+                and kind not in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis')):
             raise ValueError('only journal commands may follow a journal cursor selection')
         if kind == "find_document":
             import journal77
@@ -194,15 +201,15 @@ def steps(parameters):
         if kind in ("create", "created"):
             import journal77
             journal77.validate(parameters, parameters.get("form_object"))
-            copy_capture = kind == 'created' and any(s['kind'] == 'journal_copy' for s in result)
+            copy_capture = kind == 'created' and any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in result)
             if (parameters.get("fixture_mode") != ("journal_existing" if copy_capture else "journal")
                     or not parameters.get("fixture_setup")):
                 raise ValueError(f"{where}: requires journal mode and fixture_setup")
             if kind == "create" and result:
                 raise ValueError(f"{where}: create must be the first step")
-            if kind == "created" and (not result or not any(s["kind"] in ("create", "journal_copy") for s in result)):
+            if kind == "created" and (not result or not any(s["kind"] in ("create", "journal_copy", "journal_basis") for s in result)):
                 raise ValueError(f"{where}: created requires an earlier create")
-        if kind == 'reopen' and any(s['kind'] == 'journal_copy' for s in result) and not any(s['kind'] == 'created' for s in result):
+        if kind == 'reopen' and any(s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel') for s in result) and not any(s['kind'] == 'created' for s in result):
             raise ValueError('copied document must be captured with created before reopen')
         if closed is not None and kind not in ("message", "no_message"):
             raise ValueError(f"{where} ({kind}): the form is closed at step {closed}; only message steps follow")
@@ -508,7 +515,7 @@ def step_function(items, table=False, journal_kind=None):
         import choice77
     state = "    Ответ77 = Ответ77 + Harness77Таблица();\n" if table else ""
     if any(s['kind'] == 'find_document' and s.get('open') is False for s in items):
-        copies = [s['index'] for s in items if s['kind'] == 'journal_copy']
+        copies = [s['index'] for s in items if s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel')]
         state = ('    Если (Номер77Шага >= ' + str(copies[0]) + ') Тогда\n' + state + '    КонецЕсли;\n') if copies else ''
     if state and any(s["kind"] == "find_document" for s in items):
         state = ('    Если (Номер77Шага > -101000) ИЛИ (Номер77Шага < -101200) Тогда\n'
@@ -616,6 +623,8 @@ def answer(text):
              "journal-start": "journal_start", "journal-end": "journal_end",
              "journal-posted": "journal_posted", "journal-deleted": "journal_deleted", "journal-value": "journal_value",
              "journal-copy": "journal_copy", "journal-source": "journal_source",
+             "journal-basis": "journal_basis", "journal-link": "journal_link", "journal-comment": "journal_comment",
+             "journal-return": "journal_return",
              "journal-date": "journal_date", "journal-number": "journal_number",
              "state-error": "state_error", "choice-hwnd": "choice_hwnd", "choice-current": "choice_current",
              "choice-ready": "choice_ready", "choice-result": "choice_result", "choice-value": "choice_value"}
@@ -779,17 +788,27 @@ def judge(step, record, pending, form_open):
         first = trip["diagnostics"][0]
         return f"{name}: 1C reported an error: line {first['line']}: {first['message']}"
     if step["kind"] == "reopen":
+        if trip.get("journal_error"):
+            return f"{name}: {trip['journal_error']}"
         if record.get("closed_before_reopen") is not True:
             return f"{name}: previous form closing was not confirmed"
         if trip.get("reopen_error") or trip.get("reopen_return") != "1" or trip.get("reopen_same") != "1":
             return f"{name}: the saved document was not reopened: {trip.get('reopen_error') or trip}"
         if not (record.get("reopened") or {}).get("found"):
             return f"{name}: no owned form inspection after reopening"
-    if step["kind"] in ("create", "created", "find_document", "journal_copy"):
+    if step["kind"] in ("create", "created", "find_document", "journal_copy", "journal_basis"):
         if trip.get("journal_error"):
             return f"{name}: {trip['journal_error']}"
         if step["kind"] == "create" and (trip.get("journal_new") != "1" or not record.get("new_form_verified")):
             return f"{name}: new unsaved document form was not verified"
+        if step['kind'] == 'journal_basis':
+            import journal_basis77
+            try:
+                journal_basis77.checked_new(trip)
+                if not record.get('new_form_verified'):
+                    raise RuntimeError('new based document window not verified')
+            except RuntimeError as error:
+                return f'{name}: {error}'
         if step['kind'] == 'journal_copy':
             import journal_copy77
             try:

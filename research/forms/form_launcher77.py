@@ -595,8 +595,15 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     if len(chain_windows) < 3 or chain_windows[2].get("class") != "MDIClient":
                         raise RuntimeError("close_form requires an inspected MDI document frame")
                     control = chain_windows[1]
-                if step["kind"] in ("create", "find_document", "journal_copy"):
-                    created = (self.create_document(form, current_inspection, step, record) if step["kind"] == "create"
+                if step['kind'] == 'journal_basis':
+                    import journal_basis77
+                    created = journal_basis77.execute(self, form, current_inspection, step, record)
+                    if step.get('cancel'):
+                        record.update(form_open=True, status='passed', issue=None)
+                        records.append(record)
+                        continue
+                if step["kind"] in ("create", "find_document", "journal_copy", "journal_basis"):
+                    created = (created if step["kind"] == "journal_basis" else self.create_document(form, current_inspection, step, record) if step["kind"] == "create"
                                else self.copy_document(form, current_inspection, step, record) if step['kind'] == 'journal_copy'
                                else self.find_document(form, current_inspection, step, record))
                     if step['kind'] == 'find_document' and step.get('open') is False:
@@ -682,6 +689,10 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     record["round_trip"] = scenario77.merge_trips(record["calls"])
                     pending = list(record["round_trip"].get("messages", []))
                     from form_window77 import edged_ids, expected_geometry, fit_units, judge_captions, judge_layout
+                    if 'caption_control' in step:
+                        import journal_basis77
+                        self.description = journal_basis77.runtime_description(self.description, step)
+                        record['runtime_caption_expectations'] = {step['caption_control']: step['caption_text']}
                     expected = expected_geometry(self.description)
                     reopened = form.inspect(list(expected))
                     record["reopened"] = reopened
@@ -1130,6 +1141,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         windows = form.inventory()
         frames = choice77.new_frames(windows, seen)
         if not frames:
+            return
+        import journal_basis77
+        if journal_basis77.returned_journal(self, form, step, frames, chain):
             return
         choice, issue = choice77.choice_window(windows, seen)
         if issue is None and step["kind"] == "add_row" and next_step and next_step["kind"] == "choose":
@@ -1591,6 +1605,7 @@ class FormAdapter(launcher.Harness77Adapter):
         self.form = None  # (description, source) of a configuration form (task 022)
         self.fixture_context = None
         self.journal_form = None
+        self.return_form = None
 
     def request_captures(self, requests):
         self.requests = capture_requests(requests)
@@ -1614,7 +1629,18 @@ class FormAdapter(launcher.Harness77Adapter):
             self.journal_form = configuration_description(base / "1Cv7.MD", settings["journal"])
         if settings:
             from harness77.metadata77 import Metadata
-            self.fixture_context = fixture77.context(name, settings, Metadata((base / "1Cv7.MD").read_bytes()))
+            metadata = Metadata((base / "1Cv7.MD").read_bytes())
+            self.fixture_context = fixture77.context(name, settings, metadata)
+            for step in scenario77.steps(self.parameters) or []:
+                if step['kind'] == 'journal_basis':
+                    field = metadata.attributes('Документ', name.split('.')[1]).get(step['link'].casefold())
+                    if field is None or field.code != 'O' or (field.kind and field.kind.casefold() != step['source'].casefold()):
+                        raise ValueError('journal_basis link must be a document attribute accepting the source kind')
+                    import journal_basis77
+                    self.form = (journal_basis77.runtime_description(self.form[0], step),
+                                 dict(self.form[1], runtime_caption_expectations={step['caption_control']: step['caption_text']} if 'caption_control' in step else {}))
+                    if step.get('return_journal'):
+                        self.return_form = configuration_description(base / '1Cv7.MD', step['return_journal'])
 
     def commands(self, parameters, requested):
         parsed_steps = scenario77.steps(parameters)
@@ -1712,6 +1738,10 @@ End If''')
                                   captures=self.requests, configuration=self.configuration, steps=steps,
                                   show=steps is not None and bool(description.get("browser")),
                                   created_description=created_description)
+            if getattr(self, 'return_form', None):
+                watcher.return_description = self.return_form[0]
+                atomic_json(self.run_dir / 'form' / 'return-journal-description.json', self.return_form[0])
+                atomic_json(self.run_dir / 'form' / 'return-journal-source.json', self.return_form[1])
             watcher.start()
             try:
                 yield

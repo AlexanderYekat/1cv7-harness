@@ -63,7 +63,8 @@ def options(parameters, name):
                 raise ValueError("fixture operation before must be 1C code without NUL")
             before.encode("cp1251")
     return {"setup": setup, "verify": verify, "mode": mode, "post": post, "operations": operations,
-            "journal": parameters.get("journal_form")}
+            "journal": parameters.get("journal_form"),
+            "basis_source": next((s.get("source") for s in (parameters.get("steps") or []) if "journal_basis" in s), None)}
 
 
 def commands(settings):
@@ -78,6 +79,11 @@ def commands(settings):
 def context(name, settings, metadata):
     """Expected runtime reference type/kind/group; metadata is that of the verified copy."""
     parts = name.split(".")
+    if settings.get("basis_source"):
+        source = settings["basis_source"]
+        if source.casefold() not in metadata.objects()["Документ"]:
+            raise ValueError("unknown basis source document: " + source)
+        return {"type": "Документ", "kind": source, "group": 0}
     if settings["mode"] == "owner":
         owner = metadata.catalog(parts[1])["owner"]
         if not owner:
