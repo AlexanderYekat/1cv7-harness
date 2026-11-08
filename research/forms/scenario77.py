@@ -44,8 +44,8 @@ answer its save question.
 import re
 
 KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
-         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis", "journal_children")
-OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
+         "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis", "journal_children", "tab")
+OPTIONS = {"tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str}, "delete_row": {}, "rows": {}, "total": {"text": str},
@@ -54,7 +54,7 @@ OPTIONS = {"click": {"closes": bool}, "input": {"text": str}, "value": {"text": 
            "journal_period": {"start": str, "end": str, "cancel": bool},
            "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
            "journal_deletion": {"deleted": bool, "cancel": bool, "expected": str},
-           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int, "kinds": str, "edit": bool, "expected_after": str,
+           "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int, "kinds": str, "edit": bool, "browse": bool, "expected_after": str,
                                 "journal": str, "expected": str, "caption_control": str, "caption_text": str, "browser_visible": bool},
            "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
 ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
@@ -163,7 +163,7 @@ def steps(parameters):
         if kind == "reopen":
             import journal_basis77
             journal_basis77.validate_caption(step)
-            if 'caption_control' in step and not any(s['kind'] == 'journal_basis' or (s['kind'] == 'journal_children' and s.get('edit')) for s in result):
+            if 'caption_control' in step and not any(s['kind'] == 'journal_basis' or (s['kind'] == 'journal_children' and (s.get('edit') or s.get('browse'))) for s in result):
                 raise ValueError('reopen runtime caption requires journal_basis or editable journal_children')
             if not result or result[-1]["kind"] == "reopen":
                 raise ValueError(f"{where} (reopen): requires a preceding scenario action or check")
@@ -196,7 +196,7 @@ def steps(parameters):
             import journal_copy77
             journal_copy77.validate(parameters, result)
         if (any(s['kind'] == 'find_document' and s.get('open') is False for s in result)
-                and not any((s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel')) or (s['kind'] == 'journal_children' and s.get('edit')) for s in result)
+                and not any((s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel')) or (s['kind'] == 'journal_children' and (s.get('edit') or s.get('browse'))) for s in result)
                 and kind not in ('journal_unpost', 'journal_deletion', 'journal_copy', 'journal_basis', 'journal_children')):
             raise ValueError('only journal commands may follow a journal cursor selection')
         if kind == "find_document":
@@ -235,6 +235,13 @@ def steps(parameters):
             raise ValueError('editable journal_children requires one handoff and subsequent reopen')
         if any(s['kind'] in ('journal_period', 'find_document', 'journal_children', 'journal_copy', 'journal_basis', 'journal_unpost', 'journal_deletion', 'created', 'create') for s in tail):
             raise ValueError('editable journal_children tail requires document form steps only')
+    viewing = [s for s in result if s['kind'] == 'journal_children' and s.get('browse')]
+    if viewing:
+        tail = result[viewing[0]['index']:]
+        if len(viewing) != 1 or not tail or not any(s['kind'] == 'tab' for s in tail):
+            raise ValueError('browse journal_children requires one handoff and tab steps')
+        if any(s['kind'] not in ('tab', 'check', 'value', 'rows', 'total') for s in tail):
+            raise ValueError('browse journal_children allows only read-only form steps')
     return result
 
 
@@ -536,7 +543,7 @@ def step_function(items, table=False, journal_kind=None):
         import choice77
     state = "    Ответ77 = Ответ77 + Harness77Таблица();\n" if table else ""
     if any(s['kind'] == 'find_document' and s.get('open') is False for s in items):
-        copies = [s['index'] for s in items if s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel')]
+        copies = [s['index'] for s in items if (s['kind'] in ('journal_copy', 'journal_basis') and not s.get('cancel')) or (s['kind'] == 'journal_children' and (s.get('edit') or s.get('browse')))]
         state = ('    Если (Номер77Шага >= ' + str(copies[0]) + ') Тогда\n' + state + '    КонецЕсли;\n') if copies else ''
     if state and any(s["kind"] == "find_document" for s in items):
         state = ('    Если (Номер77Шага > -101000) ИЛИ (Номер77Шага < -101200) Тогда\n'
@@ -821,6 +828,8 @@ def judge(step, record, pending, form_open):
         return f"{name}: the form did not close"
     if not form_open and not step.get("closes") and step["kind"] not in ("message", "no_message"):
         return f"{name}: the form closed"
+    if step['kind'] == 'tab' and not record.get('tab_verified'):
+        return f"{name}: native tab selection was not verified"
     if step["kind"] == "check":
         shown = record.get("state") or {}
         key = step["expect"]

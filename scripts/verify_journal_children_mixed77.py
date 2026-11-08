@@ -41,7 +41,18 @@ def layout_issues(description, inspection):
     return issues + judge_layout(description, actual) + judge_captions(description, actual)
 
 
-def step_issues(records, kind, inspection, identity, descriptions):
+def step_issues(records, kind, inspection, identity, descriptions, *, viewing=False):
+    # 046 splits read-only navigation around form steps. Validate the same journal
+    # contract with its actual return calls; do not alter raw call numbers.
+    if viewing and len(records) == 3:
+        import copy
+        records = copy.deepcopy(records)
+        opening = records[2]
+        returned = opening.get('viewing_return', {})
+        for name in ('document_close', 'returned_child', 'children_close', 'after_children', 'after_windows', 'return_verified'):
+            opening[name] = returned.get(name)
+        opening['round_trip'] = returned.get('after_children')
+        opening['calls'] = opening.get('calls', []) + returned.get('calls', [])
     issues = []
     def require(ok, message):
         if not ok:
@@ -243,8 +254,18 @@ def step_issues(records, kind, inspection, identity, descriptions):
         require(returned.get('journal_id') == selected.get('journal_id') and returned.get('journal_match') == '1'
                 and str(returned.get('journal_hwnd')) in child_handles and returned.get('journal_value') == baseline,
                 'return to subordinate journal differs')
-        numbers += [-112001, -111901, -113001]
-        expected_trips += [r.get('opened_child'), r.get('returned_child'), after]
+        if viewing:
+            closing_read = r.get('viewing_return', {}).get('before_close', {})
+            require(closing_read.get('journal_id') == opened.get('journal_id')
+                    and closing_read.get('journal_source_id') == closing_read.get('journal_link_id') == before.get('journal_id')
+                    and closing_read.get('journal_opened') == closing_read.get('journal_match') == closing_read.get('journal_link') == '1'
+                    and closing_read.get('journal_value') == baseline and str(closing_read.get('journal_hwnd')) in dh,
+                    'viewed document changed before close')
+            numbers += [-112001, -112002, -111902, -113002]
+            expected_trips += [opened, closing_read, r.get('returned_child'), after]
+        else:
+            numbers += [-112001, -111901, -113001]
+            expected_trips += [r.get('opened_child'), r.get('returned_child'), after]
     require([t.get('number') for t in r.get('calls', [])] == numbers, 'subordinate raw-call sequence differs')
     require(r.get('calls') == [dict(t or {}, number=n) for t, n in zip(expected_trips, numbers)], 'semantic/raw call evidence differs')
     return issues

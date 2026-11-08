@@ -37,6 +37,11 @@ def validate(parameters, previous, step):
         raise ValueError('journal_children requires distinct source and child kinds')
     import journal_basis77
     journal_basis77.validate_caption(step)
+    if 'browse' in step:
+        if (step.get('browse') is not True or 'kinds' not in step or step.get('edit')
+                or 'expected_after' in step or step.get('cancel') or step.get('empty')
+                or not parameters.get('fixture_verify')):
+            raise ValueError('browse journal_children requires mixed kinds, verification and no edit/cancel/empty')
     if 'edit' in step or 'expected_after' in step:
         if (step.get('edit') is not True or 'kinds' not in step or step.get('cancel') or step.get('empty')
                 or not step.get('expected_after') or not parameters.get('fixture_verify')):
@@ -105,7 +110,7 @@ def branches(step, kind):
         child = child.replace('                Док77Чтения = СоздатьОбъект("Документ."', '''                Ответ77 = Ответ77 + "journal-kind:" + Ссылка77.Вид() + РазделительСтрок
                     + "journal-expected-kind:" + Ожидаемая77Ссылка.Вид() + РазделительСтрок;
                 Док77Чтения = СоздатьОбъект("Документ."''')
-    if step.get('edit'):
+    if step.get('edit') or step.get('browse'):
         source += '''            Если Номер77Шага <= -113000 Тогда Контекст77Формы = Новый77Контекст; КонецЕсли;
 '''
         child = child.replace('                    Ответ77 = Ответ77 + "journal-opened:1"',
@@ -382,11 +387,11 @@ def execute(watcher, form, inspection, step, record):
             checked_kind(opened, step, target=True)
             if opened['journal_id'] != selected['journal_id']:
                 raise RuntimeError('Enter opened another child')
-            if step.get('edit'):
+            if step.get('edit') or step.get('browse'):
                 # Transfer ownership only after every opened-form identity/layout gate passed.
                 navigation = dict(source=inspection, children=children, children_frame=frame,
                                   mdi=mdi, old_handles=old_handles, before=before, step=step, opening=record)
-                record['edit_handoff_verified'] = True
+                record['browse_handoff_verified' if step.get('browse') else 'edit_handoff_verified'] = True
                 frame = document_frame = None
                 return document, navigation
             record['document_close'] = close_frame(watcher, form, document_frame)
@@ -416,7 +421,7 @@ def execute(watcher, form, inspection, step, record):
 def finish_edit(watcher, form, inspection, navigation, record):
     """044: close the current (possibly reopened) document, then return to its source."""
     before, step = navigation['before'], navigation['step']
-    expected = step['expected_after']
+    expected = step['expected'] if step.get('browse') else step['expected_after']
     record['calls'] = []
     def call(number):
         trip = watcher.round_trip(number)

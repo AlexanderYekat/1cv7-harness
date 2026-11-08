@@ -580,7 +580,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 if step['kind'] == 'journal_children':
                     import journal_children77
                     handoff = journal_children77.execute(self, form, current_inspection, step, record)
-                    if step.get('edit'):
+                    if step.get('edit') or step.get('browse'):
                         current_inspection, child_navigation = handoff
                         self.description = journal_children77.runtime_description(self.created_description, step)
                         ids = window_ids(self.description)
@@ -589,6 +589,18 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                         table = windows.get(scenario77.TABLE_WINDOW_ID)
                     record.update(form_open=True, issue=None, status='passed')
                     records.append(record)
+                    continue
+                if step['kind'] == 'tab':
+                    import tabs77
+                    current_inspection = tabs77.execute(self, form, current_inspection, step, record)
+                    windows = {c['id']: c for c in current_inspection['controls']}
+                    table = windows.get(scenario77.TABLE_WINDOW_ID)
+                    record['form_open'] = form.alive(dialog)
+                    record['issue'] = scenario77.judge(step, record, [], record['form_open'])
+                    record['status'] = 'failed' if record['issue'] else 'passed'
+                    records.append(record)
+                    if record['issue']:
+                        break
                     continue
                 if step['kind'] == 'journal_deletion':
                     self.journal_deletion(form, current_inspection, step, record)
@@ -760,7 +772,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 break
         if child_navigation is not None:
             import journal_children77
-            returned = child_navigation['opening']['editing_return'] = {}
+            returned = child_navigation['opening']['viewing_return' if child_navigation.get('step', {}).get('browse') else 'editing_return'] = {}
             try:
                 current_inspection = journal_children77.finish_edit(self, form, current_inspection, child_navigation, returned)
                 self.description = source_description

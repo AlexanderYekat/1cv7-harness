@@ -1,0 +1,65 @@
+# Вкладки штатной формы счёта-фактуры (046)
+
+Нужен checkout, закреплённый x86 DBF/1С 7.70.027/1С++ стенд и зарегистрированный
+`copy_path`. Каждый сценарий использует новую проверенную копию базы.
+Исходные MD, модули и диалоги сохраняются.
+
+Генератор использует принятую подготовку и независимую сверку 043: три
+расходные накладные; три ордера и два счёта-фактуры у второго основания.
+Фактура выбирается по точной сохранённой ссылке из смешанного списка.
+`journal_children` с `browse = true` передаёт её форму шагам просмотра.
+После него разрешены только `tab`, `check`, `value`, `rows`, `total`;
+ввод, запись, произвольные клавиши и повторное открытие отклоняются до 1С.
+
+```toml
+# В journal_children: browse = true, прежние kinds/limit/expected,
+# reference = 23, caption_control = "кнПечать", caption_text = "Печать",
+# browser_visible = false. Затем:
+{ tab = "Табличная часть", browser_visible = true },
+{ rows = 1 },
+{ value = "Количество", row = 1, text = "1" },
+{ value = "Сумма", row = 1, text = "50" },
+{ total = "Сумма", text = "50" },
+{ tab = "Шапка", browser_visible = false },
+```
+
+`tab` читает названия и выбранную страницу единственного видимого
+`SysTabControl32` непосредственно в проверенном MDI-окне документа.
+Имя сопоставляется без `&` и без учёта регистра; отсутствующее или неоднозначное
+имя даёт отказ до отправки клавиш. Фокус и Left/Right направлены этому HWND
+на private desktop. После каждой клавиши — ответ 1С и повторное чтение
+выбранной страницы. Программного переключения слоя и TCM_SETCURSEL нет.
+`browser_visible` требует нужную видимость таблицы после перехода.
+
+Свидетельства — `tabs_before`, `tab_keys`, `tabs_after`, `tab_form`, `calls`.
+Названия читаются через TCITEMA в собственной x86 1С; при тайм-ауте чтения
+буфер остаётся до завершения своего сервера, чтобы исключить обращение
+к освобождённой памяти. Клавиши при неизвестном результате не повторяются.
+После шагов адаптер читает точную ссылку/вид/основание и сохранённые данные,
+закрывает документ через WM_CLOSE без записи, затем список и подтверждает
+возврат к исходному основанию. Это `viewing_return` шага `journal_children`.
+При отказе шага возврат и очистка тоже проверяются. Последний `verify`
+свежими объектами независимо читает документы и проводки.
+
+```powershell
+python -X utf8 -B examples/form-tabs/prepare.py --stand .local/s44a/stand.toml --output .local/form-tabs-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-new/suite.toml --stand .local/form-tabs-new/stand.toml --output-root .artifacts/suites/form-tabs-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-new/suite-missing.toml --stand .local/form-tabs-new/stand.toml --output-root .artifacts/suites/form-tabs-missing-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-new/suite-rows.toml --stand .local/form-tabs-new/stand.toml --output-root .artifacts/suites/form-tabs-rows-new
+```
+
+Основной набор: первая фактура, вторая, повтор. Отрицательные наборы:
+отсутствующая вкладка и ожидаемые две строки при фактической одной; каждый
+продолжается успешным сценарием. `no-copy/project.toml` проверяет отказ без копии.
+Генератор создаёт только профили, не запускает 1С.
+
+Верификатор принимает каталог UUID с `suite.json`, возвращённый командой:
+
+```powershell
+python -X utf8 -B scripts/verify_form_tabs77.py --suite .artifacts/suites/form-tabs-new/<suite-uuid> --output .artifacts/form-tabs-new-verified.json
+python -X utf8 -B scripts/verify_form_tabs_controls77.py --run .artifacts/suites/form-tabs-new/runs/<run-uuid> --output .artifacts/form-tabs-controls-new.json
+```
+
+Каталоги результатов должны быть новыми. Подробности —
+[задание](../../docs/tasks/046-form-tabs.md) и
+[техническая проверка](../../docs/tasks/046-form-tabs-acceptance.md).
