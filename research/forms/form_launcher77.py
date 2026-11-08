@@ -595,8 +595,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     if len(chain_windows) < 3 or chain_windows[2].get("class") != "MDIClient":
                         raise RuntimeError("close_form requires an inspected MDI document frame")
                     control = chain_windows[1]
-                if step["kind"] in ("create", "find_document"):
+                if step["kind"] in ("create", "find_document", "journal_copy"):
                     created = (self.create_document(form, current_inspection, step, record) if step["kind"] == "create"
+                               else self.copy_document(form, current_inspection, step, record) if step['kind'] == 'journal_copy'
                                else self.find_document(form, current_inspection, step, record))
                     if step['kind'] == 'find_document' and step.get('open') is False:
                         record['form_open'] = form.alive(dialog)
@@ -949,6 +950,60 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             raise RuntimeError("existing form identity/layout mismatch: " + str(issues))
         record["existing_form_verified"] = True
         return opened
+
+    def copy_document(self, form, inspection, step, record):
+        """Recheck the selected saved source, dispatch Copy, bind a fresh unsaved form."""
+        import journal77
+        import journal_copy77 as copying
+        from form_window77 import Pending, expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+        before = record['before_copy'] = self.round_trip(-108000 - step['index'])
+        record['calls'] = [dict(before, number=-108000 - step['index'])]
+        journal77.checked_cursor(before, inspection)
+        if before.get('journal_deleted') not in ('0', '1'):
+            raise RuntimeError('saved source deletion state missing')
+        menu = record['menu'] = journal77.native_menu(form, inspection, copying.COPY_COMMAND, 'копировать')
+        if not menu['enabled']:
+            raise RuntimeError('native journal copy command disabled')
+        record['before_windows'] = form.inventory()
+        old = {w['hwnd'] for w in record['before_windows']}
+        seen = form.top_windows()
+        action = record['action'] = dict(requested=True, command=copying.COPY_COMMAND,
+                                        hwnd=inspection['chain'][1]['hwnd'], posted=False,
+                                        message='WM_COMMAND', identity_rechecked=True)
+        pending = Pending(form, action['hwnd'], 0x111, copying.COPY_COMMAND, 0)
+        started = time.monotonic()
+        while not pending.done() and time.monotonic() - started < ACTION_WAIT_S:
+            window = form.modal_window(seen)
+            if window:
+                record['unexpected_window'] = window
+                button = scenario77.safe_button(window)
+                record['unexpected_cleanup'] = form.answer(window, button) if button else {'refused': 'no safe answer'}
+                raise RuntimeError('unexpected modal window during document copying')
+            if self.stopped.wait(0.05):
+                break
+        action.update(pending.outcome or {})
+        if not pending.done() or not action.get('returned'):
+            raise RuntimeError('native copy command did not return')
+        action['posted'] = True
+        trip = record['round_trip'] = self.round_trip(step['index'])
+        record['calls'].append(dict(trip, number=step['index']))
+        copying.checked_new(trip)
+        if trip['journal_source'] != before['journal_current'] or trip['journal_value'] != before['journal_value']:
+            raise RuntimeError('copy changed persisted source/neighbors/count')
+        description = self.created_description
+        expected = expected_geometry(description)
+        created = record['created_form'] = form.inspect(list(expected))
+        if not created.get('found'):
+            raise RuntimeError('copied document form not found')
+        created['units'] = fit_units(expected, {c['id']: tuple(c['rect']) for c in created['controls']},
+                                    edged=edged_ids(description))
+        issues = judge_layout(description, created) + judge_captions(description, created)
+        hwnd = int(trip.get('journal_hwnd', '0'))
+        if issues or hwnd not in [w['hwnd'] for w in created['chain'][:2]] or hwnd in old:
+            raise RuntimeError('copied form identity/layout mismatch: ' + str(issues))
+        record['after_windows'] = form.inventory()
+        record['new_form_verified'] = True
+        return created
 
     def create_document(self, form, inspection, step, record):
         """Insert in the owned journal, answer its kind chooser, bind the new unsaved form."""

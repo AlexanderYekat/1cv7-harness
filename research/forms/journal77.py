@@ -175,7 +175,8 @@ def controller(text, settings, expected):
 
 def branches(items, kind):
     result = []
-    if any(s['kind'] in ('journal_unpost', 'journal_deletion') for s in items):
+    copying = any(s['kind'] == 'journal_copy' for s in items)
+    if any(s['kind'] in ('journal_unpost', 'journal_deletion', 'journal_copy') for s in items):
         result.append(f'''    Если (Номер77Шага <= -105000) И (Номер77Шага > -109000) Тогда
         Попытка
             Ссылка77 = Контекст77Формы.ТекущийДокумент;
@@ -241,6 +242,9 @@ def branches(items, kind):
                 + "journal-reference:" + Harness77Строка(Ссылка77) + РазделительСтрок
                 + "journal-hwnd:" + Строка(Расш77.Дескриптор);
 '''
+        elif step['kind'] == 'journal_copy':
+            import journal_copy77
+            body = journal_copy77.body(kind)
         elif step['kind'] == 'create':
             body = f'''            Сервис77 = СоздатьОбъект("Сервис");
             Новый77Контекст = 0;
@@ -258,6 +262,8 @@ def branches(items, kind):
             Ответ77 = "journal-new:1" + РазделительСтрок + "journal-hwnd:" + Строка(Расш77.Дескриптор);
 '''
         elif step['kind'] == 'created':
+            copy_guard = '''            Если Ссылка77 = Объект77Источник Тогда Возврат "journal-error:copy reused source reference"; КонецЕсли;
+''' if copying else ''
             body = f'''            Ссылка77 = Контекст77Формы.ТекущийДокумент();
             Если (ТипЗначенияСтр(Ссылка77) <> "Документ") ИЛИ (ВРег(Ссылка77.Вид()) <> ВРег("{kind}")) Тогда
                 Возврат "journal-error:created reference kind mismatch";
@@ -266,11 +272,20 @@ def branches(items, kind):
             Если (Ссылка77.Выбран() <> 1) ИЛИ (Док77Чтения.НайтиДокумент(Ссылка77) <> 1) Тогда
                 Возврат "journal-error:created document is not saved";
             КонецЕсли;
-            Если ТипЗначенияСтр(Объект77Данных) = "Документ" Тогда
-                Если Объект77Данных <> Ссылка77 Тогда Возврат "journal-error:created reference changed"; КонецЕсли;
+{copy_guard}            Если ТипЗначенияСтр(Объект77Данных) = "Документ" Тогда
+                Если {('(Объект77Данных <> Объект77Источник) И (Объект77Данных <> Ссылка77)' if copying else 'Объект77Данных <> Ссылка77')} Тогда Возврат "journal-error:created reference changed"; КонецЕсли;
             КонецЕсли;
             Объект77Данных = Ссылка77;
             Ответ77 = "journal-saved:1" + РазделительСтрок + "journal-reference:" + Harness77Строка(Ссылка77);
+'''
+            if copying:
+                body += '''            Ответ77 = Ответ77 + РазделительСтрок
+                + "journal-source:" + Harness77Строка(Объект77Источник) + РазделительСтрок
+                + "journal-date:" + Harness77ДатаИнтервала(Док77Чтения.ДатаДок) + РазделительСтрок
+                + "journal-number:" + СокрЛП(Док77Чтения.НомерДок) + РазделительСтрок
+                + "journal-posted:" + Строка(Док77Чтения.Проведен()) + РазделительСтрок
+                + "journal-deleted:" + Строка(Док77Чтения.ПометкаУдаления()) + РазделительСтрок
+                + "journal-value:" + Harness77ПроверитьДанные(Объект77Данных);
 '''
         else:
             continue

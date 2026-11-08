@@ -187,7 +187,7 @@ def controller(text, settings, expected):
     branch = '    Если (Команда = "check") ИЛИ (Команда = "open") Тогда'
     if text.count(branch) != 1 or text.count("Функция Harness77Ert(") != 1:
         raise ValueError("unexpected form controller layout for fixtures")
-    return (("Перем Объект77Подготовки;\n" if settings["mode"] == "journal_existing" else "")
+    return (("Перем Объект77Подготовки, Объект77Источник, Дата77Копии, Номер77Копии;\n" if settings["mode"] == "journal_existing" else "")
             + "Перем Объект77Данных, Попытка77Данных, Ошибка77Данных;\n" + text.replace(
         "Функция Harness77Ert(", helpers + "Функция Harness77Ert(").replace(
             branch, prefix + branch.replace("    Если", "    ИначеЕсли", 1))

@@ -495,8 +495,54 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         result = C.c_size_t()
         C.set_last_error(0)
         function = self.user.SendMessageTimeoutA if ansi else self.user.SendMessageTimeoutW
-        returned = function(hwnd, message, wparam, lparam, SMTO_ABORTIFHUNG, timeout_ms, C.byref(result))
-        return bool(returned), result.value, C.get_last_error() if not returned else 0
+        def deliver():
+            self.modal.verify()
+            if self.modal.owner(hwnd) != (self.modal.server['pid'], self.modal.tid):
+                raise RuntimeError('window is not on the verified server thread')
+            returned = function(hwnd, message, wparam, lparam, SMTO_ABORTIFHUNG, timeout_ms, C.byref(result))
+            return bool(returned), result.value, C.get_last_error() if not returned else 0
+        def character():
+            u = self.user
+            u.GetKeyboardLayout.argtypes = [W.DWORD]; u.GetKeyboardLayout.restype = W.HANDLE
+            u.GetKeyboardLayoutList.argtypes = [C.c_int, C.POINTER(W.HANDLE)]
+            u.ActivateKeyboardLayout.argtypes = [W.HANDLE, W.UINT]; u.ActivateKeyboardLayout.restype = W.HANDLE
+            caller, server = u.GetKeyboardLayout(0), u.GetKeyboardLayout(self.modal.tid)
+            count = u.GetKeyboardLayoutList(0, None)
+            layouts = (W.HANDLE * count)(); count = u.GetKeyboardLayoutList(count, layouts)
+            russian = next((h for h in layouts[:count] if h and h & 0xffff == 0x419), None)
+            if not caller or not server or not russian:
+                raise RuntimeError(f'input layouts unavailable on owned desktop: {caller}, {server}, {russian}')
+            evidence = dict(hwnd=hwnd, code=wparam, desktop=self.modal.desktop,
+                            pid=self.modal.server['pid'], tid=self.modal.tid,
+                            caller_before=caller, server_before=server, requested=russian)
+            if not hasattr(self, '_character_layouts'):
+                self._character_layouts = []
+            self._character_layouts.append(evidence)
+            def select_server(layout):
+                returned = self.send(hwnd, 0x50, 0, layout)[0]
+                actual = u.GetKeyboardLayout(self.modal.tid)
+                if not returned or actual != layout:
+                    raise RuntimeError(f'owned editor input layout differs: wanted={layout}, actual={actual}')
+            try:
+                u.ActivateKeyboardLayout(russian, 0)
+                if u.GetKeyboardLayout(0) != russian:
+                    raise RuntimeError('sending thread Russian input layout was not confirmed')
+                if server != russian:
+                    select_server(russian)
+                evidence.update(caller_active=u.GetKeyboardLayout(0), server_active=u.GetKeyboardLayout(self.modal.tid))
+                return deliver()
+            finally:
+                try:
+                    if u.GetKeyboardLayout(self.modal.tid) != server:
+                        select_server(server)
+                    evidence['server_restored'] = u.GetKeyboardLayout(self.modal.tid) == server
+                finally:
+                    if u.GetKeyboardLayout(0) != caller:
+                        u.ActivateKeyboardLayout(caller, 0)
+                    evidence['caller_restored'] = u.GetKeyboardLayout(0) == caller
+                    if not evidence['caller_restored']:
+                        raise RuntimeError('sending thread input layout restoration failed')
+        return on_desktop(self.modal.desktop, character, timeout_ms / 1000 + 1) if ansi and message == WM_CHAR and wparam >= 128 else deliver()
 
     def text(self, hwnd):
         """Current window text (``WM_GETTEXT``): a field's value, a label's caption."""
@@ -608,6 +654,7 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         record = {"control_id": control_id, "found": True, "requested": True, "message": "WM_CHAR",
                   "target": {k: target.get(k) for k in ("hwnd", "class", "id")}, "field": {"hwnd": field["hwnd"]},
                   "text": text}
+        layout_start = len(getattr(self, '_character_layouts', []))
         started = time.monotonic()
         record["text_before"] = self.text(target["hwnd"])
         stages = [("focus", dialog, WM_NEXTDLGCTL, target["hwnd"], 1, False),
@@ -634,6 +681,7 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                 pending = Pending(self, dialog, WM_NEXTDLGCTL, leave_to["hwnd"], 1)
         record.update(characters_sent=sent.count("type"), elapsed_s=round(time.monotonic() - started, 3),
                       identity_rechecked=True)
+        record['character_input_layouts'] = getattr(self, '_character_layouts', [])[layout_start:]
         return record, pending
 
     def left(self, record, outcome):
