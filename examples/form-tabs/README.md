@@ -90,3 +90,23 @@ python -X utf8 -B scripts/verify_suite77.py --native .artifacts/suites/form-tabs
 ```
 
 Подробности и результаты нативных проб — в [задаче 047](../../docs/tasks/047-invoice-table-edit.md).
+
+## Правка второй строки (048)
+
+`--edit-second-row` добавляет вторую строку к фактуре из слота 23.
+Сценарии проверяют переход Down, изменение количества во второй строке
+с 1 на 3 и итог 140 вместо 80. После записи повторное открытие показывает
+изменённую строку, после «Нет» — исходную. В обоих случаях проверяются
+первая строка и сохранённые данные соседних документов.
+
+Отдельный `suite-row-guard.toml` оставляет курсор на строке 1.
+`{ cell = "Количество", row = 2, text = "3" }` должен дать ожидаемый
+отказ до ввода. Команда `verify` после отказа читает исходные значения.
+
+```powershell
+python -X utf8 -B examples/form-tabs/prepare.py --edit-second-row --stand .local/s44a/stand.toml --output .local/form-tabs-row2-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-row2-new/suite.toml --stand .local/form-tabs-row2-new/stand.toml --output-root .artifacts/suites/form-tabs-row2-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-row2-new/suite-row-guard.toml --stand .local/form-tabs-row2-new/stand.toml --output-root .artifacts/suites/form-tabs-row-guard-new
+```
+
+Ожидания и результаты — в [задаче 048](../../docs/tasks/048-invoice-second-row.md).

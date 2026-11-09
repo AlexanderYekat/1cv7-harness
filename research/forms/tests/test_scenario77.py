@@ -381,6 +381,13 @@ class TableStepsTests(unittest.TestCase):
         steps = scenario77.steps({"steps": [{"delete_row": True}, {"dialog": "Удалить?", "button": "Да"}]})
         self.assertEqual((steps[0]["dialogs"], steps[1]["chain"]), (1, 1))
 
+    def test_cell_accepts_an_expected_row_as_an_option(self):
+        step, = table_steps({"cell": "Кол-во", "row": 2, "text": "3"})
+        self.assertEqual((step["kind"], step["row"], step["column"]), ("cell", 2, "Количество"))
+        for invalid in (0, -1, 100000, True, "2"):
+            with self.subTest(row=invalid), self.assertRaises(ValueError):
+                table_steps({"cell": "Кол-во", "row": invalid, "text": "3"})
+
     def test_columns_resolve_by_identifier_then_caption(self):
         steps = table_steps({"cell": "кол-во", "text": "3"}, {"cell": "Сумма", "text": "x"}, {"total": "сумма", "text": "1"},
                             {"add_row": True}, {"key": "Down"})

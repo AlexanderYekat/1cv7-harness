@@ -1338,6 +1338,13 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if trip.get("table_error"):
             chain.record["refused"] = "1C refused: " + trip["table_error"]
             return chain
+        if step["kind"] == "cell" and "row" in step:
+            if not trip.get("complete") or trip.get("diagnostics") or trip.get("state_error") or "row" not in trip:
+                chain.record["refused"] = "1C did not verify the current row before input"
+                return chain
+            if trip["row"] != step["row"]:
+                chain.record["refused"] = f"current row {trip['row']} differs from required row {step['row']}"
+                return chain
         dialog, hwnd = inspection["chain"][0]["hwnd"], table["hwnd"]
         focus = form.focused()
         record = {"focus_before": focus, "editor_before": form.editor_of(focus, hwnd)}

@@ -130,6 +130,21 @@ class TableEditorTests(unittest.TestCase):
         self.windows.replace_text.assert_not_called()
         self.windows.post_key.assert_not_called()
 
+    def test_requires_current_row_before_typing_when_declared(self):
+        self.step["row"] = 2
+        valid = dict(returned=True, complete=True, column="Количество", row=2)
+        for update in ({"row": 1}, {"row": None}, {"complete": False}, {"diagnostics": ["error"]}, {"state_error": "no row"}):
+            with self.subTest(update=update):
+                self.watcher.call.return_value = dict(valid, **update)
+                chain = self.begin()
+                self.assertIn("row", chain.record["refused"])
+                self.windows.replace_text.assert_not_called()
+                self.windows.post_key.assert_not_called()
+        self.watcher.call.return_value = valid
+        self.windows.editor_of.return_value = self.editor
+        self.assertTrue(self.begin().record["returned"])
+        self.windows.replace_text.assert_called_once_with(12, "2")
+
 
 class AdapterTests(unittest.TestCase):
     def setUp(self):
