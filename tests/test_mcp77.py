@@ -288,6 +288,19 @@ class ServerProcessTests(unittest.TestCase):
         report = json.loads((self.dir / "mcp" / "mcp-equality" / "run.json").read_text(encoding="utf-8"))
         self.assertFalse(report["cancelled"])
 
+    def test_failed_run_with_a_summary_is_a_check_result(self):
+        directory = self.dir / "sim-failed"
+        project = write_project(directory)
+        stand = write_sim_stand(directory, base_scenario(operations=[
+            {"name": "control-42", "status": "failed", "value": "0"},
+        ]))
+        result = self.client.call("run", {"project": str(project), "stand": str(stand),
+                                          "output_root": str(directory / "runs"), "run_id": "failed-check"})
+        summary = result["structuredContent"]["stdout"]
+        self.assertEqual(result["structuredContent"]["exit_code"], 1)
+        self.assertFalse(result["isError"])
+        self.assertEqual((summary["status"], summary["stages"]["tests"]), ("failed", "failed"))
+
     def test_suite_runs_through_mcp_and_emits_linked_junit(self):
         project, stand = simulation(self.dir / "sim-suite")
         manifest = self.dir / "suite.toml"
@@ -330,6 +343,12 @@ FAKE_CHILD = textwrap.dedent('''
         prefix = Path(os.environ["HARNESS77_MCP_PROGRESS"])
         prefix.with_suffix(".waiting").touch()
         prefix.with_suffix(".starting").touch()
+    if "FAKE_EXIT_CODE" in os.environ:
+        if "FAKE_RUN_STDOUT" in os.environ:
+            print(os.environ["FAKE_RUN_STDOUT"])
+        if "FAKE_RUN_STDERR" in os.environ:
+            print(os.environ["FAKE_RUN_STDERR"], file=sys.stderr)
+        sys.exit(int(os.environ["FAKE_EXIT_CODE"]))
     seconds = float(os.environ.get("FAKE_SECONDS", "1"))
     started = time.monotonic()
     while time.monotonic() - started < seconds:
@@ -339,6 +358,13 @@ FAKE_CHILD = textwrap.dedent('''
         time.sleep(0.05)
     print(json.dumps({"cancelled": False, "argv": argv}))
 ''')
+
+
+def fake_run_summary(status="passed", exit_code=0, run_id="fake-run"):
+    return run77._summary(dict(status=status, exit_code=exit_code, run_id=run_id, run_dir=run_id,
+                               platform_checked=False, reason=None, cancelled=False, timeout_phase=None,
+                               stages=[{"stage": name, "status": status if name == "tests" else "passed"}
+                                       for name in ("static", "build", "platform_check", "tests")]))
 
 
 class ServerThreadTests(unittest.TestCase):
@@ -413,7 +439,8 @@ class ServerThreadTests(unittest.TestCase):
         self.assertEqual(self.close(), [])
 
     def test_native_progress_keeps_both_transitions_before_a_fast_exit(self):
-        with patch.dict(os.environ, {"FAKE_NATIVE_PROGRESS": "1", "FAKE_SECONDS": "0"}):
+        env = {"FAKE_NATIVE_PROGRESS": "1", "FAKE_EXIT_CODE": "0", "FAKE_RUN_STDOUT": json.dumps(fake_run_summary())}
+        with patch.dict(os.environ, env):
             self.call("native", "run", {"project": "p.toml", "stand": "s.toml"}, meta={"progressToken": "p"})
             self.assertFalse(self.until("native")["result"]["isError"])
         progress = [m["params"] for m in self.seen if m.get("method") == "notifications/progress"]
@@ -425,6 +452,29 @@ class ServerThreadTests(unittest.TestCase):
         self.assertLess(transitions[0]["progress"], transitions[1]["progress"])
         self.assertEqual(self.close(), [])
         self.assertFalse(self.server.cancel_dir.exists())
+
+    def test_run_exit_without_a_valid_summary_is_an_execution_error(self):
+        failure = fake_run_summary(status="failed", exit_code=1)
+        cases = [(1, None), (0, "{"), (1, '{"status":"failed","exit_code":1}'),
+                 (1, json.dumps(dict(failure, run_id="foreign"))),
+                 (1, json.dumps(dict(failure, exit_code=True))),
+                 (1, json.dumps(fake_run_summary()))]
+        for request_id, (code, stdout) in enumerate(cases):
+            with self.subTest(code=code, stdout=stdout):
+                env = {"FAKE_EXIT_CODE": str(code), "FAKE_RUN_STDERR": "child diagnostic"}
+                if stdout is not None:
+                    env["FAKE_RUN_STDOUT"] = stdout
+                with patch.dict(os.environ, env):
+                    self.call(request_id, "run", {"project": "p.toml", "stand": "s.toml", "run_id": "fake-run"})
+                    result = self.until(request_id)["result"]
+                self.assertTrue(result["isError"])
+                content = result["structuredContent"]
+                self.assertEqual(content["exit_code"], code)
+                expected = None if stdout is None else mcp77._parse((stdout + os.linesep).encode("utf-8"))
+                self.assertEqual(content["stdout"], expected)
+                self.assertEqual(content["stderr"].strip(), "child diagnostic")
+                self.assertIn("без корректной итоговой сводки", result["content"][1]["text"])
+        self.assertEqual(self.close(), [])
 
     def test_cancelled_run_gets_the_cancel_file_and_no_response(self):
         os.environ["FAKE_SECONDS"] = "20"

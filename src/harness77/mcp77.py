@@ -29,8 +29,9 @@ INSTRUCTIONS = """\
 harness77 — проверка разработки для 1С 7.7: статический анализ модулей, разбор протокола \
 компилятора, извлечение и сборка ERT с формой, полный цикл проверки настоящей 1С (run), \
 сравнение снимков формы. Каждый инструмент — команда CLI `harness77 <команда>` с теми же \
-ключами; ответ — код выхода и JSON операции: 0 — прошло, 1 — найден дефект кода или провален \
-тест (это результат проверки), 2 — отказ входа или инфраструктуры (isError). Относительные \
+ключами. Ответ содержит код выхода и JSON операции. Код 0 означает успех, код 1 — дефект \
+кода или провал теста, код 2 — отказ входа или инфраструктуры (isError). Для `run` коды 0 \
+и 1 требуют корректной итоговой сводки. Относительные \
 пути — от рабочего каталога сервера: {cwd}. Выход (output) — только новый файл или каталог: \
 существующие не перезаписываются. run запускает 1С на базе стенда и может идти десятки минут; \
 отмена запроса отменяет запуск. Утверждение визуальных эталонов и построение каталога \
@@ -42,7 +43,7 @@ OUTPUT_SCHEMA = {
         "tool": {"type": "string"},
         "argv": {"type": "array", "items": {"type": "string"}, "description": "Аргументы harness77"},
         "cwd": {"type": "string"},
-        "exit_code": {"type": "integer", "description": "0 прошло, 1 дефект или провал теста, 2 отказ"},
+        "exit_code": {"type": "integer", "description": "Фактический код завершения CLI"},
         "stdout": {"description": "JSON операции, текст или null"},
         "stderr": {"description": "JSON отказа, текст или null"},
         "duration_s": {"type": "number"},
@@ -265,6 +266,24 @@ def _parse(data):
         return text
 
 
+def _valid_run_summary(summary, exit_code, requested_id):
+    """Codes 0 and 1 are check results only with a matching run summary."""
+    if not isinstance(summary, dict):
+        return False
+    run_id = summary.get("run_id")
+    run_dir = summary.get("run_dir")
+    stages = summary.get("stages")
+    return (summary.get("status") == ("passed" if exit_code == 0 else "failed")
+            and type(summary.get("exit_code")) is int and summary["exit_code"] == exit_code
+            and isinstance(run_id, str) and bool(run_id) and (not requested_id or run_id == requested_id)
+            and isinstance(run_dir, str) and bool(run_dir)
+            and isinstance(stages, dict) and {"static", "build", "platform_check", "tests"} <= stages.keys()
+            and all(status in ("passed", "failed", "blocked", "skipped") for status in stages.values())
+            and all(isinstance(summary.get(key), bool) for key in ("platform_checked", "cancelled"))
+            and all(key in summary and (summary[key] is None or isinstance(summary[key], str))
+                    for key in ("reason", "timeout_phase")))
+
+
 def _tool_error(message):
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
@@ -475,11 +494,17 @@ class Server:
                 except OSError as error:
                     self._log(f"could not remove progress marker {marker.name}: {error}")
         duration = round(time.monotonic() - started, 3)
-        self._log(f"{call.tool.name}: exit {process.returncode} in {duration} s")
-        structured = {"tool": call.tool.name, "argv": argv, "cwd": self.cwd, "exit_code": process.returncode,
+        exit_code = process.returncode
+        self._log(f"{call.tool.name}: exit {exit_code} in {duration} s")
+        structured = {"tool": call.tool.name, "argv": argv, "cwd": self.cwd, "exit_code": exit_code,
                       "stdout": _parse(stdout), "stderr": _parse(stderr), "duration_s": duration}
-        return {"content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}],
-                "structuredContent": structured, "isError": process.returncode not in (0, 1)}
+        content = [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}]
+        is_error = exit_code not in (0, 1)
+        if call.tool.name == "run" and not is_error:
+            is_error = not _valid_run_summary(structured["stdout"], exit_code, call.arguments.get("run_id"))
+            if is_error:
+                content.append({"type": "text", "text": "run завершился без корректной итоговой сводки"})
+        return {"content": content, "structuredContent": structured, "isError": is_error}
 
     def _cancel_path(self):
         with self.state:
