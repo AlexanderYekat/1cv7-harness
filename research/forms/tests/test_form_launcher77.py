@@ -166,6 +166,22 @@ class TableEditorTests(unittest.TestCase):
         self.assertEqual(self.begin().record["refused"], "current row 3 differs from required row 2")
         self.windows.post_key.assert_not_called()
 
+    def test_row_movement_refuses_to_send_an_arrow_to_a_restored_editor(self):
+        self.watcher.call.return_value = {"returned": True, "complete": True, "row": 3, "rows": 3}
+        self.windows.focused.side_effect = [{"hwnd": 12}, {"hwnd": 10}]
+        self.windows.within.return_value = False
+        self.windows.give_focus.return_value = {"hwnd": 13}
+        self.windows.editor_of.side_effect = [self.editor, self.editor, None, None]
+        step = {"kind": "row", "target": 1}
+        record = {}
+
+        trip = self.watcher.go_to_row(self.windows, {"chain": [{"hwnd": 10}]}, step, record, 11)
+
+        self.assertEqual(trip["row"], 3)
+        self.assertTrue(record["row_focus_missing"])
+        self.windows.give_focus.assert_called_once_with(10, 11)
+        self.windows.post_key.assert_called_once_with(12, *form.scenario77.KEYS["enter"])
+
 
 class AdapterTests(unittest.TestCase):
     def setUp(self):

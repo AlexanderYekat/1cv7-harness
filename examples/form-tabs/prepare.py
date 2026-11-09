@@ -237,6 +237,10 @@ REPLACEMENT_PRODUCT = 'Harness77 замена 052'
 ORIGINAL_PRODUCT = 'Harness77 продукция 043'
 
 
+def invoice_product_checks(row, product, quantity, price):
+    return f'    {{ value = "Товар", row = {row}, text = "{product}" }},\n' + invoice_row_checks(row, quantity, price)
+
+
 def replacement_fixture():
     text, old = invoice_fixture(2)
     text = text.replace('Спр77.Записать();\n', f'''Спр77.Записать();
@@ -290,9 +294,9 @@ def replacement_scenario(name):
     saved = name == 'save'
     final = baseline.replace('original:' + INVOICE_ROWS[2], 'replacement:2:65:130:130:0:0;', 1) if saved else baseline
     text = expect_edit(text, final)
-    first_row = f'    {{ value = "Товар", row = 1, text = "{ORIGINAL_PRODUCT}" }},\n' + invoice_row_checks(1, 1, 50)
-    original = f'    {{ value = "Товар", row = 2, text = "{ORIGINAL_PRODUCT}" }},\n' + invoice_row_checks(2, 2, 30)
-    updated = f'    {{ value = "Товар", row = 2, text = "{REPLACEMENT_PRODUCT}" }},\n' + invoice_row_checks(2, 2, 65)
+    first_row = invoice_product_checks(1, ORIGINAL_PRODUCT, 1, 50)
+    original = invoice_product_checks(2, ORIGINAL_PRODUCT, 2, 30)
+    updated = invoice_product_checks(2, REPLACEMENT_PRODUCT, 2, 65)
     after = updated if saved else original
     total = 180 if saved else 110
     cursor = 1 if name == 'wrong-row' else 2
@@ -321,6 +325,58 @@ def replacement_scenario(name):
     return text.replace('\n]\n', '\n' + tail + ']\n')
 
 
+def combined_scenario(name):
+    text, baseline = replacement_fixture()
+    saved = name == 'save'
+    original_rows = '|2|original:' + INVOICE_ROWS[0] + 'original:' + INVOICE_ROWS[2]
+    edited_rows = '|2|replacement:2:65:130:130:0:0;original:' + INVOICE_ROWS[2]
+    final = baseline.replace(original_rows, edited_rows, 1) if saved else baseline
+    text = expect_edit(text, final)
+    first = invoice_product_checks(1, ORIGINAL_PRODUCT, 1, 50)
+    original = first + invoice_product_checks(2, ORIGINAL_PRODUCT, 2, 30)
+    replaced = invoice_product_checks(2, REPLACEMENT_PRODUCT, 2, 65)
+    appended = invoice_product_checks(3, ORIGINAL_PRODUCT, 2, 30)
+    remaining = invoice_product_checks(1, REPLACEMENT_PRODUCT, 2, 65) + invoice_product_checks(2, ORIGINAL_PRODUCT, 2, 30)
+    tail = f'''    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = 2 }},
+{original}    {{ total = "Сумма", text = "110" }},
+    {{ row = 2 }},
+    {{ choose = "Товар", row = 2, catalog = "Номенклатура", catalog_caption = "Номенклатура", text = "{REPLACEMENT_PRODUCT}" }},
+    {{ rows = 2 }},
+{first}{replaced}    {{ total = "Сумма", text = "180" }},
+    {{ row = 2 }},
+    {{ add_row = true }},
+    {{ choose = "Товар", catalog = "Номенклатура", catalog_caption = "Номенклатура", text = "{ORIGINAL_PRODUCT}" }},
+    {{ cell = "Количество", row = 3, text = "2" }},
+    {{ cell = "Цена", row = 3, text = "30" }},
+    {{ rows = 3 }},
+{first}{replaced}{appended}    {{ total = "Сумма", text = "240" }},
+    {{ tab = "Шапка", browser_visible = false }},
+    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ row = 1 }},
+    {{ delete_row = true, row = 1 }},
+    {{ rows = 2 }},
+{remaining}    {{ total = "Сумма", text = "190" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    if saved:
+        tail += '''    { click = "КнопкаЗаписать" },
+    { close_form = true, closes = true },
+'''
+    else:
+        tail += '''    { close_form = true },
+    { dialog = "Сохранить Документ?", button = "Нет", closes = true },
+'''
+    after, total = (remaining, 190) if saved else (original, 110)
+    tail += f'''    {{ reopen = true }},
+    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = 2 }},
+{after}    {{ total = "Сумма", text = "{total}" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    return text.replace('\n]\n', '\n' + tail + ']\n')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stand', type=Path, required=True)
@@ -331,6 +387,7 @@ def main():
     mode.add_argument('--append-row', action='store_true', help='generate task 049 cases for appending an invoice row')
     mode.add_argument('--delete-middle-row', action='store_true', help='generate task 050 cases for deleting the middle row')
     mode.add_argument('--replace-row-product', action='store_true', help='generate task 052 cases for replacing the second-row product')
+    mode.add_argument('--combined-row-edit', action='store_true', help='generate task 054 cases for three edits in one form')
     a = p.parse_args()
     stand_text = a.stand.resolve(strict=True).read_text('utf-8')
     stand = tomllib.loads(stand_text)['stand']
@@ -342,12 +399,13 @@ def main():
     output = a.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     guard_cases = a.edit_second_row or a.delete_middle_row or a.replace_row_product
-    edit = a.edit or guard_cases
+    edit = a.edit or guard_cases or a.combined_row_edit
     cases = EDIT_CASES if edit else CASES
     if guard_cases:
         cases += ('wrong-row',)
     if a.append_row:
         cases = APPEND_CASES
+    calculation_timeout, total_timeout = (600, 1200) if a.combined_row_edit else (120, 600)
     for name in cases:
         folder = output / name
         (folder / 'configuration').mkdir(parents=True)
@@ -355,14 +413,16 @@ def main():
             'template = ' + json.dumps((ROOT / '.local/bases/base-for-test/ExtForms/rp14q1.GRP/FIO.ERT').as_posix()),
             'source = ' + json.dumps((ROOT / 'research/forms/probe_module77.1s').as_posix()), 'encoding = "utf-8"',
             *([] if name == 'no-copy' else ['[configuration]', 'modules = ' + json.dumps((folder / 'configuration').as_posix())]),
-            '[deadlines]', 'open_timeout_s = 240', 'calculation_timeout_s = 120', 'cancel_timeout_s = 15',
-            'shutdown_timeout_s = 30', 'total_timeout_s = 600', ''])
+            '[deadlines]', 'open_timeout_s = 240', f'calculation_timeout_s = {calculation_timeout}', 'cancel_timeout_s = 15',
+            'shutdown_timeout_s = 30', f'total_timeout_s = {total_timeout}', ''])
         if a.append_row:
             scenario = append_scenario(name)
         elif a.delete_middle_row:
             scenario = delete_scenario(name)
         elif a.replace_row_product:
             scenario = replacement_scenario(name)
+        elif a.combined_row_edit:
+            scenario = combined_scenario(name)
         elif edit:
             scenario = edit_scenario(name, second_row=a.edit_second_row)
         else:
@@ -384,6 +444,8 @@ def main():
         suites['suite-row-guard'] = ('wrong-row',)
     if a.append_row:
         suites = {'suite': APPEND_CASES}
+    if a.combined_row_edit:
+        suites = {'suite': ('cancel', 'save')}
     for name, ids in suites.items():
         lines = ['schema_version = 1', '[suite]', f'id = "form-tabs-{name}"']
         for id_ in ids:

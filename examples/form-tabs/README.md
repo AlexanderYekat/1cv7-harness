@@ -176,3 +176,27 @@ python -X utf8 -B -m harness77 suite --suite .local/form-tabs-replace-new/suite-
 ```
 
 [Задача 052](../../docs/tasks/052-invoice-replace-product.md)
+
+## Три правки за одно открытие формы (054)
+
+`--combined-row-edit` открывает двухстрочную фактуру из подготовки 052.
+В одном открытии формы сценарий заменяет товар во второй строке через F4
+и добавляет третью через Insert. После переключения на «Шапку» и обратно
+он удаляет исходную первую по Delete с проверкой номера строки. Итоги
+по ходу правки составляют 110, 180, 240 и 190.
+
+- `cancel` закрывает изменённую форму и отвечает «Нет». После повторного
+  открытия той же фактуры проверяются строки на 50 и 60 и итог 110.
+- `save` нажимает «Записать» один раз. После повторного открытия той же
+  фактуры проверяются строки на 130 и 60 в таком порядке и итог 190.
+
+Каждый сценарий получает новую проверенную копию. Независимое чтение
+сверяет точные ссылки товаров, порядок строк, основание и соседние документы.
+
+```powershell
+python -X utf8 -B examples/form-tabs/prepare.py --combined-row-edit --stand .local/s44a/stand.toml --output .local/form-tabs-combined-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-combined-new/suite.toml --stand .local/form-tabs-combined-new/stand.toml --output-root .artifacts/suites/form-tabs-combined-new
+python -X utf8 -B scripts/verify_suite77.py --native .artifacts/suites/form-tabs-combined-new/<suite-uuid>
+```
+
+[Задача 054](../../docs/tasks/054-invoice-combined-edit.md)

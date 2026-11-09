@@ -745,6 +745,8 @@ def _judge_table(step, record, trip):
         return f"{name}: 1C refused: {trip['table_error']}"
     if kind == "row" and record.get("input_ended") is False:
         return f"{name}: the row's input did not end: a cell editor stays open"
+    if kind == "row" and record.get("row_focus_missing"):
+        return f"{name}: the table did not receive focus for cursor movement"
     if kind in ("add_row", "delete_row", "row", "rows") and ("rows" not in trip or "row" not in trip):
         return f"{name}: the table part was not read: {trip.get('state_error') or 'no state in 1C answer'}"
     if kind in ("add_row", "delete_row"):

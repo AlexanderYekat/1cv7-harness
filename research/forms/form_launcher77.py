@@ -1519,16 +1519,20 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 return scenario77.merge_trips(trips)
         if focus is None or not form.within(focus["hwnd"], table):
             focus = record["focus_given"] = form.give_focus(inspection["chain"][0]["hwnd"], table)
-        target = focus["hwnd"] if focus and form.within(focus["hwnd"], table) else table
         keys, current = [], trips[-1].get("row")
         for _ in range(state.get("rows", 0) + 1):
             if current is None or current == step["target"]:
                 break
-            keys.append(form.post_key(target, *scenario77.KEYS["down" if current < step["target"] else "up"]))
+            # Giving focus to the table can restore a cell editor instead of focusing the table itself.
+            if focus is None or focus["hwnd"] != table:
+                record["row_focus_missing"] = True
+                break
+            keys.append(form.post_key(table, *scenario77.KEYS["down" if current < step["target"] else "up"]))
             trips.append(self.call(step))
             if trips[-1].get("row") == current:
                 break  # the cursor did not move
             current = trips[-1].get("row")
+            focus = form.focused()
         record["row_keys"] = keys
         return scenario77.merge_trips(trips)
 
