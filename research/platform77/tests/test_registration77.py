@@ -222,6 +222,25 @@ class RegistrationTests(unittest.TestCase):
             session.register_cleanup_helper(self.dll, {"run_id": "next"})
         self.assertEqual(registry.keys, self.baseline)
 
+    def test_session_lock_checks_again_after_a_wait_and_an_abandoned_mutex(self):
+        checkpoint = Mock(side_effect=[100, 60, 59])
+        wait = Mock(side_effect=[0x102, 0x80])
+        with patch.object(kernel, "WaitForSingleObject", wait):
+            with session.registration_lock(wait_ms=checkpoint):
+                kernel.ReleaseMutex.assert_not_called()
+        self.assertEqual(checkpoint.call_count, 3)
+        self.assertEqual([call.args for call in wait.call_args_list], [(5, 100), (5, 60)])
+        kernel.ReleaseMutex.assert_called_once_with(5)
+        kernel.CloseHandle.assert_called_once_with(5)
+
+    def test_cancel_after_acquisition_releases_without_entering(self):
+        checkpoint = Mock(side_effect=[100, RuntimeError("cancelled")])
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            with session.registration_lock(wait_ms=checkpoint):
+                self.fail("cancelled waiter entered the session")
+        kernel.ReleaseMutex.assert_called_once_with(5)
+        kernel.CloseHandle.assert_called_once_with(5)
+
 
 class ProcessGoneTests(unittest.TestCase):
     """process_gone itself over a fake kernel32."""

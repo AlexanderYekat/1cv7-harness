@@ -9,7 +9,7 @@ import winreg
 
 # Named value on the ProgID root: who registered it and the processes of its session (task 015).
 OWNER_VALUE = "Harness77Owner"
-# Checking, removing and creating the roots is one step for every guarded session of this user.
+# Guarded sessions hold this mutex until their temporary COM roots have been cleaned up.
 REGISTRATION_MUTEX = "Local\\Harness77Diagnostic.Registration"
 DESCRIPTION = "Harness77 diagnostic COM cleanup"
 
@@ -143,19 +143,26 @@ def stale_registration(roots, view, clsid):
 
 
 @contextlib.contextmanager
-def registration_lock(timeout_ms=30000):
+def registration_lock(timeout_ms=30000, *, wait_ms=None):
+    """Hold the mutex on this thread. A session's wait_ms checks its budget and cancellation."""
     handle = kernel.CreateMutexW(None, False, REGISTRATION_MUTEX)
     if not handle:
         raise C.WinError(C.get_last_error())
     try:
+        while True:
+            waited = kernel.WaitForSingleObject(handle, timeout_ms if wait_ms is None else wait_ms())
+            if waited != 0x102 or wait_ms is None:  # WAIT_TIMEOUT: check again between bounded waits.
+                break
         # WAIT_ABANDONED: the previous holder died; the registry check below still applies.
-        waited = kernel.WaitForSingleObject(handle, timeout_ms)
         if waited not in (0, 0x80):
             raise RuntimeError("COM registration lock is busy; wait=" + str(waited))
         try:
+            if wait_ms is not None:
+                wait_ms()  # Cancellation or a deadline can coincide with acquisition.
             yield
         finally:
-            kernel.ReleaseMutex(handle)
+            if not kernel.ReleaseMutex(handle):
+                raise C.WinError(C.get_last_error())
     finally:
         kernel.CloseHandle(handle)
 

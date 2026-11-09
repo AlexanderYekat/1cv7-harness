@@ -464,6 +464,7 @@ def main(argv=None, adapter=None):
             report["open"]["timeout_windows"] = lifecycle["open_timeout_windows"]
         report["open"]["startup_deadline_s"] = lifecycle.get("startup_timeout_seconds")
         report["open"]["startup_s"] = lifecycle.get("startup_elapsed_seconds")
+        report["open"]["registration_wait"] = lifecycle.get("registration_wait")
         report["open"]["stale_com_registrations"] = stale_registrations(lifecycle)
         report["shutdown"] = {"status": shutdown_result["status"],
                               "cleanup_verified": bool(lifecycle.get("cleanup_verified")),

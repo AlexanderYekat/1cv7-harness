@@ -1,4 +1,5 @@
 """Portable simulated process/registry failures; never call native APIs."""
+from contextlib import nullcontext
 import importlib.util
 from pathlib import Path
 import sys
@@ -14,7 +15,13 @@ from shutdown77 import PINNED
 # on Windows. Do not leak this adapter to other tests or real session imports.
 spec = importlib.util.spec_from_file_location("session77_simulated", Path(__file__).resolve().parents[1] / "session77.py")
 session = importlib.util.module_from_spec(spec)
-adapter = types.SimpleNamespace(kernel=Mock(), processes=Mock(), register_cleanup_helper=Mock())
+def acquire_registration(*, wait_ms):
+    wait_ms()
+    return nullcontext()
+
+
+adapter = types.SimpleNamespace(kernel=Mock(), processes=Mock(), register_cleanup_helper=Mock(),
+                                registration_lock=acquire_registration)
 with patch.dict(sys.modules, {"win32_session77": adapter}):
     spec.loader.exec_module(session)
 
@@ -85,7 +92,6 @@ class SessionFailureTests(unittest.TestCase):
         # The client process ends once the cleanup asked it to and waited.
         client.wait.side_effect = lambda timeout=None: setattr(client.poll, "return_value", 0)
         cancel = self.out / "caller-cancel"
-        cancel.write_text("simulation", encoding="ascii")
         self.report.update(cancel_path=str(cancel), client_timeout_seconds=3600)
         # before, ownership, ancestry recheck, before activation, after cleanup
         self.inventory = [[], [self.candidate], [self.candidate], [self.candidate], []]
@@ -93,7 +99,10 @@ class SessionFailureTests(unittest.TestCase):
 
         def popen(command, **kwargs):
             launched.append(command)
-            return self.debugger if len(launched) == 1 else client
+            if len(launched) == 1:
+                return self.debugger
+            cancel.write_text("simulation", encoding="ascii")
+            return client
 
         with patch.object(session.subprocess, "Popen", side_effect=popen), patch.object(session.time, "sleep"):
             result = self.run_simulated_popen()
@@ -104,6 +113,18 @@ class SessionFailureTests(unittest.TestCase):
         client.wait.assert_called()
         self.kernel.TerminateProcess.assert_called_once_with(123, 0xE0000077)
         self.assertTrue(result["cleanup_verified"])
+
+    def test_prelaunch_cancel_leaves_processes_and_registration_alone(self):
+        cancel = self.out / "caller-cancel"
+        cancel.touch()
+        self.report["cancel_path"] = str(cancel)
+        result = self.run_simulated()
+        self.assertTrue(result["user_cancelled"])
+        self.assertFalse(result["registration_wait"]["acquired"])
+        self.assertTrue(result["cleanup_verified"])
+        self.assertNotIn("processes_before", result)
+        self.assertNotIn("debugger_pid", result)
+        self.cleanup.assert_not_called()
 
     def test_open_deadline_stops_a_session_whose_first_command_never_starts(self):
         (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")

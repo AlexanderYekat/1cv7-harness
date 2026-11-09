@@ -5,10 +5,12 @@ This controller has no register edits, skipped instructions or arbitrary script
 input in its CLI. The shared Win32 primitives never identify ownership by PID
 alone, and an unverified handle must not be passed to TerminateProcess.
 """
+from contextlib import ExitStack
 import ctypes as C
 from ctypes import wintypes as W
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -16,7 +18,7 @@ import time
 
 from marker_read77 import MarkerReadError, read_marker
 from shutdown77 import Deadline, atomic_json, read_events, sha256
-from win32_session77 import kernel, processes, register_cleanup_helper
+from win32_session77 import kernel, processes, register_cleanup_helper, registration_lock
 
 
 def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, identity_dll=None, pinned=None):
@@ -87,6 +89,15 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
     ownership_until = started + (startup or 20)
     ready_until = started + (startup or 30)
 
+    def startup_wait_ms():
+        caller_cancelled()
+        now = time.monotonic()
+        expired = deadline.expired(now)
+        if expired or now >= ownership_until:
+            report["timeout_phase"] = expired or "open"
+            raise TimeoutError(report["timeout_phase"] + " deadline before launch")
+        return min(100, math.ceil(1000 * (min(ownership_until, deadline.total_at) - now)))
+
     def note(role, pid, process_handle):
         """Record a started process in the owner record of both temporary registrations."""
         for registration in (identity_cleanup, registration_cleanup):
@@ -128,12 +139,21 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                        (("server", handle), ("client", int(client._handle)), ("debugger", int(debugger._handle)))},
             "debugger_log_bytes": (out / "debugger.log").stat().st_size})
 
+    lock = ExitStack()
+    acquired = False
     try:
+        # Both COM registrations and the process inventory belong to one session.
+        wait_started = time.monotonic()
+        try:
+            lock.enter_context(registration_lock(wait_ms=startup_wait_ms))
+            acquired = True
+        finally:
+            report["registration_wait"] = {"acquired": acquired, "elapsed_s": round(time.monotonic() - wait_started, 3)}
         report["hashes_before"] = hashes()
         if report.get("open_failure_probe"):
             from win32_session77 import base_titles_fingerprint
             report["base_titles_before"] = base_titles_fingerprint()
-        # Recheck immediately before launching, including after CLI preflight.
+        # Capture the baseline only after the previous session has cleaned up.
         report["processes_before"] = processes()
         if identity_dll is not None:
             if not desktop:
@@ -153,6 +173,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         if report["hashes_before"] != (pinned or PINNED):
             raise RuntimeError("pinned files changed since preflight")
         registration_cleanup = register_cleanup_helper(helper_dll, report)
+        startup_wait_ms()
         with (out / "cdb-stdout.txt").open("wb") as debug_stdout, (out / "client-stdout.txt").open("wb") as client_stdout:
             debugger = launch(
                 [str(cdb), "-hd", "-G", "-sins", "-y", str(out), "-logo",
@@ -475,14 +496,14 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         attempt("server", stop_server)
         attempt("debugger", stop_debugger)
         if handle:
-            kernel.CloseHandle(handle)
+            attempt("server handle", lambda: kernel.CloseHandle(handle))
         if registration_cleanup:
             attempt("registration", registration_cleanup)
         if identity_cleanup:
             attempt("identity registration", identity_cleanup)
         if baseline is not None:
             attempt("baseline identity", lambda: report.update(baseline_preserved=baseline.preserved()))
-            baseline.close()
+            attempt("baseline handles", baseline.close)
         if identity_dll is not None:
             attempt("identity hash", lambda: report.update(identity_hash_after=sha256(identity_dll)))
             attempt("observer hashes", lambda: report.update(identity_observer_hashes_after={p.name: sha256(p) for p in out.glob("identity-*.txt")}))
@@ -491,23 +512,26 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             if profile == "challenge-only-v2" and report.get("server"):
                 attempt("observer retirement", lambda: report.update(
                     identity_observer_retired_verified=observer_retired(debug_text(), report["run_id"], report["server"])))
-        report["helper_exit_code"] = client.poll() if client else None
-        report["debugger_exit_code"] = debugger.poll() if debugger else None
+        attempt("client exit code", lambda: report.update(helper_exit_code=client.poll() if client else None))
+        attempt("debugger exit code", lambda: report.update(debugger_exit_code=debugger.poll() if debugger else None))
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
-        attempt("hashes", lambda: report.update(hashes_after=hashes()))
-        if report.get("open_failure_probe"):
+        if acquired:
+            attempt("hashes", lambda: report.update(hashes_after=hashes()))
+        if "base_titles_before" in report:
             attempt("user database list", lambda: report.update(base_titles_after=base_titles_fingerprint()))
-        attempt("process inventory", lambda: report.update(processes_after=processes()))
+        if "processes_before" in report:
+            attempt("process inventory", lambda: report.update(processes_after=processes()))
+        attempt("registration lock", lock.close)
         attempt("debugger log", lambda: report.update(
             first_chance_av_observed="\nHARNESS77_FIRST_CHANCE_AV\n" in debug_text()))
         report["av_dump_saved"] = (out / "first-av.dmp").exists()
         # The durable gate is removed only after independently verifiable cleanup.
         registration = report.get("temporary_com_registration")
-        expected_after = report["processes_before"] if identity_dll is not None else []
+        expected_after = report.get("processes_before", []) if identity_dll is not None else []
         report["cleanup_verified"] = (not report["cleanup_errors"]
             and sorted(report.get("processes_after", []), key=lambda p: p["pid"]) == sorted(expected_after, key=lambda p: p["pid"])
             and (registration is None or registration.get("removed") is True)
             and (identity_cleanup is None or report.get("identity_registration", {}).get("removed") is True)
-            and (debugger is None or debugger.poll() is not None)
-            and (client is None or client.poll() is not None))
+            and (debugger is None or report.get("debugger_exit_code") is not None)
+            and (client is None or report.get("helper_exit_code") is not None))
     return report
