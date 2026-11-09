@@ -45,6 +45,7 @@ TREE, TREE_WINDOW_ID = "SysTreeView32", 4679
 # field's window text is its value instead.
 CAPTIONED = ("BUTTON", "STATIC", "CHECKBOX", "1CGROUPBOX")
 SMTO_ABORTIFHUNG = 0x0002
+ERROR_INVALID_WINDOW_HANDLE = 1400
 TOLERANCE_PX = 2
 # A field's window is one pixel wider than its record on every side (its border): width and height
 # +2.0 and +1.9 px, left −0.5…−1.0 px for all 14 fields of task 011 E1 and task 022 f-elements; the
@@ -812,17 +813,28 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         record.update(requested=True, message="WM_COMMAND/BN_CLICKED", identity_rechecked=True)
         return record
 
-    def post(self, hwnd, message, wparam=0, lparam=0):
-        """``PostMessageW`` to an owned window after rechecking the server identity (task 027)."""
+    def post(self, hwnd, message, wparam=0, lparam=0, *, skip_closed=False):
+        """Post to an owned window. Return ``None, 0`` for a release whose recipient has closed."""
         self.modal.verify()
-        if self.modal.owner(hwnd) != (self.modal.server["pid"], self.modal.tid):
+        owner = self.modal.owner(hwnd)
+        if owner != (self.modal.server["pid"], self.modal.tid):
+            if skip_closed and owner == (0, 0) and self.window_missing(hwnd):
+                return None, 0
             raise RuntimeError("window is not on the verified server thread")
         self.user.PostMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
         C.set_last_error(0)
         posted = bool(self.user.PostMessageW(hwnd, message, wparam, lparam))
-        return posted, 0 if posted else C.get_last_error()
+        error = 0 if posted else C.get_last_error()
+        if skip_closed and error == ERROR_INVALID_WINDOW_HANDLE and self.window_missing(hwnd):
+            return None, 0
+        return posted, error
 
-    def post_key(self, hwnd, name, vk, extended):
+    def window_missing(self, hwnd):
+        """Confirm that an absent owner means destruction rather than a foreign window."""
+        self.user.IsWindow.argtypes = [W.HWND]
+        return not self.user.IsWindow(hwnd) and self.modal.owner(hwnd) == (0, 0)
+
+    def post_key(self, hwnd, name, vk, extended, *, allow_closed=False):
         """One key pressed in a window of 1C: ``WM_KEYDOWN`` and ``WM_KEYUP`` posted to it (task 027).
 
         1C's message loop translates and dispatches them as keyboard input of its thread; the system's input
@@ -833,7 +845,9 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
         record = {"key": name, "vk": vk, "hwnd": hwnd, "id": self.user.GetDlgCtrlID(hwnd), "message": "WM_KEYDOWN/WM_KEYUP",
                   "posted": True, "identity_rechecked": True}
         for stage, message, lparam in (("down", WM_KEYDOWN, down), ("up", WM_KEYUP, up)):
-            posted, error = self.post(hwnd, message, vk, lparam)
+            posted, error = self.post(hwnd, message, vk, lparam, skip_closed=allow_closed and stage == "up")
+            if posted is None:
+                return dict(record, returned=True, last_error=0, keyup_skipped="window_closed")
             if not posted:
                 return dict(record, returned=False, failed_stage=stage, last_error=error)
         return dict(record, returned=True, last_error=0)

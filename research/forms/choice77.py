@@ -64,7 +64,8 @@ def select_catalog(form, popup, caption, evidence):
     confirmed, current, _ = form.send(hwnd, 0x188)  # LB_GETCURSEL
     if not ok or selected != index or not confirmed or current != index or (form.focused() or {}).get('hwnd') != hwnd:
         raise RuntimeError('catalog selection or focus changed before Enter')
-    evidence.update(index=index, caption=names[index], key=form.post_key(hwnd, *KEYS['enter']))
+    # Enter can destroy the kind list before its release. The caller verifies the catalog that opens.
+    evidence.update(index=index, caption=names[index], key=form.post_key(hwnd, *KEYS['enter'], allow_closed=True))
     if not evidence['key'].get('returned'):
         raise RuntimeError('catalog selection key did not return')
 

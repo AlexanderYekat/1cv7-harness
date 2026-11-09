@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import choice77
+import form_window77 as window
 import scenario77
 from test_scenario77 import TABLE, DESCRIPTION, trip
 import form_launcher77 as form
@@ -127,6 +128,47 @@ class ChoiceTests(unittest.TestCase):
                     choice77.select_catalog(owned, popup, 'Номенклатура', {})
         owned.send.assert_not_called()
         owned.post_key.assert_not_called()
+
+    def native_key_target(self):
+        owned = window.OwnedForm.__new__(window.OwnedForm)
+        owned.modal = Mock(server={'pid': 1}, tid=2)
+        owned.user = Mock()
+        owned.user.MapVirtualKeyW.return_value = 0x1C
+        owned.user.PostMessageW.return_value = True
+        owned.user.IsWindow.return_value = False
+        return owned
+
+    def test_catalog_enter_continues_when_the_verified_popup_closes_on_keydown(self):
+        owned = self.native_key_target()
+        owned.modal.owner.side_effect = [(1, 2), (0, 0), (0, 0)]
+        owned.send = Mock(return_value=(True, 0, 0))
+        owned.focused = Mock(return_value={'hwnd': 7})
+        evidence = {}
+        with patch.object(window, 'C'), patch.object(window, 'listbox_items', return_value=['Номенклатура']):
+            choice77.select_catalog(owned, {'list': {'hwnd': 7}}, 'Номенклатура', evidence)
+        self.assertTrue(evidence['key']['returned'])
+        self.assertEqual(evidence['key']['keyup_skipped'], 'window_closed')
+        owned.user.PostMessageW.assert_called_once_with(7, window.WM_KEYDOWN, 13, 0x001C0001)
+
+    def test_catalog_enter_rejects_a_foreign_owner_on_either_half(self):
+        for owned_down in (False, True):
+            with self.subTest(owned_down=owned_down):
+                owned = self.native_key_target()
+                owned.modal.owner.side_effect = ([(1, 2)] if owned_down else []) + [(9, 10)]
+                with patch.object(window, 'C'), self.assertRaisesRegex(RuntimeError, 'verified server thread'):
+                    owned.post_key(7, *scenario77.KEYS['enter'], allow_closed=True)
+                self.assertEqual(owned.user.PostMessageW.call_count, int(owned_down))
+
+    def test_catalog_enter_checks_closure_if_posting_keyup_hits_an_invalid_handle(self):
+        owned = self.native_key_target()
+        owned.modal.owner.side_effect = [(1, 2), (1, 2), (0, 0)]
+        owned.user.PostMessageW.side_effect = [True, False]
+        with patch.object(window, 'C') as native:
+            native.get_last_error.return_value = window.ERROR_INVALID_WINDOW_HANDLE
+            key = owned.post_key(7, *scenario77.KEYS['enter'], allow_closed=True)
+        self.assertTrue(key['returned'])
+        self.assertEqual(key['keyup_skipped'], 'window_closed')
+        owned.user.IsWindow.assert_called_once_with(7)
 
     def test_insert_cancels_a_catalog_popup_without_an_immediate_choice(self):
         popup = {'hwnd': 6, 'class': 'Afx:400000:b', 'visible': True, 'enabled': True}
