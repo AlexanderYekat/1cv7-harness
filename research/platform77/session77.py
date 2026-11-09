@@ -21,7 +21,8 @@ from shutdown77 import Deadline, atomic_json, read_events, sha256
 from win32_session77 import kernel, processes, register_cleanup_helper, registration_lock
 
 
-def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, identity_dll=None, pinned=None):
+def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, identity_dll=None, pinned=None,
+                *, progress=None):
     """pinned: the expected hashes when not shutdown77.PINNED — a run's copy of the base with
     the configuration it built (task 021); every other file stays the stand's."""
     def hashes():
@@ -145,7 +146,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         # Both COM registrations and the process inventory belong to one session.
         wait_started = time.monotonic()
         try:
-            lock.enter_context(registration_lock(wait_ms=startup_wait_ms))
+            on_wait = None if progress is None else lambda: progress("waiting")
+            lock.enter_context(registration_lock(wait_ms=startup_wait_ms, on_wait=on_wait))
             acquired = True
         finally:
             report["registration_wait"] = {"acquired": acquired, "elapsed_s": round(time.monotonic() - wait_started, 3)}
@@ -181,6 +183,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 stdout=debug_stdout, cwd=str(exe.parent))
             report["debugger_pid"] = debugger.pid
             note("debugger", debugger.pid, int(debugger._handle))
+            if progress is not None:
+                progress("starting")
             while time.monotonic() < ownership_until:
                 children = [p for p in processes() if p["parent_pid"] == debugger.pid]
                 if len(children) == 1:

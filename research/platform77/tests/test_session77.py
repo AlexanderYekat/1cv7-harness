@@ -15,7 +15,7 @@ from shutdown77 import PINNED
 # on Windows. Do not leak this adapter to other tests or real session imports.
 spec = importlib.util.spec_from_file_location("session77_simulated", Path(__file__).resolve().parents[1] / "session77.py")
 session = importlib.util.module_from_spec(spec)
-def acquire_registration(*, wait_ms):
+def acquire_registration(*, wait_ms, on_wait=None):
     wait_ms()
     return nullcontext()
 

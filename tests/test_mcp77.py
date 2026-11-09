@@ -12,6 +12,7 @@ import textwrap
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from harness77 import __version__, ert_module as ert, mcp77, run77
 from harness77.visual77 import Image, write_png
@@ -322,8 +323,13 @@ class ServerProcessTests(unittest.TestCase):
 
 FAKE_CHILD = textwrap.dedent('''
     import json, os, sys, time
+    from pathlib import Path
     argv = sys.argv[1:]
     cancel = next((a.split("=", 1)[1] for a in argv if a.startswith("--cancel-file=")), None)
+    if os.environ.get("FAKE_NATIVE_PROGRESS"):
+        prefix = Path(os.environ["HARNESS77_MCP_PROGRESS"])
+        prefix.with_suffix(".waiting").touch()
+        prefix.with_suffix(".starting").touch()
     seconds = float(os.environ.get("FAKE_SECONDS", "1"))
     started = time.monotonic()
     while time.monotonic() - started < seconds:
@@ -405,6 +411,20 @@ class ServerThreadTests(unittest.TestCase):
         values = [p["progress"] for p in progress]
         self.assertEqual(values, sorted(set(values)))
         self.assertEqual(self.close(), [])
+
+    def test_native_progress_keeps_both_transitions_before_a_fast_exit(self):
+        with patch.dict(os.environ, {"FAKE_NATIVE_PROGRESS": "1", "FAKE_SECONDS": "0"}):
+            self.call("native", "run", {"project": "p.toml", "stand": "s.toml"}, meta={"progressToken": "p"})
+            self.assertFalse(self.until("native")["result"]["isError"])
+        progress = [m["params"] for m in self.seen if m.get("method") == "notifications/progress"]
+        transitions = [p for p in progress if "стенда" in p["message"] or "1С" in p["message"]]
+        self.assertEqual(len(transitions), 2)
+        self.assertIn("ждёт освобождения стенда", transitions[0]["message"])
+        self.assertIn("запускает 1С", transitions[1]["message"])
+        self.assertEqual([p["progressToken"] for p in transitions], ["p", "p"])
+        self.assertLess(transitions[0]["progress"], transitions[1]["progress"])
+        self.assertEqual(self.close(), [])
+        self.assertFalse(self.server.cancel_dir.exists())
 
     def test_cancelled_run_gets_the_cancel_file_and_no_response(self):
         os.environ["FAKE_SECONDS"] = "20"

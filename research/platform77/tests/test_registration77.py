@@ -223,13 +223,15 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(registry.keys, self.baseline)
 
     def test_session_lock_checks_again_after_a_wait_and_an_abandoned_mutex(self):
-        checkpoint = Mock(side_effect=[100, 60, 59])
-        wait = Mock(side_effect=[0x102, 0x80])
+        checkpoint = Mock(side_effect=[100, 80, 60, 59])
+        wait = Mock(side_effect=[0x102, 0x102, 0x80])
+        on_wait = Mock()
         with patch.object(kernel, "WaitForSingleObject", wait):
-            with session.registration_lock(wait_ms=checkpoint):
+            with session.registration_lock(wait_ms=checkpoint, on_wait=on_wait):
                 kernel.ReleaseMutex.assert_not_called()
-        self.assertEqual(checkpoint.call_count, 3)
-        self.assertEqual([call.args for call in wait.call_args_list], [(5, 100), (5, 60)])
+        self.assertEqual(checkpoint.call_count, 4)
+        self.assertEqual([call.args for call in wait.call_args_list], [(5, 0), (5, 80), (5, 60)])
+        on_wait.assert_called_once_with()
         kernel.ReleaseMutex.assert_called_once_with(5)
         kernel.CloseHandle.assert_called_once_with(5)
 

@@ -21,6 +21,7 @@ from . import __version__
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 PROGRESS_INTERVAL_S = 10.0
+NATIVE_PROGRESS = {"waiting": "ждёт освобождения стенда", "starting": "запускает 1С"}
 POLL_S = 0.2
 CHILD = (sys.executable, "-m", "harness77")
 
@@ -412,36 +413,67 @@ class Server:
         cancel_file = self._cancel_path() if call.tool.cancel_file else None
         if cancel_file is not None:
             argv.append(f"--cancel-file={cancel_file}")
+        env = os.environ.copy()
+        env.pop("HARNESS77_MCP_PROGRESS", None)
+        markers = {}
+        if call.tool.name == "run" and call.progress_token is not None:
+            env["HARNESS77_MCP_PROGRESS"] = str(cancel_file)
+            markers = {phase: cancel_file.with_suffix("." + phase) for phase in NATIVE_PROGRESS}
         self._log(f"{call.tool.name} {argv}")
         started = time.monotonic()
         process = subprocess.Popen([*self.child, *argv], cwd=self.cwd, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         signalled = False
         progress_at = started + self.progress_interval
+        last_progress = -0.001
+        seen = set()
+
+        def send_progress(now, detail=None):
+            nonlocal progress_at, last_progress
+            elapsed = max(round(now - started, 1), round(last_progress + 0.001, 3))
+            description = f"{detail}, " if detail else ""
+            self._send({"jsonrpc": "2.0", "method": "notifications/progress",
+                        "params": {"progressToken": call.progress_token, "progress": elapsed,
+                                   "message": f"{call.tool.name}: {description}{int(elapsed)} с"}})
+            progress_at = now + self.progress_interval
+            last_progress = elapsed
+
         try:
             while True:
                 try:
                     stdout, stderr = process.communicate(timeout=POLL_S)
-                    break
+                    finished = True
                 except subprocess.TimeoutExpired:
-                    pass
-                if cancel_file is not None and call.stop.is_set() and not signalled:
+                    finished = False
+                if not finished and cancel_file is not None and call.stop.is_set() and not signalled:
                     # Other operations are short and publish new files only: they finish.
                     cancel_file.touch()
                     signalled = True
                     self._log(f"{call.tool.name}: cancel file created")
-                now = time.monotonic()
-                if call.progress_token is not None and now >= progress_at:
-                    # Polls are POLL_S apart, so the rounded values only grow.
-                    elapsed = round(now - started, 1)
-                    self._send({"jsonrpc": "2.0", "method": "notifications/progress",
-                                "params": {"progressToken": call.progress_token, "progress": elapsed,
-                                           "message": f"{call.tool.name}: {int(elapsed)} с"}})
-                    progress_at = now + self.progress_interval
+                if call.progress_token is not None and not call.withdrawn.is_set():
+                    now = time.monotonic()
+                    # Read the later checkpoint first so a transition during polling
+                    # cannot send "starting" ahead of an unread "waiting".
+                    ready = {phase for phase, marker in reversed(markers.items())
+                             if phase not in seen and os.path.isfile(marker)}
+                    for phase in markers:
+                        if phase in ready:
+                            seen.add(phase)
+                            send_progress(now, NATIVE_PROGRESS[phase])
+                    if not finished and now >= progress_at:
+                        waiting = "waiting" in seen and "starting" not in seen
+                        send_progress(now, NATIVE_PROGRESS["waiting"] if waiting else None)
+                if finished:
+                    break
         finally:
             if cancel_file is not None:
                 cancel_file.unlink(missing_ok=True)
+            for marker in markers.values():
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError as error:
+                    self._log(f"could not remove progress marker {marker.name}: {error}")
         duration = round(time.monotonic() - started, 3)
         self._log(f"{call.tool.name}: exit {process.returncode} in {duration} s")
         structured = {"tool": call.tool.name, "argv": argv, "cwd": self.cwd, "exit_code": process.returncode,

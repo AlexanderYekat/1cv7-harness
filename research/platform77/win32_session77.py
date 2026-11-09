@@ -143,16 +143,21 @@ def stale_registration(roots, view, clsid):
 
 
 @contextlib.contextmanager
-def registration_lock(timeout_ms=30000, *, wait_ms=None):
+def registration_lock(timeout_ms=30000, *, wait_ms=None, on_wait=None):
     """Hold the mutex on this thread. A session's wait_ms checks its budget and cancellation."""
     handle = kernel.CreateMutexW(None, False, REGISTRATION_MUTEX)
     if not handle:
         raise C.WinError(C.get_last_error())
     try:
         while True:
-            waited = kernel.WaitForSingleObject(handle, timeout_ms if wait_ms is None else wait_ms())
+            budget = timeout_ms if wait_ms is None else wait_ms()
+            # Check for contention before blocking, even if the owner releases quickly.
+            waited = kernel.WaitForSingleObject(handle, 0 if wait_ms is not None and on_wait is not None else budget)
             if waited != 0x102 or wait_ms is None:  # WAIT_TIMEOUT: check again between bounded waits.
                 break
+            if on_wait is not None:
+                on_wait()
+                on_wait = None
         # WAIT_ABANDONED: the previous holder died; the registry check below still applies.
         if waited not in (0, 0x80):
             raise RuntimeError("COM registration lock is busy; wait=" + str(waited))

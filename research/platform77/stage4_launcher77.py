@@ -170,6 +170,16 @@ def stale_registrations(lifecycle):
             if (lifecycle.get(key) or {}).get("stale_removed")]
 
 
+def mcp_progress(phase):
+    """Publish a checkpoint in the MCP server's temporary directory when requested."""
+    prefix = os.environ.get("HARNESS77_MCP_PROGRESS")
+    if prefix:
+        try:
+            Path(prefix).with_suffix("." + phase).touch()
+        except (OSError, ValueError):
+            pass  # Progress is optional and must not affect the session.
+
+
 def session_limits(deadlines):
     """Core limits from the section 8.5 deadlines: (operation, session, client) seconds.
 
@@ -435,9 +445,11 @@ def main(argv=None, adapter=None):
             # 1C may register a base it opens by path in the user's list of bases (task 021).
             from win32_session77 import base_titles_fingerprint
             report["base_list"] = {"before": base_titles_fingerprint()}
+        progress = mcp_progress if os.environ.get("HARNESS77_MCP_PROGRESS") else None
         with PrivateDesktop() as desktop, adapter.watch(drive, lifecycle, desktop.name):
             lifecycle = run_session(base, exe, cdb, helper, args.user, drive, lifecycle,
-                                    desktop=desktop.name, identity_dll=identity_dll, pinned=pinned)
+                                    desktop=desktop.name, identity_dll=identity_dll, pinned=pinned,
+                                    progress=progress)
         lifecycle["desktop_closed"] = True
         if built_md:
             report["base_list"]["after"] = base_titles_fingerprint()
