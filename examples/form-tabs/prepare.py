@@ -1,4 +1,4 @@
-"""Generate task 046 profiles using the accepted 043 fixture, without starting 1C."""
+"""Generate tasks 046 and 047 profiles using the accepted 043 fixture, without starting 1C."""
 import argparse
 import importlib.util
 import json
@@ -10,6 +10,7 @@ spec = importlib.util.spec_from_file_location('mixed043', ROOT / 'examples/journ
 mixed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mixed)
 CASES = ('success', 'second', 'missing', 'wrong-rows', 'no-copy')
+EDIT_CASES = ('save', 'cancel')
 
 
 def case_scenario(name):
@@ -36,10 +37,53 @@ def case_scenario(name):
     return text.replace('\n]\n', '\n' + tail + ']\n')
 
 
+def edit_scenario(name):
+    baseline = mixed.state()
+    final = baseline.replace('1:50:50:50:0:0;', '2:50:100:100:0:0;', 1) if name == 'save' else baseline
+    text = mixed.case_scenario('invoice-far').replace(
+        ', browser_visible = false }',
+        ', browser_visible = false, edit = true, expected_after = ' + json.dumps(final, ensure_ascii=False) + ' }')
+    text = text[:text.rindex('expect_value = ')] + 'expect_value = ' + json.dumps(final, ensure_ascii=False) + '\n'
+    tail = '''    { tab = "Табличная часть", browser_visible = true },
+    { rows = 1 },
+    { value = "Количество", row = 1, text = "1" },
+    { value = "Сумма", row = 1, text = "50" },
+    { row = 1 },
+    { cell = "Количество", text = "2" },
+    { value = "Количество", row = 1, text = "2" },
+    { value = "Цена", row = 1, text = "50" },
+    { value = "Сумма", row = 1, text = "100" },
+    { value = "Всего", row = 1, text = "100" },
+    { total = "Сумма", text = "100" },
+    { tab = "Шапка", browser_visible = false },
+'''
+    if name == 'save':
+        tail += '''    { click = "КнопкаЗаписать" },
+    { close_form = true, closes = true },
+'''
+        quantity, amount = '2', '100'
+    else:
+        tail += '''    { close_form = true },
+    { dialog = "Сохранить Документ?", button = "Нет", closes = true },
+'''
+        quantity, amount = '1', '50'
+    tail += f'''    {{ reopen = true }},
+    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = 1 }},
+    {{ value = "Количество", row = 1, text = "{quantity}" }},
+    {{ value = "Сумма", row = 1, text = "{amount}" }},
+    {{ value = "Всего", row = 1, text = "{amount}" }},
+    {{ total = "Сумма", text = "{amount}" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    return text.replace('\n]\n', '\n' + tail + ']\n')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stand', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--edit', action='store_true', help='generate the save and cancel cases of task 047')
     a = p.parse_args()
     stand_text = a.stand.resolve(strict=True).read_text('utf-8')
     stand = tomllib.loads(stand_text)['stand']
@@ -50,7 +94,7 @@ def main():
         p.error('stand paths must be absolute')
     output = a.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    for name in CASES:
+    for name in EDIT_CASES if a.edit else CASES:
         folder = output / name
         (folder / 'configuration').mkdir(parents=True)
         header = '\n'.join(['schema_version = 1', '[project]', f'id = "form-tabs-{name}"', '[build]',
@@ -59,7 +103,7 @@ def main():
             *([] if name == 'no-copy' else ['[configuration]', 'modules = ' + json.dumps((folder / 'configuration').as_posix())]),
             '[deadlines]', 'open_timeout_s = 240', 'calculation_timeout_s = 120', 'cancel_timeout_s = 15',
             'shutdown_timeout_s = 30', 'total_timeout_s = 600', ''])
-        content = header + case_scenario(name)
+        content = header + (edit_scenario(name) if a.edit else case_scenario(name))
         tomllib.loads(content)
         (folder / 'project.toml').write_text(content, 'utf-8', newline='\n')
     import re
@@ -67,8 +111,12 @@ def main():
     if n != 1:
         p.error('stand requires one launcher line')
     (output / 'stand.toml').write_text(stand_text, 'utf-8', newline='\n')
-    for name, ids in {'suite': ['success', 'second', 'repeat'], 'suite-missing': ['missing', 'after-failure'],
-                      'suite-rows': ['wrong-rows', 'after-failure']}.items():
+    suites = {'suite': EDIT_CASES} if a.edit else {
+        'suite': ['success', 'second', 'repeat'],
+        'suite-missing': ['missing', 'after-failure'],
+        'suite-rows': ['wrong-rows', 'after-failure'],
+    }
+    for name, ids in suites.items():
         lines = ['schema_version = 1', '[suite]', f'id = "form-tabs-{name}"']
         for id_ in ids:
             case = 'success' if id_ in ('repeat', 'after-failure') else id_

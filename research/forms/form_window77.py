@@ -838,14 +838,16 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
 
     def editor_of(self, focus, table):
         """The cell editor that holds ``focus``: the child window of the table part above it, or None."""
-        if not focus or focus["hwnd"] == table or not self.within(focus["hwnd"], table):
-            return None
-        cursor = focus["hwnd"]
-        while self.user.GetParent(cursor) != table:
-            cursor = self.user.GetParent(cursor)
-        until = time.monotonic() + 2
-        info = self.modal.info(cursor, until)
-        return {k: info.get(k) for k in ("hwnd", "class", "id", "text", "visible", "enabled")}
+        cursor = focus["hwnd"] if focus else 0
+        for _ in range(32):
+            if not cursor or cursor == table:
+                break
+            parent = self.user.GetParent(cursor)
+            if parent == table:
+                info = self.modal.info(cursor, time.monotonic() + 2)
+                return {k: info.get(k) for k in ("hwnd", "class", "id", "text", "visible", "enabled")}
+            cursor = parent
+        return None
 
     def table_windows(self, table):
         """The table part's window, its descendants (cell editors) and the focus, for the evidence (task 027)."""

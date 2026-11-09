@@ -63,3 +63,30 @@ python -X utf8 -B scripts/verify_form_tabs_controls77.py --run .artifacts/suites
 Каталоги результатов должны быть новыми. Подробности —
 [задание](../../docs/tasks/046-form-tabs.md) и
 [техническая проверка](../../docs/tasks/046-form-tabs-acceptance.md).
+
+## Запись и отмена правки счёта-фактуры (047)
+
+Генератор с `--edit` создаёт два сценария для фактуры из слота 23
+подготовки 043. Каждый получает свежую проверенную копию базы.
+`journal_children edit = true` открывает точную ссылку, `tab` переключает
+вкладку, а `cell` меняет количество в первой строке с 1 на 2.
+Штатная формула пересчитывает сумму строки, «Всего» и итог с 50 до 100
+при цене 50.
+
+- `save` нажимает «Записать», закрывает документ и повторно открывает ту же
+  ссылку. Таблица показывает количество 2 и суммы 100.
+- `cancel` закрывает изменённую форму и отвечает «Нет» на вопрос
+  «Сохранить Документ?». После повторного открытия той же ссылки таблица
+  показывает исходные количество 1 и суммы 50.
+
+После возврата в журнал команда `verify` читает документы и проводки
+свежими объектами. Ожидание включает связь фактуры с основанием, её номер
+и дату, состав подчинённых документов и состояние соседей.
+
+```powershell
+python -X utf8 -B examples/form-tabs/prepare.py --edit --stand .local/s44a/stand.toml --output .local/form-tabs-edit-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-edit-new/suite.toml --stand .local/form-tabs-edit-new/stand.toml --output-root .artifacts/suites/form-tabs-edit-new
+python -X utf8 -B scripts/verify_suite77.py --native .artifacts/suites/form-tabs-edit-new/<suite-uuid>
+```
+
+Подробности и результаты нативных проб — в [задаче 047](../../docs/tasks/047-invoice-table-edit.md).

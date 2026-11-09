@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import form_launcher77 as form  # noqa: E402
@@ -96,6 +97,38 @@ class UnitsTests(unittest.TestCase):
         self.assertIn("not found", window.judge_layout(DESCRIPTION, {"found": False, "reason": "x"})[0])
         inspection["controls"].pop()
         self.assertIn("missing: 4152", window.judge_layout(DESCRIPTION, inspection)[0])
+
+
+class TableEditorTests(unittest.TestCase):
+    def setUp(self):
+        self.watcher = form.FormWatcher(None, {}, None, {}, [], None)
+        self.watcher.call = Mock(return_value={"returned": True, "column": "Количество"})
+        self.windows = Mock()
+        self.windows.focused.return_value = {"hwnd": 12}
+        self.windows.replace_text.return_value = {"typed": True}
+        self.windows.post_key.return_value = {"returned": True}
+        self.windows.await_action.return_value = {"returned": True}
+        self.step = {"kind": "cell", "column": "Количество", "column_window": 4225, "text": "2"}
+        self.editor = {"id": 4225, "visible": True, "enabled": True}
+
+    def begin(self):
+        return self.watcher.begin_table(self.windows, {"chain": [{"hwnd": 10}]}, self.step, {"hwnd": 11}, [])
+
+    def test_waits_for_editor_without_reissuing_the_activation(self):
+        self.windows.focused.side_effect = [{"hwnd": 11}, {"hwnd": 12}]
+        self.windows.editor_of.side_effect = [None, self.editor]
+        chain = self.begin()
+        self.assertTrue(chain.record["returned"])
+        self.watcher.call.assert_called_once_with(self.step)
+        self.windows.replace_text.assert_called_once_with(12, "2")
+        self.windows.post_key.assert_called_once_with(12, *form.scenario77.KEYS["enter"])
+
+    def test_does_not_type_into_another_column(self):
+        self.windows.editor_of.return_value = dict(self.editor, id=4224)
+        chain = self.begin()
+        self.assertIn("unexpected or unavailable editor", chain.record["refused"])
+        self.windows.replace_text.assert_not_called()
+        self.windows.post_key.assert_not_called()
 
 
 class AdapterTests(unittest.TestCase):

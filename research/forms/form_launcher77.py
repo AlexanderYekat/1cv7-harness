@@ -123,6 +123,7 @@ STEP_WAIT_S = 30  # the watcher's wait for the client's answer to one step (task
 # An action returns or opens a modal window within this (the message timeout of task 025); a failed step
 # closes at most this many windows before it leaves the rest to the session's deadlines (task 026).
 ACTION_WAIT_S = 10
+CELL_EDITOR_WAIT_S = 1
 DISMISS_LIMIT = 5
 # Visual captures (task 010): states around the click, windows of the form.
 STATES = ("open", "clicked")
@@ -1345,8 +1346,18 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             if current.casefold() != step["column"].casefold():
                 chain.record.update(record, refused=f"column {step['column']!r} did not become current: {current!r}")
                 return chain
-            if record["editor_before"] is None:
+            # The controller can report the new column before the native editor has taken focus.
+            editor = record["editor_before"]
+            deadline = time.monotonic() + CELL_EDITOR_WAIT_S
+            while editor is None and time.monotonic() < deadline and not self.stopped.wait(0.02):
+                focus = form.focused()
+                editor = form.editor_of(focus, hwnd)
+            record.update(focus_before=focus, editor_before=editor)
+            if editor is None:
                 chain.record.update(record, refused=f"no cell editor opened; the focus is {focus}")
+                return chain
+            if editor["id"] != step["column_window"] or not editor["visible"] or not editor["enabled"]:
+                chain.record.update(record, refused=f"unexpected or unavailable editor for {step['column']!r}: {editor}")
                 return chain
             typed = form.replace_text(focus["hwnd"], step["text"])
             record.update(typing=typed, target=focus["hwnd"], expected_editor=step.get("column_window"))
