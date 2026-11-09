@@ -69,10 +69,45 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(resolved_items[1]['catalog'], 'Номенклатура')
         for changed in (dict(parameters, steps=[item]), dict(parameters, fixture_verify=''),
                         dict(parameters, steps=[{'add_row': True}, dict(item, catalog_caption='')])):
-            with self.assertRaisesRegex(ValueError, 'immediately after add_row'):
+            with self.assertRaisesRegex(ValueError, 'immediately after add_row|verified fixture'):
                 scenario77.steps(changed)
         with self.assertRaisesRegex(ValueError, 'compound reference'):
             scenario77.resolve(items, dict(DESCRIPTION, browser=TABLE))
+
+    def test_existing_compound_row_can_select_or_cancel(self):
+        item = {'choose': 'Товар', 'row': 2, 'catalog': 'Номенклатура', 'catalog_caption': 'Номенклатура'}
+        parameters = {'fixture_setup': 'prepare', 'fixture_verify': 'verify'}
+        select = dict(item, text='Товар 052')
+        cancel = dict(item, cancel=True)
+        self.assertEqual([s['row'] for s in scenario77.steps(dict(parameters, steps=[{'row': 2}, select, cancel]))[1:]],
+                         [2, 2])
+        with self.assertRaisesRegex(ValueError, 'appended row'):
+            scenario77.steps(dict(parameters, steps=[{'add_row': True}, cancel]))
+        with self.assertRaises(ValueError):
+            scenario77.steps(dict(parameters, steps=[dict(select, row=0)]))
+
+    def test_wrong_existing_row_does_not_send_f4(self):
+        watcher = form.FormWatcher.__new__(form.FormWatcher)
+        watcher.pending_choice = None
+        watcher.call = Mock(return_value=trip(row=1, rows=2, column='Товар'))
+        owned = Mock()
+        step = {'index': 1, 'row': 2, 'column': 'Товар', 'column_window': 4222, 'catalog_caption': 'Номенклатура'}
+        chain = watcher.begin_choice(owned, {}, step, {'hwnd': 11}, [])
+        self.assertEqual(chain.record['refused'], 'current row 1 differs from required row 2')
+        owned.post_key.assert_not_called()
+
+    def test_existing_choice_requires_the_same_row_and_count_on_return(self):
+        watcher = form.FormWatcher.__new__(form.FormWatcher)
+        owned = Mock()
+        owned.alive.return_value = False
+        step = {'row': 2, 'catalog_caption': 'Номенклатура', 'cancel': True}
+        for row, rows in ((1, 2), (2, 3), (2, 2)):
+            with self.subTest(row=row, rows=rows):
+                watcher.choice_call = Mock(return_value=trip(row=row, rows=rows, choice_result=1))
+                chain = SimpleNamespace(choice_step=step, choice_window={'frame': {'hwnd': 3}},
+                                        before={'row': 2, 'rows': 2}, record={}, trips=[])
+                watcher.verify_choice(owned, chain)
+                self.assertIs(chain.record['choice_verified'], row == 2 and rows == 2)
 
     def test_catalog_popup_requires_new_focused_list_and_parent(self):
         popup = {'hwnd': 6, 'class': 'Afx:400000:b', 'visible': True, 'enabled': True}

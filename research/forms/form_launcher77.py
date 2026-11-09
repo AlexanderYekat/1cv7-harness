@@ -1220,6 +1220,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             return "1C reported an error during choice: " + str(trip["diagnostics"][0])
         return trip.get("table_error")
 
+    def wait_cell_editor(self, form, table, focus, editor):
+        # The controller can report the new column before the native editor has taken focus.
+        deadline = time.monotonic() + CELL_EDITOR_WAIT_S
+        while editor is None and time.monotonic() < deadline and not self.stopped.wait(0.02):
+            focus = form.focused()
+            editor = form.editor_of(focus, table)
+        return focus, editor
+
     def begin_choice(self, form, inspection, step, table, seen):
         """F4 in a reference editor, position the verified choice list, then Enter or Escape (task 028)."""
         import choice77
@@ -1233,17 +1241,24 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             trip = self.call(step)
         chain = Chain(form, {"returned": False, "choice": True}, None, seen, finish_click)
         chain.before, chain.trips, chain.choice_step = trip, [trip], step
-        issue = self.choice_issue(trip)
+        issue = self.choice_issue(trip) or scenario77.required_row_issue(step, trip)
         if preopened is not None:
             chain.choice_window = preopened
             chain.record["choice_window"] = preopened
             if (trip.get("column") or "").casefold() != step["column"].casefold():
                 issue = issue or "the open choice belongs to another column"
-        if "catalog_caption" in step and (not preopened or not preopened.get("catalog_popup")
-                                           or trip.get("row") != preopened["row"]):
+        if ("catalog_caption" in step and "row" not in step
+                and (not preopened or not preopened.get("catalog_popup") or trip.get("row") != preopened["row"])):
             issue = issue or "catalog popup does not belong to the appended row"
+        if "row" in step and preopened is not None:
+            issue = issue or "F4 requires an existing row without a pending choice"
         focus = form.focused()
         editor = form.editor_of(focus, table["hwnd"])
+        if "row" in step and not issue:
+            focus, editor = self.wait_cell_editor(form, table["hwnd"], focus, editor)
+            if ((trip.get("column") or "").casefold() != step["column"].casefold()
+                    or not editor or not editor.get("visible") or not editor.get("enabled")):
+                issue = "the current column or its editor was not verified before F4"
         if issue or (preopened is None and (editor is None or editor["id"] != step["column_window"])):
             chain.record["refused"] = issue or "the reference column's editor did not open"
             if preopened is not None:
@@ -1254,6 +1269,8 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             before_windows = form.inventory()
             record = form.post_key(focus["hwnd"], *scenario77.KEYS["f4"])
             chain.record.update(record)
+            if "row" in step:
+                chain.record["open_key"] = record
             chain.pending = Posted(record)
             chain.wait()
             # The posted F4 runs before the call, just as a table key does.
@@ -1265,17 +1282,30 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                 chain.record["refused"] = "an unexpected modal window opened instead of the choice form"
                 return chain
             windows = form.inventory()
-            choice, issue = choice77.choice_window(windows, {w["hwnd"] for w in before_windows})
-            chain.record["choice_windows"] = [w for w in windows if w["hwnd"] not in {b["hwnd"] for b in before_windows}]
-            if issue:
-                chain.record["refused"] = issue
-                return chain
+            old = {w["hwnd"] for w in before_windows}
+            chain.record["choice_windows"] = [w for w in windows if w["hwnd"] not in old]
+            if "row" in step:
+                popup = choice77.catalog_popup(windows, old, form.focused())
+                if popup is None:
+                    chain.record["refused"] = "F4 did not open a focused catalog popup"
+                    return chain
+                chain.choice_window = dict(popup, catalog_popup=True, row=step["row"])
+                issue = self.choice_issue(chain.trips[-1]) or scenario77.required_row_issue(step, chain.trips[-1])
+                if issue:
+                    chain.record["refused"] = issue
+                    chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
+                    return chain
+                choice = self.choose_catalog_window(form, chain, step, chain.choice_window)
+                if choice is None:
+                    return chain
+            else:
+                choice, issue = choice77.choice_window(windows, old)
+                if issue:
+                    chain.record["refused"] = issue
+                    return chain
         elif preopened.get("catalog_popup"):
-            try:
-                choice = self.open_catalog_choice(form, chain, step, preopened)
-            except Exception as error:
-                chain.record["refused"] = f"{type(error).__name__}: {error}"
-                chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
+            choice = self.choose_catalog_window(form, chain, step, preopened)
+            if choice is None:
                 return chain
         else:
             choice = preopened
@@ -1314,6 +1344,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
         return chain
 
+    def choose_catalog_window(self, form, chain, step, popup):
+        try:
+            return self.open_catalog_choice(form, chain, step, popup)
+        except Exception as error:
+            chain.record["refused"] = f"{type(error).__name__}: {error}"
+            chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
+            return None
+
     def open_catalog_choice(self, form, chain, step, popup):
         """Finish the native kind popup and hand off to the ordinary catalog choice."""
         import choice77
@@ -1333,7 +1371,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if choice:
             chain.choice_window = choice
         evidence["popup_closed"] = not any(w["hwnd"] in handles and w["visible"] for w in windows)
-        issue = self.choice_issue(trip) or issue
+        issue = self.choice_issue(trip) or scenario77.required_row_issue(step, trip) or issue
         if issue or not evidence["popup_closed"]:
             raise RuntimeError(issue or "the catalog popup did not close")
         return choice
@@ -1370,6 +1408,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if "catalog_caption" in step and trip.get("row") != chain.before.get("row"):
             record["choice_verified"] = False
             issue = issue or "the catalog returned to a different row"
+        if "row" in step and (trip.get("rows") != chain.before.get("rows") or trip.get("state_error")):
+            record["choice_verified"] = False
+            issue = issue or "the table row count changed during the choice"
         if not record["choice_verified"]:
             record["refused"] = issue or ("cancelling changed the reference" if step.get("cancel")
                                            else "the returned reference differs from the requested element")
@@ -1405,12 +1446,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             if current.casefold() != step["column"].casefold():
                 chain.record.update(record, refused=f"column {step['column']!r} did not become current: {current!r}")
                 return chain
-            # The controller can report the new column before the native editor has taken focus.
-            editor = record["editor_before"]
-            deadline = time.monotonic() + CELL_EDITOR_WAIT_S
-            while editor is None and time.monotonic() < deadline and not self.stopped.wait(0.02):
-                focus = form.focused()
-                editor = form.editor_of(focus, hwnd)
+            focus, editor = self.wait_cell_editor(form, hwnd, focus, record["editor_before"])
             record.update(focus_before=focus, editor_before=editor)
             if editor is None:
                 chain.record.update(record, refused=f"no cell editor opened; the focus is {focus}")

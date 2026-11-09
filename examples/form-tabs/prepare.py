@@ -1,4 +1,4 @@
-"""Generate tasks 046–050 profiles using the accepted 043 fixture, without starting 1C."""
+"""Generate invoice form profiles using the accepted 043 fixture, without starting 1C."""
 import argparse
 import importlib.util
 import json
@@ -233,6 +233,94 @@ def delete_scenario(name):
     return text.replace('\n]\n', '\n' + tail + ']\n')
 
 
+REPLACEMENT_PRODUCT = 'Harness77 замена 052'
+ORIGINAL_PRODUCT = 'Harness77 продукция 043'
+
+
+def replacement_fixture():
+    text, old = invoice_fixture(2)
+    text = text.replace('Спр77.Записать();\n', f'''Спр77.Записать();
+Замена77 = СоздатьОбъект("Справочник.Номенклатура");
+Замена77.Новый();
+Замена77.Наименование = "{REPLACEMENT_PRODUCT}";
+Замена77.Записать();
+ТипЦен77 = СоздатьОбъект("Справочник.ТипыЦен");
+ТипЦен77.Новый();
+ТипЦен77.Наименование = "Harness77 цена 052";
+ТипЦен77.Записать();
+Цена77 = СоздатьОбъект("Справочник.Цены");
+Цена77.ИспользоватьВладельца(Замена77.ТекущийЭлемент());
+Цена77.Новый();
+Цена77.ТипЦен = ТипЦен77.ТекущийЭлемент();
+Цена77.Записать();
+Цена77.Цена.Установить('01.08.2026', 65);
+Если Цена77.Цена.Получить('01.08.2026') <> 65 Тогда Возврат 0; КонецЕсли;
+''', 1)
+    text = text.replace('            Фактура77.Количество = 1; Фактура77.Цена = 30;\n'
+                        '            Фактура77.Сумма = 30; Фактура77.Всего = 30;', '''            Фактура77.Количество = 2; Фактура77.Цена = 30;
+            Фактура77.Сумма = 60; Фактура77.Всего = 60;
+            Фактура77.ТипЦен = ТипЦен77.ТекущийЭлемент();''', 1)
+    text = text.replace('Возврат Объект77Подготовки.ПолучитьЗначение(2);\n', '''Объект77Подготовки.ДобавитьЗначение(Замена77.ТекущийЭлемент());
+Объект77Подготовки.ДобавитьЗначение(ТипЦен77.ТекущийЭлемент());
+Возврат Объект77Подготовки.ПолучитьЗначение(2);
+''', 1)
+    anchor = '''        Если Док77.Товар <> Объект77Подготовки.ПолучитьЗначение(13) Тогда Поля77 = 0; КонецЕсли;
+        Строки77 = Строки77 + Строка(Док77.Количество) + ":" + Строка(Док77.Цена) + ":"
+'''
+    assert text.count(anchor) == 1
+    text = text.replace(anchor, '''        Товар77 = "original";
+        Если Док77.Товар = Объект77Подготовки.ПолучитьЗначение(28) Тогда
+            Товар77 = "replacement";
+        ИначеЕсли Док77.Товар <> Объект77Подготовки.ПолучитьЗначение(13) Тогда
+            Товар77 = "unexpected"; Поля77 = 0;
+        КонецЕсли;
+        Строки77 = Строки77 + Товар77 + ":" + Строка(Док77.Количество) + ":" + Строка(Док77.Цена) + ":"
+''')
+    text = text.replace('    Если Док77.НайтиДокумент(Объект77Подготовки.ПолучитьЗначение(22 + Номер77)) <> 1 Тогда Возврат "invoice missing"; КонецЕсли;',
+                        '''    Если Док77.НайтиДокумент(Объект77Подготовки.ПолучитьЗначение(22 + Номер77)) <> 1 Тогда Возврат "invoice missing"; КонецЕсли;
+    Если (Номер77 = 1) И (Док77.ТипЦен <> Объект77Подготовки.ПолучитьЗначение(29)) Тогда Возврат "invoice price type differs"; КонецЕсли;''')
+    baseline = old.replace('|2|' + ''.join(INVOICE_ROWS[:2]),
+                           '|2|original:' + INVOICE_ROWS[0] + 'original:' + INVOICE_ROWS[2], 1)
+    baseline = baseline.replace('|1|' + INVOICE_ROWS[0], '|1|original:' + INVOICE_ROWS[0], 1)
+    return text.replace(json.dumps(old, ensure_ascii=False), json.dumps(baseline, ensure_ascii=False)), baseline
+
+
+def replacement_scenario(name):
+    text, baseline = replacement_fixture()
+    saved = name == 'save'
+    final = baseline.replace('original:' + INVOICE_ROWS[2], 'replacement:2:65:130:130:0:0;', 1) if saved else baseline
+    text = expect_edit(text, final)
+    first_row = f'    {{ value = "Товар", row = 1, text = "{ORIGINAL_PRODUCT}" }},\n' + invoice_row_checks(1, 1, 50)
+    original = f'    {{ value = "Товар", row = 2, text = "{ORIGINAL_PRODUCT}" }},\n' + invoice_row_checks(2, 2, 30)
+    updated = f'    {{ value = "Товар", row = 2, text = "{REPLACEMENT_PRODUCT}" }},\n' + invoice_row_checks(2, 2, 65)
+    after = updated if saved else original
+    total = 180 if saved else 110
+    cursor = 1 if name == 'wrong-row' else 2
+    choice = f'text = "{REPLACEMENT_PRODUCT}"' if saved or name == 'wrong-row' else 'cancel = true'
+    tail = f'''    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = 2 }},
+{first_row}{original}    {{ total = "Сумма", text = "110" }},
+    {{ row = {cursor} }},
+    {{ choose = "Товар", row = 2, catalog = "Номенклатура", catalog_caption = "Номенклатура", {choice} }},
+    {{ rows = 2 }},
+{first_row}{after}    {{ total = "Сумма", text = "{total}" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    if saved:
+        tail += '''    { click = "КнопкаЗаписать" },
+    { close_form = true, closes = true },
+'''
+    tail += f'''    {{ reopen = true }},
+    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = 2 }},
+{first_row}{after}    {{ total = "Сумма", text = "{total}" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    if name == 'wrong-row':
+        text = text.replace('command = "result"\nexpect = "passed"', 'command = "result"\nexpect = "failed"')
+    return text.replace('\n]\n', '\n' + tail + ']\n')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stand', type=Path, required=True)
@@ -242,6 +330,7 @@ def main():
     mode.add_argument('--edit-second-row', action='store_true', help='generate task 048 cases with two invoice rows')
     mode.add_argument('--append-row', action='store_true', help='generate task 049 cases for appending an invoice row')
     mode.add_argument('--delete-middle-row', action='store_true', help='generate task 050 cases for deleting the middle row')
+    mode.add_argument('--replace-row-product', action='store_true', help='generate task 052 cases for replacing the second-row product')
     a = p.parse_args()
     stand_text = a.stand.resolve(strict=True).read_text('utf-8')
     stand = tomllib.loads(stand_text)['stand']
@@ -252,9 +341,10 @@ def main():
         p.error('stand paths must be absolute')
     output = a.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    edit = a.edit or a.edit_second_row or a.delete_middle_row
+    guard_cases = a.edit_second_row or a.delete_middle_row or a.replace_row_product
+    edit = a.edit or guard_cases
     cases = EDIT_CASES if edit else CASES
-    if a.edit_second_row or a.delete_middle_row:
+    if guard_cases:
         cases += ('wrong-row',)
     if a.append_row:
         cases = APPEND_CASES
@@ -271,6 +361,8 @@ def main():
             scenario = append_scenario(name)
         elif a.delete_middle_row:
             scenario = delete_scenario(name)
+        elif a.replace_row_product:
+            scenario = replacement_scenario(name)
         elif edit:
             scenario = edit_scenario(name, second_row=a.edit_second_row)
         else:
@@ -288,7 +380,7 @@ def main():
         'suite-missing': ['missing', 'after-failure'],
         'suite-rows': ['wrong-rows', 'after-failure'],
     }
-    if a.edit_second_row or a.delete_middle_row:
+    if guard_cases:
         suites['suite-row-guard'] = ('wrong-row',)
     if a.append_row:
         suites = {'suite': APPEND_CASES}

@@ -38,7 +38,7 @@ def choice_window(windows, seen):
 
 
 def catalog_popup(windows, seen, focus):
-    """The floating list of catalog kinds opened on Insert by a compound reference."""
+    """The floating list of catalog kinds opened by a compound reference."""
     lists = [w for w in windows if w['hwnd'] == (focus or {}).get('hwnd') and w['hwnd'] not in seen
              and w.get('class', '').casefold() == 'listbox' and w.get('visible') and w.get('enabled')]
     if len(lists) != 1:

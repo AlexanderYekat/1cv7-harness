@@ -49,7 +49,7 @@ OPTIONS = {"tab": {"browser_visible": bool}, "click": {"closes": bool}, "input":
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str, "row": int}, "delete_row": {"row": int}, "rows": {}, "total": {"text": str},
-           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool, "catalog": str, "catalog_caption": str},
+           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool, "catalog": str, "catalog_caption": str, "row": int},
            "reopen": {"caption_control": str, "caption_text": str}, "create": {}, "created": {},
            "find_document": {"limit": int, "open": bool}, "close_form": {"closes": bool},
            "journal_period": {"start": str, "end": str, "cancel": bool},
@@ -135,11 +135,15 @@ def steps(parameters):
         if kind == "choose" and not (("text" in step and step["text"].strip() and "cancel" not in step)
                                       or (step.get("cancel") is True and "text" not in step)):
             raise ValueError(f"{where} (choose): either non-empty text or cancel = true")
-        if kind == "choose" and ("catalog" in step or "catalog_caption" in step):
+        if kind == "choose" and any(option in step for option in ("catalog", "catalog_caption", "row")):
             if (not NAME.fullmatch(step.get("catalog", "")) or not step.get("catalog_caption", "").strip()
-                    or step.get("cancel") or not result or result[-1]["kind"] != "add_row"
                     or not parameters.get("fixture_setup") or not parameters.get("fixture_verify")):
-                raise ValueError(f"{where} (choose): catalog and catalog_caption require a selection immediately after add_row with a verified fixture")
+                raise ValueError(f"{where} (choose): a compound choice needs catalog, catalog_caption and a verified fixture")
+            after_insert = bool(result and result[-1]["kind"] == "add_row")
+            if after_insert and ("row" in step or step.get("cancel")):
+                raise ValueError(f"{where} (choose): an appended row requires selecting a value")
+            if not after_insert and "row" not in step:
+                raise ValueError(f"{where} (choose): select immediately after add_row, or declare row for F4 in an existing row")
         if kind == "dialog" and "button" in step:
             if not step["button"].strip():
                 raise ValueError(f"{where} (dialog): button is the caption of a button of the window")

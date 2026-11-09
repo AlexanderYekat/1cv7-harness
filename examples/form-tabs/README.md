@@ -152,3 +152,27 @@ python -X utf8 -B -m harness77 suite --suite .local/form-tabs-delete-new/suite-r
 ```
 
 [Задача 050](../../docs/tasks/050-invoice-delete-middle-row.md)
+
+## Замена номенклатуры во второй строке (052)
+
+`--replace-row-product` готовит двухстрочную фактуру и отдельный элемент
+номенклатуры с ценой 65 для даты документа. Во второй строке количество 2,
+цена 30, сумма 60. Первая строка имеет сумму 50.
+
+```toml
+{ row = 2 },
+{ choose = "Товар", row = 2, catalog = "Номенклатура", catalog_caption = "Номенклатура", text = "Harness77 замена 052" },
+```
+
+`save` проверяет цену 65, сумму строки 130 и итог 180, затем записывает
+и открывает ту же фактуру. `cancel` вместо `text` передаёт `cancel = true`
+и проверяет исходную ссылку, цену 30 и итог 110 после Escape в справочнике.
+Сценарий `wrong-row` ожидает отказ до F4 при курсоре на первой строке.
+
+```powershell
+python -X utf8 -B examples/form-tabs/prepare.py --replace-row-product --stand .local/s44a/stand.toml --output .local/form-tabs-replace-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-replace-new/suite.toml --stand .local/form-tabs-replace-new/stand.toml --output-root .artifacts/suites/form-tabs-replace-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-replace-new/suite-row-guard.toml --stand .local/form-tabs-replace-new/stand.toml --output-root .artifacts/suites/form-tabs-replace-guard-new
+```
+
+[Задача 052](../../docs/tasks/052-invoice-replace-product.md)
