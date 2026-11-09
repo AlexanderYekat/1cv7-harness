@@ -85,6 +85,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_cancel_after_multiline_search_closes_list_without_enter(self):
         watcher, form = Mock(), Mock()
+        watcher.stopped.is_set.return_value = False
         watcher.round_trip.side_effect = [BEFORE, dict(SELECTED, journal_id='neighbor', journal_match='0'),
                                            SELECTED, SELECTED, BEFORE]
         watcher.children_description = dict(form=dict(caption='Общий журнал'))

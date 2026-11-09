@@ -95,28 +95,34 @@ class ChildrenTests(unittest.TestCase):
     def test_cancel_and_empty_return_to_source_without_enter(self):
         for empty in (False, True):
             watcher, form = Mock(), Mock()
+            watcher.stopped.is_set.return_value = False
             selected = dict(SELECTED, journal_empty='1', journal_match='0') if empty else SELECTED
             watcher.round_trip.side_effect = [BEFORE, selected, selected, BEFORE]
             watcher.children_description = dict(form=dict(caption='Общий журнал'))
             old = [dict(hwnd=10, parent=11), dict(hwnd=11, parent=30)]
-            form.inventory.side_effect = [old, old + [dict(hwnd=20,parent=30,visible=True,enabled=True,
-                                                       text='Общий журнал source caption')], old]
+            first_read = [] if empty else [RuntimeError('owned window text did not respond')]
+            form.inventory.side_effect = [old, *first_read, old + [dict(hwnd=20, parent=30, visible=True, enabled=True,
+                                                                       text='Общий журнал source caption')], old]
             form.post_key.return_value = dict(returned=True)
             opened = dict(chain=[dict(hwnd=21), dict(hwnd=20)], controls=[dict(id=4151, hwnd=22)])
             pending = Mock(outcome=dict(returned=True)); pending.done.return_value = True
             record = {}
             with patch('journal77.native_menu', return_value=dict(enabled=True)), \
-                 patch('form_window77.Pending', return_value=pending), \
+                 patch('form_window77.Pending', return_value=pending) as command, \
                  patch.object(children, 'inspect_frame', return_value=opened), \
                  patch.object(children, 'close_frame', return_value=dict(destroyed=True)):
                 children.execute(watcher, form, dict(chain=[dict(hwnd=10), dict(hwnd=11), dict(hwnd=30)]),
                                  dict(ACTION, index=3, empty=empty, cancel=not empty), record)
+            command.assert_called_once_with(form, 11, 0x111, children.CHILDREN_COMMAND, 0)
+            self.assertEqual(record['children_inventory']['attempts'], 1 + len(first_read))
+            self.assertEqual(record['children_inventory']['text_failures'], len(first_read))
             self.assertTrue(record['return_verified'])
             self.assertEqual([c.args[1] for c in form.post_key.call_args_list], ['End', 'Up'])
             self.assertNotIn('open_action', record)
 
     def test_foreign_child_blocks_enter_and_closes_only_its_new_frame(self):
         watcher, form = Mock(), Mock()
+        watcher.stopped.is_set.return_value = False
         watcher.round_trip.side_effect = [BEFORE, dict(SELECTED, journal_match='0')]
         watcher.children_description = dict(form=dict(caption='Общий журнал'))
         form.inventory.side_effect = [[dict(hwnd=10)], [dict(hwnd=20, parent=30, visible=True, enabled=True,
@@ -134,6 +140,34 @@ class ChildrenTests(unittest.TestCase):
         self.assertEqual(form.post_key.call_count, 1)
         self.assertEqual(form.post_key.call_args.args[1], 'End')
         close.assert_called_once_with(watcher, form, 20)
+
+    def test_subordinate_inventory_expiry_never_selects_a_document(self):
+        watcher, form = Mock(), Mock()
+        watcher.round_trip.return_value = BEFORE
+        watcher.stopped.is_set.return_value = False
+        now, budgets = 0.0, []
+
+        def read(budget_s=None):
+            nonlocal now
+            if budget_s is None:
+                return [dict(hwnd=10)]
+            budgets.append(budget_s)
+            now += min(6, budget_s)
+            raise RuntimeError('owned window text did not respond')
+
+        form.inventory.side_effect = read
+        pending = Mock(outcome=dict(returned=True)); pending.done.return_value = True
+        record = {}
+        with patch('journal77.native_menu', return_value=dict(enabled=True)), \
+             patch('form_window77.Pending', return_value=pending) as command, \
+             patch.object(children, 'time', Mock(monotonic=lambda: now)):
+            with self.assertRaisesRegex(RuntimeError, r'journal window inventory timed out.*2 WM_GETTEXT failures'):
+                children.execute(watcher, form, dict(chain=[dict(hwnd=10), dict(hwnd=11), dict(hwnd=30)]),
+                                 dict(ACTION, index=3), record)
+        command.assert_called_once_with(form, 11, 0x111, children.CHILDREN_COMMAND, 0)
+        self.assertEqual(budgets, [10, 4])
+        self.assertEqual(record['children_inventory'], dict(attempts=2, text_failures=2, elapsed_s=10))
+        form.post_key.assert_not_called()
 
     def test_controller_navigation_is_read_only(self):
         text = children.branches(ACTION, 'ПриходныйОрдер')

@@ -4,6 +4,7 @@ import time
 import journal77
 
 CHILDREN_COMMAND = 0x806C  # 1crcrus.dll menus 135/253: Подчиненные документы
+WINDOW_TEXT_UNAVAILABLE = 'owned window text did not respond'
 
 
 def validate(parameters, previous, step):
@@ -302,7 +303,7 @@ def opened_frame(watcher, form, mdi, previous, record):
         except RuntimeError as error:
             # Opening handlers can temporarily stop answering WM_GETTEXT. Retry only
             # this passive observation, within the same deadline; never resend Enter.
-            if str(error) != 'owned window text did not respond':
+            if str(error) != WINDOW_TEXT_UNAVAILABLE:
                 raise
             record['opened_window_busy'].append(str(error))
             inventory = []
@@ -315,6 +316,36 @@ def opened_frame(watcher, form, mdi, previous, record):
             return frames[0]['hwnd']
         if record['opened_wait_s'] >= 10 or watcher.stopped.wait(.05):
             raise RuntimeError('new saved child document frame did not appear')
+
+
+def children_inventory(watcher, form, record):
+    """Observe the windows after the journal command returns, within one read deadline."""
+    started = time.monotonic()
+    deadline = started + 10
+    evidence = record['children_inventory'] = dict(attempts=0, text_failures=0)
+    try:
+        while not watcher.stopped.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            evidence['attempts'] += 1
+            try:
+                inventory = form.inventory(budget_s=remaining)
+            except RuntimeError as error:
+                if str(error) != WINDOW_TEXT_UNAVAILABLE:
+                    raise
+                evidence['text_failures'] += 1
+            else:
+                if not watcher.stopped.is_set() and time.monotonic() < deadline:
+                    return inventory
+                break
+            watcher.stopped.wait(min(.05, max(0, deadline - time.monotonic())))
+    finally:
+        evidence['elapsed_s'] = round(time.monotonic() - started, 3)
+    if watcher.stopped.is_set():
+        raise RuntimeError('subordinate journal window inventory cancelled')
+    raise RuntimeError(f"subordinate journal window inventory timed out after {evidence['elapsed_s']}s "
+                       f"({evidence['attempts']} attempts, {evidence['text_failures']} WM_GETTEXT failures)")
 
 
 def execute(watcher, form, inspection, step, record):
@@ -346,7 +377,7 @@ def execute(watcher, form, inspection, step, record):
     record['action'].update(pending.outcome or {})
     if not pending.done() or not record['action'].get('returned'):
         raise RuntimeError('subordinate command did not return')
-    inventory = record['children_windows'] = form.inventory()
+    inventory = record['children_windows'] = children_inventory(watcher, form, record)
     frames = [w for w in inventory if w.get('parent') == mdi and w['hwnd'] not in old_handles
               and w.get('visible') and w.get('enabled')]
     caption = watcher.children_description['form']['caption'] + ' ' + before['journal_current']
