@@ -1177,6 +1177,24 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         """A nested choice opened by a raw key is not an answered dialog or a successful action."""
         import choice77
         windows = form.inventory()
+        if step["kind"] == "add_row":
+            expects_popup = next_step is not None and "catalog_caption" in next_step
+            popup = choice77.catalog_popup(windows, seen, form.focused())
+            if popup is not None:
+                if not expects_popup:
+                    chain.record["refused"] = "the catalog popup requires an immediate explicit choose"
+                    chain.choice_window, chain.choice_step = popup, step
+                    chain.record["nested_cleanup"] = self.cancel_choice(form, chain)
+                    return
+                state = chain.trips[-1]
+                self.pending_choice = chain.record["pending_choice"] = dict(
+                    popup, catalog_popup=True, row=state.get("row"))
+                if not state.get("row") or state["row"] != state.get("rows"):
+                    chain.record["refused"] = "catalog popup is not on the appended row"
+                return
+            if expects_popup:
+                chain.record["refused"] = "the new row did not open a focused catalog popup"
+                return
         frames = choice77.new_frames(windows, seen)
         if not frames:
             return
@@ -1221,6 +1239,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             chain.record["choice_window"] = preopened
             if (trip.get("column") or "").casefold() != step["column"].casefold():
                 issue = issue or "the open choice belongs to another column"
+        if "catalog_caption" in step and (not preopened or not preopened.get("catalog_popup")
+                                           or trip.get("row") != preopened["row"]):
+            issue = issue or "catalog popup does not belong to the appended row"
         focus = form.focused()
         editor = form.editor_of(focus, table["hwnd"])
         if issue or (preopened is None and (editor is None or editor["id"] != step["column_window"])):
@@ -1248,6 +1269,13 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             chain.record["choice_windows"] = [w for w in windows if w["hwnd"] not in {b["hwnd"] for b in before_windows}]
             if issue:
                 chain.record["refused"] = issue
+                return chain
+        elif preopened.get("catalog_popup"):
+            try:
+                choice = self.open_catalog_choice(form, chain, step, preopened)
+            except Exception as error:
+                chain.record["refused"] = f"{type(error).__name__}: {error}"
+                chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
                 return chain
         else:
             choice = preopened
@@ -1286,6 +1314,30 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             chain.record["choice_cleanup"] = self.cancel_choice(form, chain)
         return chain
 
+    def open_catalog_choice(self, form, chain, step, popup):
+        """Finish the native kind popup and hand off to the ordinary catalog choice."""
+        import choice77
+        windows = form.inventory()
+        seen = {w["hwnd"] for w in windows}
+        handles = {popup[k]["hwnd"] for k in ("frame", "list")}
+        current = choice77.catalog_popup(windows, seen - handles, form.focused())
+        if current is None or {w["hwnd"] for w in current.values()} != handles:
+            raise RuntimeError("the catalog popup is no longer focused or owned")
+        evidence = chain.record["catalog_selection"] = dict(popup=popup)
+        choice77.select_catalog(form, popup, step["catalog_caption"], evidence)
+        trip = self.call(step)
+        chain.trips.append(trip)
+        windows = form.inventory()
+        choice, issue = choice77.choice_window(windows, seen)
+        evidence["choice_windows"] = [w for w in windows if w["hwnd"] not in seen]
+        if choice:
+            chain.choice_window = choice
+        evidence["popup_closed"] = not any(w["hwnd"] in handles and w["visible"] for w in windows)
+        issue = self.choice_issue(trip) or issue
+        if issue or not evidence["popup_closed"]:
+            raise RuntimeError(issue or "the catalog popup did not close")
+        return choice
+
     def cancel_choice(self, form, chain):
         """Cancel only the choice frame we identified, using its own list, then verify it closed."""
         choice = chain.choice_window
@@ -1315,6 +1367,9 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         issue = self.choice_issue(trip)
         record["choice_value"] = trip.get("choice_value")
         record["choice_verified"] = not issue and trip.get("choice_result") == 1
+        if "catalog_caption" in step and trip.get("row") != chain.before.get("row"):
+            record["choice_verified"] = False
+            issue = issue or "the catalog returned to a different row"
         if not record["choice_verified"]:
             record["refused"] = issue or ("cancelling changed the reference" if step.get("cancel")
                                            else "the returned reference differs from the requested element")
@@ -1701,6 +1756,8 @@ class FormAdapter(launcher.Harness77Adapter):
             metadata = Metadata((base / "1Cv7.MD").read_bytes())
             self.fixture_context = fixture77.context(name, settings, metadata)
             for step in scenario77.steps(self.parameters) or []:
+                if "catalog_caption" in step and step["catalog"].casefold() not in metadata.objects()["Справочник"]:
+                    raise ValueError("unknown choice catalog: " + step["catalog"])
                 if step['kind'] == 'journal_children':
                     import journal_children77
                     journal_children77.validate_metadata(metadata, name, step)

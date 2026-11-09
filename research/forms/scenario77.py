@@ -49,7 +49,8 @@ OPTIONS = {"tab": {"browser_visible": bool}, "click": {"closes": bool}, "input":
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str, "row": int}, "delete_row": {}, "rows": {}, "total": {"text": str},
-           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool}, "reopen": {"caption_control": str, "caption_text": str}, "create": {}, "created": {},
+           "key": {"closes": bool}, "choose": {"text": str, "cancel": bool, "catalog": str, "catalog_caption": str},
+           "reopen": {"caption_control": str, "caption_text": str}, "create": {}, "created": {},
            "find_document": {"limit": int, "open": bool}, "close_form": {"closes": bool},
            "journal_period": {"start": str, "end": str, "cancel": bool},
            "journal_unpost": {"cancel": bool, "enabled": bool, "expected": str},
@@ -134,6 +135,11 @@ def steps(parameters):
         if kind == "choose" and not (("text" in step and step["text"].strip() and "cancel" not in step)
                                       or (step.get("cancel") is True and "text" not in step)):
             raise ValueError(f"{where} (choose): either non-empty text or cancel = true")
+        if kind == "choose" and ("catalog" in step or "catalog_caption" in step):
+            if (not NAME.fullmatch(step.get("catalog", "")) or not step.get("catalog_caption", "").strip()
+                    or step.get("cancel") or not result or result[-1]["kind"] != "add_row"
+                    or not parameters.get("fixture_setup") or not parameters.get("fixture_verify")):
+                raise ValueError(f"{where} (choose): catalog and catalog_caption require a selection immediately after add_row with a verified fixture")
         if kind == "dialog" and "button" in step:
             if not step["button"].strip():
                 raise ValueError(f"{where} (dialog): button is the caption of a button of the window")
@@ -298,9 +304,11 @@ def column(step, table):
         # A reference is chosen in a form of its own (F4, selection), which the steps do not open.
         raise ValueError(f"{where}: column {field['identifier']!r} holds a reference ({field['type']}); "
                          "text goes into a string, number or date column")
-    if step["kind"] == "choose" and (field.get("type") != "B" or not field.get("kind")
-                                     or field["class"] not in CLASSES["input"] or not NAME.match(field["identifier"] or "")):
-        raise ValueError(f"{where}: choose needs a column of a named catalog reference")
+    if step["kind"] == "choose":
+        valid_reference = (field.get("type") == "U" if "catalog" in step else
+                           field.get("type") == "B" and bool(field.get("kind")))
+        if not valid_reference or field["class"] not in CLASSES["input"] or not NAME.match(field["identifier"] or ""):
+            raise ValueError(f"{where}: choose needs a column of a named catalog reference or an explicit catalog for a compound reference")
     return field
 
 
@@ -325,7 +333,7 @@ def resolve(items, description):
         if step["kind"] in COLUMN_KINDS:
             field = column(step, table)
             step.update(column=field["identifier"], column_class=field["class"], column_window=field.get("window_id"))
-            if step["kind"] == "choose":
+            if step["kind"] == "choose" and "catalog" not in step:
                 step["catalog"] = field["kind"]
         if step["kind"] in ("click", "input", "check"):
             where = f"step {step['index']} ({step['kind']} {step['target']!r})"

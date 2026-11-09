@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import choice77
@@ -56,6 +57,55 @@ class ChoiceTests(unittest.TestCase):
             resolved({'choose': 'Товар', 'text': 'x'}, table=dict(TABLE, document=False))
         with self.assertRaisesRegex(ValueError, 'has no table part'):
             scenario77.resolve(scenario77.steps({'steps': [{'choose': 'Товар', 'text': 'x'}]}), DESCRIPTION)
+
+    def test_compound_choice_requires_an_insert_and_verified_fixture(self):
+        item = {'choose': 'Товар', 'text': 'Товар 049', 'catalog': 'Номенклатура', 'catalog_caption': 'Номенклатура'}
+        parameters = {'fixture_setup': 'prepare', 'fixture_verify': 'verify', 'steps': [{'add_row': True}, item]}
+        items = scenario77.steps(parameters)
+        table = copy.deepcopy(TABLE)
+        field = next(f for f in table['fields'] if f['identifier'] == 'Товар')
+        field.update(type='U', kind=None)
+        resolved_items = scenario77.resolve(items, dict(DESCRIPTION, browser=table))
+        self.assertEqual(resolved_items[1]['catalog'], 'Номенклатура')
+        for changed in (dict(parameters, steps=[item]), dict(parameters, fixture_verify=''),
+                        dict(parameters, steps=[{'add_row': True}, dict(item, catalog_caption='')])):
+            with self.assertRaisesRegex(ValueError, 'immediately after add_row'):
+                scenario77.steps(changed)
+        with self.assertRaisesRegex(ValueError, 'compound reference'):
+            scenario77.resolve(items, dict(DESCRIPTION, browser=TABLE))
+
+    def test_catalog_popup_requires_new_focused_list_and_parent(self):
+        popup = {'hwnd': 6, 'class': 'Afx:400000:b', 'visible': True, 'enabled': True}
+        item = {'hwnd': 7, 'parent': 6, 'class': 'ListBox', 'visible': True, 'enabled': True}
+        data = windows() + [popup, item]
+        self.assertEqual(choice77.catalog_popup(data, {1, 2}, {'hwnd': 7}), {'frame': popup, 'list': item})
+        self.assertIsNone(choice77.catalog_popup(data, {6}, {'hwnd': 7}))
+        self.assertIsNone(choice77.catalog_popup(data, {7}, {'hwnd': 7}))
+        self.assertIsNone(choice77.catalog_popup(data, {1, 2}, {'hwnd': 5}))
+
+    def test_catalog_caption_must_be_unique_before_any_action(self):
+        owned = Mock()
+        popup = {'list': {'hwnd': 7}}
+        for names in (['Материалы'], ['Номенклатура', 'НОМЕНКЛАТУРА']):
+            with patch('form_window77.listbox_items', return_value=names):
+                with self.assertRaisesRegex(RuntimeError, 'not unique'):
+                    choice77.select_catalog(owned, popup, 'Номенклатура', {})
+        owned.send.assert_not_called()
+        owned.post_key.assert_not_called()
+
+    def test_insert_cancels_a_catalog_popup_without_an_immediate_choice(self):
+        popup = {'hwnd': 6, 'class': 'Afx:400000:b', 'visible': True, 'enabled': True}
+        item = {'hwnd': 7, 'parent': 6, 'class': 'ListBox', 'visible': True, 'enabled': True}
+        owned = SimpleNamespace(inventory=lambda: [popup, item], focused=lambda: {'hwnd': 7})
+        watcher = form.FormWatcher.__new__(form.FormWatcher)
+        watcher.pending_choice = None
+        watcher.cancel_choice = Mock(return_value={'closed': True})
+        chain = SimpleNamespace(record={})
+        watcher.unexpected_form(owned, chain, {'kind': 'add_row'}, set())
+        self.assertIn('requires an immediate explicit choose', chain.record['refused'])
+        self.assertIsNone(watcher.pending_choice)
+        self.assertEqual(chain.choice_window['list'], item)
+        watcher.cancel_choice.assert_called_once_with(owned, chain)
 
     def test_formula_dialogs_follow_choice(self):
         items = resolved({'choose': 'Товар', 'text': 'x'}, {'dialog': 'Предупреждение', 'button': 'ОК'})
@@ -124,7 +174,7 @@ class ChoiceTests(unittest.TestCase):
         watcher = form.FormWatcher.__new__(form.FormWatcher)
         watcher.pending_choice = None
         watcher.cancel_choice = lambda owned, chain: {'closed': True}
-        owned = SimpleNamespace(inventory=windows)
+        owned = SimpleNamespace(inventory=windows, focused=lambda: None)
         chain = SimpleNamespace(record={})
         watcher.unexpected_form(owned, chain, {'kind': 'add_row'}, {1, 2}, {'kind': 'choose'})
         self.assertEqual(watcher.pending_choice['frame']['hwnd'], 3)

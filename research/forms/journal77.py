@@ -347,7 +347,7 @@ def function(items, kind):
 
 
 def select_kind(form, window, caption, evidence=None, cancel=False):  # native; listbox messages marshal strings
-    import ctypes as C
+    from form_window77 import listbox_items
     import scenario77
     if window.get('text') != 'Выбор вида документа':
         raise RuntimeError('expected the native document-kind chooser')
@@ -356,19 +356,7 @@ def select_kind(form, window, caption, evidence=None, cancel=False):  # native; 
     if len(lists) != 1:
         raise RuntimeError('document-kind chooser needs exactly one listbox')
     hwnd = lists[0]['hwnd']
-    ok, count, _ = form.send(hwnd, 0x18B)  # LB_GETCOUNT
-    if not ok or not 0 < count < 1000:
-        raise RuntimeError('invalid document-kind list size')
-    names = []
-    for index in range(count):
-        ok, length, _ = form.send(hwnd, 0x18A, index)  # LB_GETTEXTLEN
-        if not ok or not 0 <= length < 4096:
-            raise RuntimeError('invalid document-kind text length')
-        buffer = C.create_unicode_buffer(length + 1)
-        ok, read, _ = form.send(hwnd, 0x189, index, C.addressof(buffer))  # LB_GETTEXT
-        if not ok or read != length:
-            raise RuntimeError('document-kind text could not be read')
-        names.append(buffer.value)
+    names = listbox_items(form, hwnd)
     evidence = evidence if evidence is not None else {}
     evidence['names'] = names
     if cancel:

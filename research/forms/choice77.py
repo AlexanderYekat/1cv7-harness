@@ -37,6 +37,38 @@ def choice_window(windows, seen):
     return {'frame': frame, 'dialog': dialog, 'list': lists[0]}, None
 
 
+def catalog_popup(windows, seen, focus):
+    """The floating list of catalog kinds opened on Insert by a compound reference."""
+    lists = [w for w in windows if w['hwnd'] == (focus or {}).get('hwnd') and w['hwnd'] not in seen
+             and w.get('class', '').casefold() == 'listbox' and w.get('visible') and w.get('enabled')]
+    if len(lists) != 1:
+        return None
+    item = lists[0]
+    frame = next((w for w in windows if w['hwnd'] == item.get('parent') and w['hwnd'] not in seen
+                  and not w.get('parent') and w.get('class', '').startswith('Afx:')
+                  and w.get('visible') and w.get('enabled')), None)
+    return {'frame': frame, 'list': item} if frame else None
+
+
+def select_catalog(form, popup, caption, evidence):
+    """Select an exact popup entry and post Enter to its still-focused list."""
+    from form_window77 import listbox_items
+    from scenario77 import KEYS
+    hwnd = popup['list']['hwnd']
+    names = evidence['names'] = listbox_items(form, hwnd)
+    matches = [i for i, name in enumerate(names) if name.strip().casefold() == caption.strip().casefold()]
+    if len(matches) != 1:
+        raise RuntimeError(f'catalog caption {caption!r} is not unique in {names!r}')
+    index = matches[0]
+    ok, selected, _ = form.send(hwnd, 0x186, index)  # LB_SETCURSEL
+    confirmed, current, _ = form.send(hwnd, 0x188)  # LB_GETCURSEL
+    if not ok or selected != index or not confirmed or current != index or (form.focused() or {}).get('hwnd') != hwnd:
+        raise RuntimeError('catalog selection or focus changed before Enter')
+    evidence.update(index=index, caption=names[index], key=form.post_key(hwnd, *KEYS['enter']))
+    if not evidence['key'].get('returned'):
+        raise RuntimeError('catalog selection key did not return')
+
+
 GLOBALS = 'Перем Контекст77Выбора, Объект77Выбора, До77Выбора;\n'
 
 
@@ -49,6 +81,8 @@ def branches(items):
             continue
         index, column, catalog = step['index'], step['column'], step['catalog']
         cancel = step.get('cancel', False)
+        table_answer = ' + Harness77Таблица()' if 'catalog_caption' in step else ''
+        before_popup = '            Возврат Harness77Таблица();\n' if table_answer else ''
         find = '' if cancel else f'''
             Спр77Выбора = СоздатьОбъект({_literal('Справочник.' + catalog)});
             Найдено77Выбора = 0;
@@ -121,7 +155,7 @@ def branches(items):
             КонецЕсли;
             ОтветВыбора77 = ОтветВыбора77 + РазделительСтрок + "choice-value:" + Harness77Строка(Контекст77Формы.{column});
             Контекст77Выбора = 0;
-            Возврат ОтветВыбора77;
+            Возврат ОтветВыбора77{table_answer};
         Исключение
             Возврат "error:" + Harness77Строка(ОписаниеОшибки());
         КонецПопытки;
@@ -132,7 +166,7 @@ def branches(items):
             Объект77Выбора = 0;
             Если Контекст77Формы.КоличествоСтрок() = 0 Тогда Возврат "error:the table has no row"; КонецЕсли;
             До77Выбора = Контекст77Формы.{column};
-        Исключение
+{before_popup}        Исключение
             Возврат "error:" + Harness77Строка(ОписаниеОшибки());
         КонецПопытки;
     КонецЕсли;

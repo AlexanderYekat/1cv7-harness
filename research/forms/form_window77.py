@@ -307,6 +307,24 @@ class Posted:
         return True
 
 
+def listbox_items(form, hwnd):
+    """Read a native listbox on the owned thread with messages that marshal the string buffer."""
+    ok, count, _ = form.send(hwnd, 0x18B)  # LB_GETCOUNT
+    if not ok or not 0 < count < 1000:
+        raise RuntimeError('invalid native list size')
+    names = []
+    for index in range(count):
+        ok, length, _ = form.send(hwnd, 0x18A, index)  # LB_GETTEXTLEN
+        if not ok or not 0 <= length < 4096:
+            raise RuntimeError('invalid native list text length')
+        buffer = C.create_unicode_buffer(length + 1)
+        ok, read, _ = form.send(hwnd, 0x189, index, C.addressof(buffer))  # LB_GETTEXT
+        if not ok or read != length:
+            raise RuntimeError('native list text could not be read')
+        names.append(buffer.value)
+    return names
+
+
 def key_parameters(vk, extended, scan):
     """(lParam of WM_KEYDOWN, lParam of WM_KEYUP) of one key press."""
     down = 1 | (scan & 0xFF) << 16 | (1 << 24 if extended else 0)

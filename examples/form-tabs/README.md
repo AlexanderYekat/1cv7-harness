@@ -110,3 +110,25 @@ python -X utf8 -B -m harness77 suite --suite .local/form-tabs-row2-new/suite-row
 ```
 
 Ожидания и результаты — в [задаче 048](../../docs/tasks/048-invoice-second-row.md).
+
+## Добавление третьей строки (049)
+
+`--append-row` создаёт три сценария на основе двухстрочной фактуры из
+слота 23. Insert открывает список типов для поля «Товар» новой строки.
+Следующий `choose` выбирает «Номенклатура» по подписи и подтверждает
+точную ссылку подготовленного элемента. Сценарий вводит количество 2,
+цену 30 и проверяет сумму новой строки 60, итог 140 и прежние значения
+первых двух строк.
+
+- `save` после записи повторно открывает ту же ссылку и проверяет три строки.
+- `cancel` отвечает «Нет» и проверяет две строки и итог 80.
+- `wrong-catalog` требует отсутствующую подпись и ожидает отказ до выбора
+  справочника. После Escape команда `verify` проверяет исходное состояние.
+
+```powershell
+python -X utf8 -B examples/form-tabs/prepare.py --append-row --stand .local/s44a/stand.toml --output .local/form-tabs-append-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-append-new/suite.toml --stand .local/form-tabs-append-new/stand.toml --output-root .artifacts/suites/form-tabs-append-new
+python -X utf8 -B scripts/verify_suite77.py --native .artifacts/suites/form-tabs-append-new/<suite-uuid>
+```
+
+[Задача 049](../../docs/tasks/049-invoice-append-row.md)

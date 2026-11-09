@@ -1,4 +1,4 @@
-"""Generate tasks 046–048 profiles using the accepted 043 fixture, without starting 1C."""
+"""Generate tasks 046–049 profiles using the accepted 043 fixture, without starting 1C."""
 import argparse
 import importlib.util
 import json
@@ -11,6 +11,7 @@ mixed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mixed)
 CASES = ('success', 'second', 'missing', 'wrong-rows', 'no-copy')
 EDIT_CASES = ('save', 'cancel')
+APPEND_CASES = (*EDIT_CASES, 'wrong-catalog')
 
 
 def case_scenario(name):
@@ -52,14 +53,31 @@ def second_row_fixture(text):
     return text.replace(marker, row + marker)
 
 
-def edit_scenario(name, *, second_row=False):
+def invoice_fixture(second_row=False):
     text = mixed.case_scenario('invoice-far')
     baseline = mixed.state()
+    if second_row:
+        text = second_row_fixture(text)
+        original = baseline
+        baseline = baseline.replace('|1|1:50:50:50:0:0;', '|2|1:50:50:50:0:0;1:30:30:30:0:0;', 1)
+        text = text.replace(json.dumps(original, ensure_ascii=False), json.dumps(baseline, ensure_ascii=False))
+    return text, baseline
+
+
+def expect_edit(text, final):
+    expected = json.dumps(final, ensure_ascii=False)
+    text = text.replace(
+        ', browser_visible = false }',
+        ', browser_visible = false, edit = true, expected_after = ' + expected + ' }')
+    return text[:text.rindex('expect_value = ')] + 'expect_value = ' + expected + '\n'
+
+
+def edit_scenario(name, *, second_row=False):
+    text, baseline = invoice_fixture(second_row)
     row, price, quantity, amount, total, old_total = 1, 50, 2, 100, 100, 50
     row_check = ''
     first_row = ''
     if second_row:
-        text = second_row_fixture(text)
         row, price, quantity, amount, total, old_total = 2, 30, 3, 90, 140, 80
         row_check = ', row = 2'
         first_row = '''    { value = "Количество", row = 1, text = "1" },
@@ -67,16 +85,10 @@ def edit_scenario(name, *, second_row=False):
     { value = "Сумма", row = 1, text = "50" },
     { value = "Всего", row = 1, text = "50" },
 '''
-        original = baseline
-        baseline = baseline.replace('|1|1:50:50:50:0:0;', '|2|1:50:50:50:0:0;1:30:30:30:0:0;', 1)
-        text = text.replace(json.dumps(original, ensure_ascii=False), json.dumps(baseline, ensure_ascii=False))
     final = baseline
     if name == 'save':
         final = baseline.replace(f'1:{price}:{price}:{price}:0:0;', f'{quantity}:{price}:{amount}:{amount}:0:0;', 1)
-    text = text.replace(
-        ', browser_visible = false }',
-        ', browser_visible = false, edit = true, expected_after = ' + json.dumps(final, ensure_ascii=False) + ' }')
-    text = text[:text.rindex('expect_value = ')] + 'expect_value = ' + json.dumps(final, ensure_ascii=False) + '\n'
+    text = expect_edit(text, final)
     cursor = 1 if name == 'wrong-row' else row
     initial_total = f'    {{ total = "Сумма", text = "{old_total}" }},\n' if second_row else ''
     tail = f'''    {{ tab = "Табличная часть", browser_visible = true }},
@@ -115,6 +127,60 @@ def edit_scenario(name, *, second_row=False):
     return text.replace('\n]\n', '\n' + tail + ']\n')
 
 
+def append_scenario(name):
+    text, baseline = invoice_fixture(second_row=True)
+    original_rows = '1:50:50:50:0:0;1:30:30:30:0:0;'
+    final = baseline
+    if name == 'save':
+        final = baseline.replace(f'|2|{original_rows}', f'|3|{original_rows}2:30:60:60:0:0;', 1)
+    text = expect_edit(text, final)
+    original_checks = '''    { value = "Количество", row = 1, text = "1" },
+    { value = "Цена", row = 1, text = "50" },
+    { value = "Сумма", row = 1, text = "50" },
+    { value = "Количество", row = 2, text = "1" },
+    { value = "Цена", row = 2, text = "30" },
+    { value = "Сумма", row = 2, text = "30" },
+'''
+    new_checks = '''    { value = "Товар", row = 3, text = "Harness77 продукция 043" },
+    { value = "Количество", row = 3, text = "2" },
+    { value = "Цена", row = 3, text = "30" },
+    { value = "Сумма", row = 3, text = "60" },
+    { value = "Всего", row = 3, text = "60" },
+'''
+    caption = 'Нет такого типа 049' if name == 'wrong-catalog' else 'Номенклатура'
+    tail = f'''    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = 2 }},
+{original_checks}    {{ total = "Сумма", text = "80" }},
+    {{ row = 2 }},
+    {{ add_row = true }},
+    {{ choose = "Товар", text = "Harness77 продукция 043", catalog = "Номенклатура", catalog_caption = "{caption}" }},
+    {{ cell = "Количество", row = 3, text = "2" }},
+    {{ cell = "Цена", row = 3, text = "30" }},
+    {{ rows = 3 }},
+{original_checks}{new_checks}    {{ total = "Сумма", text = "140" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    if name == 'save':
+        tail += '''    { click = "КнопкаЗаписать" },
+    { close_form = true, closes = true },
+'''
+        count, readback, total = 3, new_checks, 140
+    else:
+        tail += '''    { close_form = true },
+    { dialog = "Сохранить Документ?", button = "Нет", closes = true },
+'''
+        count, readback, total = 2, '', 80
+    tail += f'''    {{ reopen = true }},
+    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = {count} }},
+{original_checks}{readback}    {{ total = "Сумма", text = "{total}" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    if name == 'wrong-catalog':
+        text = text.replace('command = "result"\nexpect = "passed"', 'command = "result"\nexpect = "failed"')
+    return text.replace('\n]\n', '\n' + tail + ']\n')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stand', type=Path, required=True)
@@ -122,6 +188,7 @@ def main():
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--edit', action='store_true', help='generate the save and cancel cases of task 047')
     mode.add_argument('--edit-second-row', action='store_true', help='generate task 048 cases with two invoice rows')
+    mode.add_argument('--append-row', action='store_true', help='generate task 049 cases for appending an invoice row')
     a = p.parse_args()
     stand_text = a.stand.resolve(strict=True).read_text('utf-8')
     stand = tomllib.loads(stand_text)['stand']
@@ -136,6 +203,8 @@ def main():
     cases = EDIT_CASES if edit else CASES
     if a.edit_second_row:
         cases += ('wrong-row',)
+    if a.append_row:
+        cases = APPEND_CASES
     for name in cases:
         folder = output / name
         (folder / 'configuration').mkdir(parents=True)
@@ -145,7 +214,13 @@ def main():
             *([] if name == 'no-copy' else ['[configuration]', 'modules = ' + json.dumps((folder / 'configuration').as_posix())]),
             '[deadlines]', 'open_timeout_s = 240', 'calculation_timeout_s = 120', 'cancel_timeout_s = 15',
             'shutdown_timeout_s = 30', 'total_timeout_s = 600', ''])
-        content = header + (edit_scenario(name, second_row=a.edit_second_row) if edit else case_scenario(name))
+        if a.append_row:
+            scenario = append_scenario(name)
+        elif edit:
+            scenario = edit_scenario(name, second_row=a.edit_second_row)
+        else:
+            scenario = case_scenario(name)
+        content = header + scenario
         tomllib.loads(content)
         (folder / 'project.toml').write_text(content, 'utf-8', newline='\n')
     import re
@@ -160,6 +235,8 @@ def main():
     }
     if a.edit_second_row:
         suites['suite-row-guard'] = ('wrong-row',)
+    if a.append_row:
+        suites = {'suite': APPEND_CASES}
     for name, ids in suites.items():
         lines = ['schema_version = 1', '[suite]', f'id = "form-tabs-{name}"']
         for id_ in ids:
