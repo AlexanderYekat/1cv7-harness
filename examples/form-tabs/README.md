@@ -132,3 +132,23 @@ python -X utf8 -B scripts/verify_suite77.py --native .artifacts/suites/form-tabs
 ```
 
 [Задача 049](../../docs/tasks/049-invoice-append-row.md)
+
+## Удаление средней строки (050)
+
+`--delete-middle-row` готовит фактуру с тремя строками на 50, 30 и 60.
+После перехода Down шаг `{ delete_row = true, row = 2 }` проверяет
+текущую строку и удаляет её клавишей Delete. Штатная форма оставляет
+строки на 50 и 60 в прежнем порядке. Итог становится 110 вместо 140.
+
+- `save` записывает документ и повторно открывает ту же фактуру с двумя строками.
+- `cancel` отвечает «Нет» и повторно открывает фактуру с тремя строками.
+- `suite-row-guard.toml` оставляет курсор на строке 1. Шаг отказывает
+  до Delete, затем независимое чтение проверяет исходные три строки.
+
+```powershell
+python -X utf8 -B examples/form-tabs/prepare.py --delete-middle-row --stand .local/s44a/stand.toml --output .local/form-tabs-delete-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-delete-new/suite.toml --stand .local/form-tabs-delete-new/stand.toml --output-root .artifacts/suites/form-tabs-delete-new
+python -X utf8 -B -m harness77 suite --suite .local/form-tabs-delete-new/suite-row-guard.toml --stand .local/form-tabs-delete-new/stand.toml --output-root .artifacts/suites/form-tabs-delete-guard-new
+```
+
+[Задача 050](../../docs/tasks/050-invoice-delete-middle-row.md)

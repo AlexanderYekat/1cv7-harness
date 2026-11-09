@@ -388,6 +388,13 @@ class TableStepsTests(unittest.TestCase):
             with self.subTest(row=invalid), self.assertRaises(ValueError):
                 table_steps({"cell": "Кол-во", "row": invalid, "text": "3"})
 
+    def test_delete_accepts_an_expected_row_as_an_option(self):
+        step, = table_steps({"delete_row": True, "row": 2})
+        self.assertEqual((step["kind"], step["row"]), ("delete_row", 2))
+        for invalid in (0, -1, 100000, True, "2"):
+            with self.subTest(row=invalid), self.assertRaises(ValueError):
+                table_steps({"delete_row": True, "row": invalid})
+
     def test_columns_resolve_by_identifier_then_caption(self):
         steps = table_steps({"cell": "кол-во", "text": "3"}, {"cell": "Сумма", "text": "x"}, {"total": "сумма", "text": "1"},
                             {"add_row": True}, {"key": "Down"})

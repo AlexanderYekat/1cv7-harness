@@ -145,6 +145,27 @@ class TableEditorTests(unittest.TestCase):
         self.assertTrue(self.begin().record["returned"])
         self.windows.replace_text.assert_called_once_with(12, "2")
 
+    def test_delete_checks_the_row_before_posting_a_key(self):
+        self.step = {"kind": "delete_row", "target": "delete_row", "row": 2}
+        self.watcher.call.return_value = {"returned": True, "complete": True, "row": 1}
+        self.assertEqual(self.begin().record["refused"], "current row 1 differs from required row 2")
+        self.windows.post_key.assert_not_called()
+
+    def test_delete_rechecks_the_row_after_finishing_an_editor(self):
+        self.step = {"kind": "delete_row", "target": "delete_row", "row": 2}
+        state = {"returned": True, "complete": True, "row": 2}
+        self.watcher.call.return_value = state
+        self.windows.editor_of.return_value = self.editor
+
+        def finish_editor(form_window, step, trips, record, focus, table):
+            record["input_ended"] = True
+            trips.append(dict(state, row=3))
+            return {"hwnd": table}
+
+        self.watcher.end_input = finish_editor
+        self.assertEqual(self.begin().record["refused"], "current row 3 differs from required row 2")
+        self.windows.post_key.assert_not_called()
+
 
 class AdapterTests(unittest.TestCase):
     def setUp(self):

@@ -1,4 +1,4 @@
-"""Generate tasks 046–049 profiles using the accepted 043 fixture, without starting 1C."""
+"""Generate tasks 046–050 profiles using the accepted 043 fixture, without starting 1C."""
 import argparse
 import importlib.util
 import json
@@ -12,6 +12,7 @@ spec.loader.exec_module(mixed)
 CASES = ('success', 'second', 'missing', 'wrong-rows', 'no-copy')
 EDIT_CASES = ('save', 'cancel')
 APPEND_CASES = (*EDIT_CASES, 'wrong-catalog')
+INVOICE_ROWS = ('1:50:50:50:0:0;', '1:30:30:30:0:0;', '2:30:60:60:0:0;')
 
 
 def case_scenario(name):
@@ -38,7 +39,7 @@ def case_scenario(name):
     return text.replace('\n]\n', '\n' + tail + ']\n')
 
 
-def second_row_fixture(text):
+def extra_rows_fixture(text, row_count):
     marker = '        Фактура77.Записать();'
     if text.count(marker) != 1:
         raise ValueError('expected one invoice write in fixture setup')
@@ -48,18 +49,25 @@ def second_row_fixture(text):
             Фактура77.Товар = Спр77.ТекущийЭлемент();
             Фактура77.Количество = 1; Фактура77.Цена = 30;
             Фактура77.Сумма = 30; Фактура77.Всего = 30;
-        КонецЕсли;
 '''
-    return text.replace(marker, row + marker)
+    if row_count == 3:
+        row += '''            Фактура77.НоваяСтрока();
+            Фактура77.НазначитьТип("Товар", "Справочник.Номенклатура");
+            Фактура77.Товар = Спр77.ТекущийЭлемент();
+            Фактура77.Количество = 2; Фактура77.Цена = 30;
+            Фактура77.Сумма = 60; Фактура77.Всего = 60;
+'''
+    return text.replace(marker, row + '        КонецЕсли;\n' + marker)
 
 
-def invoice_fixture(second_row=False):
+def invoice_fixture(row_count=1):
     text = mixed.case_scenario('invoice-far')
     baseline = mixed.state()
-    if second_row:
-        text = second_row_fixture(text)
+    if row_count > 1:
+        text = extra_rows_fixture(text, row_count)
         original = baseline
-        baseline = baseline.replace('|1|1:50:50:50:0:0;', '|2|1:50:50:50:0:0;1:30:30:30:0:0;', 1)
+        rows = ''.join(INVOICE_ROWS[:row_count])
+        baseline = baseline.replace(f'|1|{INVOICE_ROWS[0]}', f'|{row_count}|{rows}', 1)
         text = text.replace(json.dumps(original, ensure_ascii=False), json.dumps(baseline, ensure_ascii=False))
     return text, baseline
 
@@ -73,7 +81,7 @@ def expect_edit(text, final):
 
 
 def edit_scenario(name, *, second_row=False):
-    text, baseline = invoice_fixture(second_row)
+    text, baseline = invoice_fixture(2 if second_row else 1)
     row, price, quantity, amount, total, old_total = 1, 50, 2, 100, 100, 50
     row_check = ''
     first_row = ''
@@ -128,11 +136,10 @@ def edit_scenario(name, *, second_row=False):
 
 
 def append_scenario(name):
-    text, baseline = invoice_fixture(second_row=True)
-    original_rows = '1:50:50:50:0:0;1:30:30:30:0:0;'
+    text, baseline = invoice_fixture(2)
     final = baseline
     if name == 'save':
-        final = baseline.replace(f'|2|{original_rows}', f'|3|{original_rows}2:30:60:60:0:0;', 1)
+        final = baseline.replace('|2|' + ''.join(INVOICE_ROWS[:2]), '|3|' + ''.join(INVOICE_ROWS), 1)
     text = expect_edit(text, final)
     original_checks = '''    { value = "Количество", row = 1, text = "1" },
     { value = "Цена", row = 1, text = "50" },
@@ -181,6 +188,51 @@ def append_scenario(name):
     return text.replace('\n]\n', '\n' + tail + ']\n')
 
 
+def invoice_row_checks(row, quantity, price):
+    fields = (('Количество', quantity), ('Цена', price), ('Сумма', quantity * price), ('Всего', quantity * price))
+    return ''.join(f'    {{ value = "{field}", row = {row}, text = "{value}" }},\n' for field, value in fields)
+
+
+def delete_scenario(name):
+    text, baseline = invoice_fixture(3)
+    final = baseline
+    if name == 'save':
+        final = baseline.replace('|3|' + ''.join(INVOICE_ROWS), '|2|' + INVOICE_ROWS[0] + INVOICE_ROWS[2], 1)
+    text = expect_edit(text, final)
+    first_row = invoice_row_checks(1, 1, 50)
+    original = first_row + invoice_row_checks(2, 1, 30) + invoice_row_checks(3, 2, 30)
+    remaining = first_row + invoice_row_checks(2, 2, 30)
+    cursor = 1 if name == 'wrong-row' else 2
+    tail = f'''    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = 3 }},
+{original}    {{ total = "Сумма", text = "140" }},
+    {{ row = {cursor} }},
+    {{ delete_row = true, row = 2 }},
+    {{ rows = 2 }},
+{remaining}    {{ total = "Сумма", text = "110" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    if name == 'save':
+        tail += '''    { click = "КнопкаЗаписать" },
+    { close_form = true, closes = true },
+'''
+        count, readback, total = 2, remaining, 110
+    else:
+        tail += '''    { close_form = true },
+    { dialog = "Сохранить Документ?", button = "Нет", closes = true },
+'''
+        count, readback, total = 3, original, 140
+    tail += f'''    {{ reopen = true }},
+    {{ tab = "Табличная часть", browser_visible = true }},
+    {{ rows = {count} }},
+{readback}    {{ total = "Сумма", text = "{total}" }},
+    {{ tab = "Шапка", browser_visible = false }},
+'''
+    if name == 'wrong-row':
+        text = text.replace('command = "result"\nexpect = "passed"', 'command = "result"\nexpect = "failed"')
+    return text.replace('\n]\n', '\n' + tail + ']\n')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stand', type=Path, required=True)
@@ -189,6 +241,7 @@ def main():
     mode.add_argument('--edit', action='store_true', help='generate the save and cancel cases of task 047')
     mode.add_argument('--edit-second-row', action='store_true', help='generate task 048 cases with two invoice rows')
     mode.add_argument('--append-row', action='store_true', help='generate task 049 cases for appending an invoice row')
+    mode.add_argument('--delete-middle-row', action='store_true', help='generate task 050 cases for deleting the middle row')
     a = p.parse_args()
     stand_text = a.stand.resolve(strict=True).read_text('utf-8')
     stand = tomllib.loads(stand_text)['stand']
@@ -199,9 +252,9 @@ def main():
         p.error('stand paths must be absolute')
     output = a.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    edit = a.edit or a.edit_second_row
+    edit = a.edit or a.edit_second_row or a.delete_middle_row
     cases = EDIT_CASES if edit else CASES
-    if a.edit_second_row:
+    if a.edit_second_row or a.delete_middle_row:
         cases += ('wrong-row',)
     if a.append_row:
         cases = APPEND_CASES
@@ -216,6 +269,8 @@ def main():
             'shutdown_timeout_s = 30', 'total_timeout_s = 600', ''])
         if a.append_row:
             scenario = append_scenario(name)
+        elif a.delete_middle_row:
+            scenario = delete_scenario(name)
         elif edit:
             scenario = edit_scenario(name, second_row=a.edit_second_row)
         else:
@@ -233,7 +288,7 @@ def main():
         'suite-missing': ['missing', 'after-failure'],
         'suite-rows': ['wrong-rows', 'after-failure'],
     }
-    if a.edit_second_row:
+    if a.edit_second_row or a.delete_middle_row:
         suites['suite-row-guard'] = ('wrong-row',)
     if a.append_row:
         suites = {'suite': APPEND_CASES}

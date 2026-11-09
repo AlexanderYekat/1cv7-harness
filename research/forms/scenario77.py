@@ -48,7 +48,7 @@ KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
 OPTIONS = {"tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
-           "add_row": {}, "row": {}, "cell": {"text": str, "row": int}, "delete_row": {}, "rows": {}, "total": {"text": str},
+           "add_row": {}, "row": {}, "cell": {"text": str, "row": int}, "delete_row": {"row": int}, "rows": {}, "total": {"text": str},
            "key": {"closes": bool}, "choose": {"text": str, "cancel": bool, "catalog": str, "catalog_caption": str},
            "reopen": {"caption_control": str, "caption_text": str}, "create": {}, "created": {},
            "find_document": {"limit": int, "open": bool}, "close_form": {"closes": bool},
@@ -114,7 +114,7 @@ def steps(parameters):
         kinds = [key for key in item if key in KINDS]
         others = [key for key in kinds if key != "row"]
         if len(kinds) == 2 and len(others) == 1 and "row" in OPTIONS[others[0]]:
-            kinds = others  # row is an option of value/cell when another step kind names it
+            kinds = others  # row is an option when another step kind declares it
         if len(kinds) != 1:
             raise ValueError(f"{where}: exactly one of {', '.join(KINDS)}, got {sorted(item)}")
         kind = kinds[0]
@@ -280,6 +280,18 @@ def _caption(text):
 def table_step(step):
     """The step works with the table part of a document's form (task 027)."""
     return step["kind"] in TABLE_KINDS or (step["kind"] == "value" and "row" in step)
+
+
+def required_row_issue(step, trip):
+    """Refuse guarded table actions unless 1C confirms the required current row."""
+    if "row" not in step:
+        return None
+    if (not trip.get("returned") or not trip.get("complete") or trip.get("diagnostics")
+            or trip.get("state_error") or trip.get("table_error") or "row" not in trip):
+        return "1C did not verify the current row before input"
+    if trip["row"] != step["row"]:
+        return f"current row {trip['row']} differs from required row {step['row']}"
+    return None
 
 
 def column(step, table):
