@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import time
 
+from marker_read77 import MarkerReadError, read_marker
 from shutdown77 import Deadline, atomic_json, read_events, sha256
 from win32_session77 import kernel, processes, register_cleanup_helper
 
@@ -60,6 +61,15 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         if report.get("cancel_path") and Path(report["cancel_path"]).exists():
             report["user_cancelled"] = True
             raise RuntimeError("cancelled by the caller")
+
+    def check_marker_read():
+        caller_cancelled()
+        expired = deadline.expired(time.monotonic())
+        if expired:
+            report["timeout_phase"] = expired
+            raise TimeoutError(expired + " deadline")
+
+    marker_read_retries = report["marker_read_retries"] = []
     recovery_until = None
     open_started = None
     shutdown_observed_at = None
@@ -339,13 +349,13 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         marker = out / ("ert-" + command + "-started")
                         finished = out / ("ert-" + command + "-finished")
                         if marker.exists():
-                            if marker.read_text(encoding="ascii").strip() != report["run_id"]:
+                            if read_marker(marker, marker_read_retries, check=check_marker_read) != report["run_id"]:
                                 raise ValueError("foreign ERT operation marker")
                             operation_started.setdefault(command, now)
                         if command not in operation_started:
                             continue
                         if finished.exists():
-                            if finished.read_text(encoding="ascii").strip() != report["run_id"]:
+                            if read_marker(finished, marker_read_retries, check=check_marker_read) != report["run_id"]:
                                 raise ValueError("foreign ERT completion marker")
                             if command == "wait" and recovery_until is not None:
                                 report["wait_call_returned_after_dismissal"] = True
@@ -356,7 +366,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                                 report["timeout_phase"] = "modal-recovery"
                                 raise TimeoutError("modal call did not return after dismissal")
                             continue
-                        if now - operation_started[command] < report["ert_operation_timeout_seconds"]:
+                        if time.monotonic() - operation_started[command] < report["ert_operation_timeout_seconds"]:
                             continue
                         report["timeout_phase"] = "ert-operation"
                         report["timeout_operation"] = command
@@ -403,6 +413,8 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 lap("sleep")
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
+        if isinstance(error, MarkerReadError):
+            report["marker_read_failure"] = error.detail
     finally:
         # Every cleanup step is independent; a failed step must not skip the rest.
         def attempt(label, action):

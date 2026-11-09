@@ -320,6 +320,11 @@ def interpret(out, manifest, lifecycle, shutdown_result, adapter=None):
         events = [json.loads(line) for line in (out / "ert-events.jsonl").read_text(encoding="utf-16").splitlines()]
     except (OSError, UnicodeError, ValueError) as error:
         return [], ["missing/malformed events: " + str(error)]
+    permit_errors = [e["value"] for e in events if isinstance(e, dict) and e.get("kind") == "blocked"
+                     and e.get("name") == "read-initialize-permit" and e.get("run_id") == manifest["run_id"]
+                     and isinstance(e.get("value"), str)]
+    if len(permit_errors) == 1:
+        lifecycle["initialize_permit_error"] = permit_errors[0]
     by_command = {e.get("name"): e for e in events if isinstance(e, dict) and e.get("kind") == "ert"}
     for command in manifest["commands"]:
         event = by_command.get(command)
@@ -474,6 +479,9 @@ def main(argv=None, adapter=None):
         native_phase = lifecycle.get("timeout_phase")
         report["timeout_phase"] = PHASES.get(native_phase, native_phase)
         report["native_timeout_phase"] = native_phase
+        for key in ("marker_read_retries", "marker_read_failure", "initialize_permit_error"):
+            if lifecycle.get(key):
+                report[key] = lifecycle[key]
         clean = (not issues and not lifecycle.get("error") and lifecycle.get("cleanup_verified")
                  and shutdown_result["status"] == "passed")
         report["platform_checked"] = bool(clean)
@@ -484,6 +492,8 @@ def main(argv=None, adapter=None):
         elif not clean:
             report["status"] = "blocked"
             report["reason"] = lifecycle.get("error") or "; ".join(issues + shutdown_result["issues"]) or "native run not clean"
+            if lifecycle.get("initialize_permit_error"):
+                report["reason"] += "; initialize-permit: " + lifecycle["initialize_permit_error"]
         elif report["load"]["status"] == "failed":
             report["status"], report["reason"] = "failed", "compilation_failed"
         else:

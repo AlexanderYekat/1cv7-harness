@@ -19,10 +19,7 @@ Do
     If fso.FileExists(fso.BuildPath(proxyFolder, "initialize-permit")) Then Exit Do
     WScript.Sleep 50
 Loop
-Set proxyFile = fso.OpenTextFile(fso.BuildPath(proxyFolder, "initialize-permit"), 1, False)
-proxyPermit = Trim(proxyFile.ReadAll)
-proxyFile.Close
-CheckCOM "read-initialize-permit"
+proxyPermit = ReadInitializePermit(fso.BuildPath(proxyFolder, "initialize-permit"))
 If proxyPermit <> runId Then Fail "proxy-owner", "foreign permission"
 Log "proxy-owner-verified=" & WScript.Arguments(3)
 If WScript.Arguments(4) = "activation-only" Then
@@ -31,3 +28,44 @@ If WScript.Arguments(4) = "activation-only" Then
     Log "activation-only-released"
     WScript.Quit 0
 End If
+
+Function InitializePermitDetail(operation, path, number, source, description, attempts, elapsedMs)
+    InitializePermitDetail = "{""operation"":" & Quote(operation) & ",""path"":" & Quote(path) & _
+        ",""error_number"":" & CStr(number) & ",""error_source"":" & Quote(source) & _
+        ",""error_description"":" & Quote(description) & ",""attempts"":" & CStr(attempts) & _
+        ",""elapsed_ms"":" & Replace(CStr(elapsedMs), ",", ".") & "}"
+End Function
+
+Sub CheckInitializePermitIO(operation, path, attempts, started)
+    Dim number, source, description
+    number = Err.Number: source = Err.Source: description = Err.Description
+    Err.Clear
+    If number <> 0 Then Fail "read-initialize-permit", _
+        InitializePermitDetail(operation, path, number, source, description, attempts, Elapsed(started))
+End Sub
+
+Function ReadInitializePermit(path)
+    Dim permitStream, started, attempts, number, source, description, elapsedMs, detail, value
+    On Error Resume Next
+    started = CDbl(Timer)
+    For attempts = 1 To 26
+        If fso.FileExists(fso.BuildPath(proxyFolder, "cancel")) Then Fail "proxy-owner", "cancelled before Initialize"
+        Err.Clear
+        Set permitStream = fso.OpenTextFile(path, 1, False)
+        number = Err.Number: source = Err.Source: description = Err.Description
+        Err.Clear
+        If number = 0 Then
+            value = permitStream.ReadAll
+            CheckInitializePermitIO "permit-read", path, attempts, started
+            permitStream.Close
+            CheckInitializePermitIO "permit-close", path, attempts, started
+            ReadInitializePermit = Trim(value)
+            Exit Function
+        End If
+        elapsedMs = Elapsed(started)
+        detail = InitializePermitDetail("permit-open", path, number, source, description, attempts, elapsedMs)
+        If number <> 70 Or attempts = 26 Or elapsedMs >= 1000 Then Fail "read-initialize-permit", detail
+        Emit "marker-read-retry", "initialize-permit", detail, elapsedMs
+        WScript.Sleep 40
+    Next
+End Function
