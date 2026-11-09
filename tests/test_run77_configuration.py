@@ -8,6 +8,7 @@ fake one here; the real 1C is the native acceptance.
 
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -16,7 +17,8 @@ from pathlib import Path
 from unittest import mock
 
 from harness77 import basecopy77
-from harness77 import md77
+from harness77 import md77, run77
+from harness77.deadlines77 import Deadlines, ManualClock
 
 from stage4_fixtures import base_scenario, run, windows_only, write_project, write_sim_stand
 from test_md77 import MODULES as MD_MODULES, md_bytes
@@ -85,8 +87,113 @@ class BaseCopyTests(unittest.TestCase):
         self.assertFalse(basecopy77.release(self.copy, "run-2"))
         self.assertTrue(basecopy77.release(self.copy, "run-1"))
         # A lock whose process is gone is taken over.
-        basecopy77.lock_path(self.copy).write_text(json.dumps({"run_id": "dead", "pid": 0}), encoding="utf-8")
-        self.assertEqual(basecopy77.acquire(self.copy, "run-3")["stale_run_id"], "dead")
+        basecopy77.lock_path(self.copy).write_text(json.dumps({"run_id": "dead", "pid": 123}), encoding="utf-8")
+        with mock.patch.object(basecopy77, "_alive", return_value=False) as alive:
+            self.assertEqual(basecopy77.acquire(self.copy, "run-3")["stale_run_id"], "dead")
+            alive.assert_called_once_with(123)
+
+    @windows_only
+    def test_inherited_lock_protects_copy_after_run_is_gone(self):
+        basecopy77.acquire(self.copy, "first")
+        basecopy77.copy(self.base, self.copy, run_id="first")
+        lock = basecopy77.lock_path(self.copy)
+        owner = lock.read_bytes()
+        with basecopy77.launcher_lock(self.copy, "first") as handle:
+            startup = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [handle]})
+            child = subprocess.Popen([sys.executable, "-B", "-c", "import sys; sys.stdin.buffer.read(1)"],
+                                     stdin=subprocess.PIPE, startupinfo=startup, close_fds=True)
+        try:
+            with mock.patch.object(basecopy77, "_alive", return_value=False):
+                with self.assertRaisesRegex(basecopy77.BaseCopyError, "занят нативным сеансом прогона first"):
+                    basecopy77.acquire(self.copy, "second")
+            self.assertEqual(lock.read_bytes(), owner)
+            self.assertFalse(basecopy77.remove(self.copy, run_id="first")["removed"])
+            self.assertFalse(basecopy77.release(self.copy, "first"))
+        finally:
+            child.communicate(input=b"\n", timeout=20)
+        with mock.patch.object(basecopy77, "_alive", return_value=False):
+            self.assertEqual(basecopy77.acquire(self.copy, "second")["stale_run_id"], "first")
+        self.assertTrue(basecopy77.release(self.copy, "second"))
+
+    def test_incomplete_owner_record_is_preserved(self):
+        lock = basecopy77.lock_path(self.copy)
+        for record in (b"", b"{", b"[]", b'{"run_id":"old","pid":0}', b'{"run_id":"old","pid":4294967296}'):
+            with self.subTest(record=record):
+                lock.write_bytes(record)
+                with self.assertRaisesRegex(basecopy77.BaseCopyError, "не удалось установить владельца"):
+                    basecopy77.acquire(self.copy, "new")
+                self.assertEqual(lock.read_bytes(), record)
+
+    def test_wait_refuses_an_unknown_owner_immediately(self):
+        lock = basecopy77.lock_path(self.copy)
+        lock.write_bytes(b"{")
+        cancel = mock.Mock()
+        cancel.is_set.return_value = False
+        deadlines = Deadlines.create(open_s=10, calculation_s=1, cancel_s=1, shutdown_s=1, total_s=13)
+        with mock.patch.object(run77, "publish_mcp_progress") as progress:
+            with self.assertRaisesRegex(basecopy77.BaseCopyError, "не удалось установить владельца"):
+                run77._wait_for_copy_lock(self.copy, "second", deadlines, cancel, ManualClock())
+        cancel.wait.assert_not_called()
+        progress.assert_not_called()
+        self.assertEqual(lock.read_bytes(), b"{")
+
+    def test_wait_releases_a_lock_obtained_after_the_deadline(self):
+        clock = ManualClock()
+        cancel = mock.Mock()
+        cancel.is_set.return_value = False
+        cancel.wait.side_effect = clock.advance
+        deadlines = Deadlines.create(open_s=0.2, calculation_s=1, cancel_s=1, shutdown_s=1, total_s=4)
+        lock = {"lock": "copy.lock"}
+
+        def late_acquire(*_):
+            if clock.now() == 0:
+                raise basecopy77.CopyPathBusy("busy")
+            clock.advance(0.2)
+            return lock
+
+        with (mock.patch.object(basecopy77, "acquire", side_effect=late_acquire),
+              mock.patch.object(basecopy77, "release") as release,
+              mock.patch.object(run77, "publish_mcp_progress") as progress):
+            acquired, elapsed, stop = run77._wait_for_copy_lock(self.copy, "second", deadlines, cancel, clock)
+        self.assertIsNone(acquired)
+        self.assertAlmostEqual(elapsed, 0.3)
+        self.assertEqual(stop, "open")
+        release.assert_called_once_with(self.copy, "second")
+        progress.assert_called_once_with("copy-waiting")
+
+    def test_publication_and_stale_takeover_are_exclusive(self):
+        lock = basecopy77.lock_path(self.copy)
+        contender = textwrap.dedent("""
+            import sys
+            from harness77 import basecopy77
+            try:
+                basecopy77.acquire(sys.argv[1], "contender")
+            except basecopy77.BaseCopyError as error:
+                assert "занят другой операцией" in str(error), str(error)
+            else:
+                raise RuntimeError("second process acquired the lock")
+        """)
+        replace = Path.replace
+        for previous in (None, b'{"run_id":"dead","pid":123}'):
+            with self.subTest(previous=previous):
+                if previous is not None:
+                    lock.write_bytes(previous)
+                observed = []
+
+                def before_publish(temporary, target):
+                    self.assertEqual(target, lock)
+                    self.assertEqual(json.loads(temporary.read_bytes()), {"run_id": "first", "pid": basecopy77.os.getpid()})
+                    subprocess.run([sys.executable, "-B", "-c", contender, str(self.copy)], check=True, timeout=30)
+                    observed.append(lock.read_bytes() if lock.exists() else None)
+                    return replace(temporary, target)
+
+                with (mock.patch.object(Path, "replace", before_publish),
+                      mock.patch.object(basecopy77, "_alive", return_value=False)):
+                    result = basecopy77.acquire(self.copy, "first")
+                self.assertEqual(observed, [previous])
+                self.assertEqual(result["stale_run_id"], "dead" if previous else None)
+                self.assertEqual(json.loads(lock.read_bytes())["run_id"], "first")
+                self.assertTrue(basecopy77.release(self.copy, "first"))
 
     def test_a_base_open_in_1c_is_not_copied(self):
         with mock.patch.object(Path, "open", side_effect=PermissionError("locked")):
@@ -95,6 +202,15 @@ class BaseCopyTests(unittest.TestCase):
             with self.assertRaisesRegex(basecopy77.BaseCopyError, "открыта в 1С"):
                 basecopy77.copy(self.base, self.copy)
         self.assertFalse(self.copy.exists())
+
+    def test_an_open_copy_cannot_be_removed_even_by_its_owner(self):
+        basecopy77.copy(self.base, self.copy, run_id="owner")
+        with (mock.patch.object(basecopy77, "open_in_1c", return_value="1SUSERS.DBF"),
+              mock.patch.object(basecopy77, "_rmtree") as delete):
+            removal = basecopy77.remove(self.copy, run_id="owner")
+        self.assertFalse(removal["removed"])
+        self.assertIn("открыта в 1С", removal["error"])
+        delete.assert_not_called()
 
     def test_nested_paths_are_refused(self):
         for target in (self.base / "copy", self.base):
@@ -260,6 +376,17 @@ class ConfigurationRunTests(unittest.TestCase):
         self.assertIn("copy_path", self.stage(report, "platform_check")["reason"])
         self.assertEqual(self.stage(report, "tests")["status"], "skipped")
 
+    def test_nested_copy_path_is_rejected_before_locking_the_source(self):
+        before = basecopy77.listing(self.base)
+        stand = self.stand()
+        old = (self.root / "harness77-copy").as_posix()
+        nested = (self.base / "nested-copy").as_posix()
+        stand.write_text(stand.read_text(encoding="utf-8").replace(old, nested), encoding="utf-8")
+        report = run(self.project(), stand, self.root / "runs")
+        self.assertEqual(report["status"], "blocked")
+        self.assertIn("вкладываться", self.stage(report, "platform_check")["reason"])
+        self.assertEqual(basecopy77.listing(self.base), before)
+
     def test_a_base_open_in_1c_blocks_the_platform_stage(self):
         with mock.patch.object(basecopy77, "open_in_1c", return_value="1SUSERS.DBF"):
             report = run(self.project(), self.stand(), self.root / "runs")
@@ -267,6 +394,32 @@ class ConfigurationRunTests(unittest.TestCase):
         self.assertEqual((report["status"], platform["status"]), ("blocked", "blocked"))
         self.assertIn("base_copy_error", platform["reason"])
         self.assertEqual(self.stage(report, "tests")["status"], "skipped")
+
+    def test_an_open_copy_from_an_interrupted_run_is_preserved(self):
+        target = self.root / "harness77-copy"
+        basecopy77.copy(self.base, target, run_id="interrupted")
+        before = basecopy77.listing(target)
+        with (mock.patch.object(basecopy77, "open_in_1c",
+                                side_effect=lambda path: "1SUSERS.DBF" if path == target else None),
+              mock.patch.object(basecopy77, "_rmtree", return_value=["deletion attempted"]) as delete):
+            report = run(self.project(), self.stand(), self.root / "runs")
+        platform = self.stage(report, "platform_check")
+        self.assertEqual(report["status"], "blocked")
+        self.assertIn("прежняя копия открыта в 1С", platform["reason"])
+        delete.assert_not_called()
+        self.assertEqual(basecopy77.listing(target), before)
+        self.assertFalse(platform["base_copy"]["removal"]["removed"])
+        self.assertTrue(platform["base_copy"]["lock"]["released"])
+
+    def test_a_failed_copy_marked_for_this_run_is_removed(self):
+        with mock.patch.object(basecopy77.shutil, "copy2", side_effect=OSError("copy failed")):
+            report = run(self.project(), self.stand(), self.root / "runs")
+        platform = self.stage(report, "platform_check")
+        self.assertEqual(report["status"], "blocked")
+        self.assertIn("copy failed", platform["reason"])
+        self.assertTrue(platform["base_copy"]["removal"]["removed"])
+        self.assertTrue(platform["base_copy"]["lock"]["released"])
+        self.assertFalse((self.root / "harness77-copy").exists())
 
 
 FAKE_LAUNCHER = textwrap.dedent('''

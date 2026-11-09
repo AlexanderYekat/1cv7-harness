@@ -18,10 +18,16 @@ import threading
 import time
 
 from . import __version__
+from .progress77 import MCP_PROGRESS_ENV
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 PROGRESS_INTERVAL_S = 10.0
-NATIVE_PROGRESS = {"waiting": "ждёт освобождения стенда", "starting": "запускает 1С"}
+RUN_PROGRESS = {
+    "copy-waiting": "ждёт освобождения пути копии",
+    "copy-acquired": "готовит копию",
+    "waiting": "ждёт освобождения стенда",
+    "starting": "запускает 1С",
+}
 POLL_S = 0.2
 CHILD = (sys.executable, "-m", "harness77")
 
@@ -432,12 +438,14 @@ class Server:
         cancel_file = self._cancel_path() if call.tool.cancel_file else None
         if cancel_file is not None:
             argv.append(f"--cancel-file={cancel_file}")
+        if call.tool.name == "run":
+            argv.append("--wait-for-copy")
         env = os.environ.copy()
-        env.pop("HARNESS77_MCP_PROGRESS", None)
+        env.pop(MCP_PROGRESS_ENV, None)
         markers = {}
         if call.tool.name == "run" and call.progress_token is not None:
-            env["HARNESS77_MCP_PROGRESS"] = str(cancel_file)
-            markers = {phase: cancel_file.with_suffix("." + phase) for phase in NATIVE_PROGRESS}
+            env[MCP_PROGRESS_ENV] = str(cancel_file)
+            markers = {phase: cancel_file.with_suffix("." + phase) for phase in RUN_PROGRESS}
         self._log(f"{call.tool.name} {argv}")
         started = time.monotonic()
         process = subprocess.Popen([*self.child, *argv], cwd=self.cwd, stdin=subprocess.DEVNULL,
@@ -447,6 +455,7 @@ class Server:
         progress_at = started + self.progress_interval
         last_progress = -0.001
         seen = set()
+        phase_now = None
 
         def send_progress(now, detail=None):
             nonlocal progress_at, last_progress
@@ -472,17 +481,17 @@ class Server:
                     self._log(f"{call.tool.name}: cancel file created")
                 if call.progress_token is not None and not call.withdrawn.is_set():
                     now = time.monotonic()
-                    # Read the later checkpoint first so a transition during polling
-                    # cannot send "starting" ahead of an unread "waiting".
+                    # Check later checkpoints first to preserve order across concurrent writes.
                     ready = {phase for phase, marker in reversed(markers.items())
                              if phase not in seen and os.path.isfile(marker)}
                     for phase in markers:
                         if phase in ready:
                             seen.add(phase)
-                            send_progress(now, NATIVE_PROGRESS[phase])
+                            phase_now = phase
+                            send_progress(now, RUN_PROGRESS[phase])
                     if not finished and now >= progress_at:
-                        waiting = "waiting" in seen and "starting" not in seen
-                        send_progress(now, NATIVE_PROGRESS["waiting"] if waiting else None)
+                        waiting = phase_now in ("copy-waiting", "waiting")
+                        send_progress(now, RUN_PROGRESS[phase_now] if waiting else None)
                 if finished:
                     break
         finally:

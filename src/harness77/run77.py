@@ -20,6 +20,7 @@ import uuid
 
 from . import __version__
 from .deadlines77 import Clock, RunClock
+from .progress77 import publish_mcp_progress
 from .report77 import (BLOCKED, FAILED, PASSED, SKIPPED, Stage, atomic_json,
                        exit_code, file_evidence, sha256_bytes, sha256_file)
 
@@ -339,8 +340,37 @@ def _stand_kinds(stand, built):
             "an enumeration a string)"), check
 
 
+def _wait_for_copy_lock(target, run_id, deadlines, cancel, clock):
+    """Wait only for a busy lock. Keep one budget and recheck it after acquiring."""
+    from . import basecopy77
+
+    started = clock.now()
+    phase = "open" if deadlines.open_s <= deadlines.total_s else "total"
+    expires = started + min(deadlines.open_s, deadlines.total_s)
+    waiting = False
+    lock = None
+    while True:
+        now = clock.now()
+        stop = phase if now >= expires else None
+        if cancel.is_set():
+            stop = "cancelled"
+        if stop is not None:
+            if lock is not None:
+                basecopy77.release(target, run_id)
+            return None, now - started, stop
+        if lock is not None:
+            return lock, now - started if waiting else 0.0, None
+        try:
+            lock = basecopy77.acquire(target, run_id)
+        except basecopy77.CopyPathBusy:
+            if not waiting:
+                publish_mcp_progress("copy-waiting")
+                waiting = True
+            cancel.wait(max(0.0, min(0.1, expires - clock.now())))
+
+
 def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project=None,
-                    configuration=None):
+                    configuration=None, *, wait_for_copy=False):
     """With a changed configuration (task 021) 1C opens a copy of the base with the built 1Cv7.MD at
     the stand's copy_path; the copy is removed afterwards and the stand base is checked as it was."""
     stage = Stage("platform_check", required=True, scope=STAGE_SCOPES["platform_check"])
@@ -355,18 +385,38 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
     if stand.copy_path is None:
         return refused("the stand has no [stand.base] copy_path: the path of the copy, registered once "
                        "in the 1C list of bases (1C 7.7 opens through OLE only a registered base)")
-    source, target = Path(stand.base), Path(stand.copy_path)
+    copy_details = {}
     try:
-        lock = basecopy77.acquire(target, run_id)
+        source, target = basecopy77.copy_paths(stand.base, stand.copy_path)
+        if wait_for_copy:
+            # The lock is an OS resource. Its wait uses wall time even with a simulated backend clock.
+            lock, waited, stop = _wait_for_copy_lock(target, run_id, deadlines, cancel, Clock())
+            if waited or stop:
+                copy_details["wait"] = {"acquired": lock is not None, "elapsed_s": round(waited, 3)}
+            if stop:
+                cancelled = stop == "cancelled"
+                flags = {"cancelled": cancelled, "timeout_phase": None if cancelled else stop}
+                reason = stop if cancelled else stop + "_timeout"
+                return (stage.finish(BLOCKED, reason=reason, platform_checked=False, base_copy=copy_details, **flags),
+                        {"status": BLOCKED, **flags}, None)
+            if waited:
+                deadlines = dataclasses.replace(deadlines, open_s=deadlines.open_s - waited,
+                                                total_s=deadlines.total_s - waited)
+                publish_mcp_progress("copy-acquired")
+        else:
+            lock = basecopy77.acquire(target, run_id)
     except (OSError, basecopy77.BaseCopyError) as error:
         return refused(f"{type(error).__name__}: {error}")
+    copy_details["lock"] = lock
     try:
         copy, before = basecopy77.copy(source, target, stand.copy_exclude, configuration["path"], run_id)
     except (OSError, basecopy77.BaseCopyError) as error:
-        removal = basecopy77.remove(target)
-        basecopy77.release(target, run_id)
-        return refused(f"{type(error).__name__}: {error}", base_copy={"lock": lock, "removal": removal})
-    copy["lock"] = lock
+        try:
+            removal = basecopy77.remove(target, run_id=run_id)
+        finally:
+            lock["released"] = basecopy77.release(target, run_id)
+        return refused(f"{type(error).__name__}: {error}", base_copy={**copy_details, "removal": removal})
+    copy.update(copy_details)
     # The copy carries the stand's files but the built configuration; its pin replaces the stand's.
     pinned = dict(stand.pinned)
     if "1Cv7.MD" in pinned:
@@ -380,10 +430,12 @@ def _platform_stage(stand, built, run_id, run_dir, deadlines, clock, cancel, obs
     finally:
         # The copy's event log keeps what 1C reported about the configuration, compile errors of
         # its modules included; it goes with the copy, so this session's part is kept here.
-        copy["session_log"] = basecopy77.session_log(target, offset, run_dir / "base-session-log.txt")
-        copy["kept"] = bool(project and project.keep_copy)
-        copy["removal"] = None if copy["kept"] else basecopy77.remove(target)
-        copy["lock"]["released"] = basecopy77.release(target, run_id)
+        try:
+            copy["session_log"] = basecopy77.session_log(target, offset, run_dir / "base-session-log.txt")
+            copy["kept"] = bool(project and project.keep_copy)
+            copy["removal"] = None if copy["kept"] else basecopy77.remove(target, run_id=run_id)
+        finally:
+            copy["lock"]["released"] = basecopy77.release(target, run_id)
         copy["source_check"] = basecopy77.unchanged(source, before)
         stage.details["base_copy"] = copy
     _configuration_compiled(stage, result, configuration, copy["session_log"].get("entries", []))
@@ -488,7 +540,7 @@ def _overall(stages):
     return PASSED
 
 
-def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, cancel=None):
+def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, cancel=None, wait_for_copy=False):
     run_id = run_id or str(uuid.uuid4())
     clock = clock or Clock()
     cancel = cancel or threading.Event()
@@ -526,7 +578,8 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
             if configuration is not None:
                 report["configuration"] = configuration_stage.evidence[0]
             platform, platform_result, backend = _platform_stage(
-                stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project, configuration)
+                stand, built, run_id, run_dir, deadlines, clock, cancel, observe, project, configuration,
+                wait_for_copy=wait_for_copy)
             report["platform_checked"] = platform_result.get("platform_checked", False)
             report["platform"].update(platform_result.get("platform_identity", {}))
             report["cancelled"] = platform_result.get("cancelled", False)
@@ -593,6 +646,8 @@ def main(argv=None):
     parser.add_argument("--run-id", default=None, help="Задать run_id (по умолчанию новый UUID)")
     parser.add_argument("--cancel-file", type=Path, default=None,
                         help="Отменить запуск, когда появится этот файл (как Ctrl+C, но без консоли)")
+    parser.add_argument("--wait-for-copy", action="store_true",
+                        help="Ждать освобождения copy_path в пределах сроков open и total")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -624,7 +679,8 @@ def main(argv=None):
     if args.cancel_file is not None:
         threading.Thread(target=_watch_cancel_file, args=(args.cancel_file, cancel, done), daemon=True).start()
     try:
-        report = execute(project, stand, deadlines, output_root=args.output_root, run_id=args.run_id, cancel=cancel)
+        report = execute(project, stand, deadlines, output_root=args.output_root, run_id=args.run_id, cancel=cancel,
+                         wait_for_copy=args.wait_for_copy)
     except OSError as error:
         blocked = {"schema_version": 1, "tool": "harness77", "operation": "run", "status": BLOCKED,
                    "exit_code": 2, "reason": f"{type(error).__name__}: {error}", "platform_checked": False}

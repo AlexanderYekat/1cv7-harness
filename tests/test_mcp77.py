@@ -341,6 +341,8 @@ FAKE_CHILD = textwrap.dedent('''
     cancel = next((a.split("=", 1)[1] for a in argv if a.startswith("--cancel-file=")), None)
     if os.environ.get("FAKE_NATIVE_PROGRESS"):
         prefix = Path(os.environ["HARNESS77_MCP_PROGRESS"])
+        prefix.with_suffix(".copy-waiting").touch()
+        prefix.with_suffix(".copy-acquired").touch()
         prefix.with_suffix(".waiting").touch()
         prefix.with_suffix(".starting").touch()
     if "FAKE_EXIT_CODE" in os.environ:
@@ -438,18 +440,22 @@ class ServerThreadTests(unittest.TestCase):
         self.assertEqual(values, sorted(set(values)))
         self.assertEqual(self.close(), [])
 
-    def test_native_progress_keeps_both_transitions_before_a_fast_exit(self):
+    def test_native_progress_keeps_all_transitions_before_a_fast_exit(self):
         env = {"FAKE_NATIVE_PROGRESS": "1", "FAKE_EXIT_CODE": "0", "FAKE_RUN_STDOUT": json.dumps(fake_run_summary())}
         with patch.dict(os.environ, env):
             self.call("native", "run", {"project": "p.toml", "stand": "s.toml"}, meta={"progressToken": "p"})
-            self.assertFalse(self.until("native")["result"]["isError"])
+            result = self.until("native")["result"]
+            self.assertFalse(result["isError"])
+            self.assertIn("--wait-for-copy", result["structuredContent"]["argv"])
         progress = [m["params"] for m in self.seen if m.get("method") == "notifications/progress"]
-        transitions = [p for p in progress if "стенда" in p["message"] or "1С" in p["message"]]
-        self.assertEqual(len(transitions), 2)
-        self.assertIn("ждёт освобождения стенда", transitions[0]["message"])
-        self.assertIn("запускает 1С", transitions[1]["message"])
-        self.assertEqual([p["progressToken"] for p in transitions], ["p", "p"])
-        self.assertLess(transitions[0]["progress"], transitions[1]["progress"])
+        labels = ["ждёт освобождения пути копии", "готовит копию", "ждёт освобождения стенда", "запускает 1С"]
+        transitions = [p for p in progress if any(label in p["message"] for label in labels)]
+        self.assertEqual(len(transitions), len(labels))
+        for label, transition in zip(labels, transitions):
+            self.assertIn(label, transition["message"])
+        self.assertEqual([p["progressToken"] for p in transitions], ["p"] * len(labels))
+        values = [p["progress"] for p in transitions]
+        self.assertEqual(values, sorted(set(values)))
         self.assertEqual(self.close(), [])
         self.assertFalse(self.server.cancel_dir.exists())
 

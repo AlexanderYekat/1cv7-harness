@@ -61,6 +61,7 @@ class BaseTraceTests(unittest.TestCase):
         self.assertEqual(launcher.open_deadline(DEADLINES, {"interrupted": False}), 120)
         self.assertEqual(launcher.open_deadline(DEADLINES, {"interrupted": True}), 720)
         self.assertEqual(launcher.open_deadline(dict(DEADLINES, reindex_timeout_s=0), {"interrupted": True}), 120)
+        self.assertEqual(launcher.open_deadline(dict(DEADLINES, open_timeout_s=0.25), {"interrupted": False}), 0.25)
 
     def test_open_phase_maps_to_section_8_5(self):
         self.assertEqual(launcher.PHASES["open"], "open")

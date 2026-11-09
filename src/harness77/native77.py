@@ -16,6 +16,7 @@ blocked result with a precise reason; it never fabricates platform success.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import time
 
+from . import basecopy77
 from .report77 import file_evidence, sha256_file
 
 # Only these launcher-reported reasons are treated as infrastructure (blocked).
@@ -112,10 +114,13 @@ class NativeBackend:
         started = time.monotonic()
         # Console Ctrl+C reaches only this process; the launcher learns of it by file.
         group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        lease = basecopy77.launcher_lock(self.stand.base, self.run_id) if self.configuration_sha256 else nullcontext()
         try:
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       creationflags=group)
-        except OSError as error:
+            with lease as handle:
+                startup = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [handle]}) if handle is not None else None
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           creationflags=group, startupinfo=startup, close_fds=True)
+        except (OSError, basecopy77.BaseCopyError) as error:
             return self._blocked(f"native_launcher_error: {type(error).__name__}: {error}")
         cancelled = forced = False
         cancelled_at = None

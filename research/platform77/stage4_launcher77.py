@@ -40,6 +40,7 @@ from module_suite77 import vb_assignment
 from run_shutdown77 import preflight
 from shutdown77 import MODE, assess, atomic_json, prepare_shutdown, sha256
 from concurrent77 import IDENTITY_SHA
+from harness77.progress77 import MCP_PROGRESS_ENV, publish_mcp_progress
 
 IDENTITY = "harness77"            # constant cooperation marker; run identity is separate
 COMMANDS = ("check", "execute")   # compile-only, then the control/report call
@@ -160,7 +161,7 @@ def base_trace(base):
 def open_deadline(deadlines, trace):
     """The open deadline: the profile's open, plus the reindex allowance after an interruption."""
     extra = deadlines.get("reindex_timeout_s", 0) if trace.get("interrupted") else 0
-    return int(deadlines["open_timeout_s"] + extra)
+    return deadlines["open_timeout_s"] + extra
 
 
 def stale_registrations(lifecycle):
@@ -168,16 +169,6 @@ def stale_registrations(lifecycle):
     return [dict(lifecycle[key]["stale_removed"], roots=lifecycle[key]["roots"])
             for key in ("identity_registration", "temporary_com_registration")
             if (lifecycle.get(key) or {}).get("stale_removed")]
-
-
-def mcp_progress(phase):
-    """Publish a checkpoint in the MCP server's temporary directory when requested."""
-    prefix = os.environ.get("HARNESS77_MCP_PROGRESS")
-    if prefix:
-        try:
-            Path(prefix).with_suffix("." + phase).touch()
-        except (OSError, ValueError):
-            pass  # Progress is optional and must not affect the session.
 
 
 def session_limits(deadlines):
@@ -445,7 +436,7 @@ def main(argv=None, adapter=None):
             # 1C may register a base it opens by path in the user's list of bases (task 021).
             from win32_session77 import base_titles_fingerprint
             report["base_list"] = {"before": base_titles_fingerprint()}
-        progress = mcp_progress if os.environ.get("HARNESS77_MCP_PROGRESS") else None
+        progress = publish_mcp_progress if os.environ.get(MCP_PROGRESS_ENV) else None
         with PrivateDesktop() as desktop, adapter.watch(drive, lifecycle, desktop.name):
             lifecycle = run_session(base, exe, cdb, helper, args.user, drive, lifecycle,
                                     desktop=desktop.name, identity_dll=identity_dll, pinned=pinned,
