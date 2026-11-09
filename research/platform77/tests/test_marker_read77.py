@@ -32,6 +32,16 @@ class MarkerReadTests(unittest.TestCase):
         self.assertEqual(self.retries[0]["errno"], errno.EACCES)
         self.assertEqual(self.retries[0]["path"], "ert-result-finished")
 
+    def test_challenge_retry_reports_its_own_operation(self):
+        self.path.__str__.return_value = "proxy-challenge-complete"
+        self.path.read_text.side_effect = [self.error, "current-run\n"]
+        value = read_marker(self.path, self.retries, check=self.check, operation="proxy-challenge-read",
+                            clock=lambda: self.now, pause=self.pause)
+        self.assertEqual(value, "current-run")
+        self.assertEqual(self.retries[0]["operation"], "proxy-challenge-read")
+        self.assertEqual(self.retries[0]["path"], "proxy-challenge-complete")
+        self.assertEqual(self.check.call_count, 2)
+
     def test_permanent_access_denial_has_a_bounded_diagnostic(self):
         self.path.read_text.side_effect = self.error
         with self.assertRaises(MarkerReadError) as caught:

@@ -1,4 +1,4 @@
-"""Bounded reads of already published native ERT markers."""
+"""Bounded reads of already published native session markers."""
 import errno
 import time
 
@@ -9,7 +9,7 @@ class MarkerReadError(RuntimeError):
         super().__init__(f"read {detail['path']} failed after {detail['attempts']} attempt(s): {detail['error']}")
 
 
-def read_marker(path, retries, *, check, clock=time.monotonic, pause=time.sleep):
+def read_marker(path, retries, *, check, operation="ert-marker-read", clock=time.monotonic, pause=time.sleep):
     """Retry access to the same file, with no publication or platform calls."""
     started = clock()
     for attempt in range(1, 27):
@@ -18,7 +18,7 @@ def read_marker(path, retries, *, check, clock=time.monotonic, pause=time.sleep)
             return path.read_text(encoding="ascii").strip()
         except (OSError, UnicodeError) as error:
             elapsed = clock() - started
-            detail = {"operation": "ert-marker-read", "path": str(path), "attempts": attempt,
+            detail = {"operation": operation, "path": str(path), "attempts": attempt,
                       "errno": getattr(error, "errno", None), "winerror": getattr(error, "winerror", None),
                       "error": f"{type(error).__name__}: {error}", "elapsed_ms": round(elapsed * 1000, 3)}
             remaining = 1 - elapsed

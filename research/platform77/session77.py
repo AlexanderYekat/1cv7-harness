@@ -69,6 +69,13 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             report["timeout_phase"] = expired
             raise TimeoutError(expired + " deadline")
 
+    def check_challenge_read():
+        check_marker_read()
+        opening = report.get("open_timeout_seconds")
+        if opening and time.monotonic() - started >= opening:
+            report["timeout_phase"] = "open"
+            raise TimeoutError("open deadline while reading proxy challenge")
+
     marker_read_retries = report["marker_read_retries"] = []
     recovery_until = None
     open_started = None
@@ -255,13 +262,16 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                     retired = (profile != "challenge-only-v2" or
                                observer_retired(debug_text(), report["run_id"], report["server"]))
                     if identity and retired and challenge_path.exists():
-                        if challenge_path.read_text(encoding="ascii").strip() != report["run_id"]:
-                            raise ValueError("foreign client challenge")
+                        challenge = read_marker(challenge_path, marker_read_retries,
+                                                check=check_challenge_read, operation="proxy-challenge-read")
+                        if challenge != report["run_id"]:
+                            raise ValueError(f"foreign client challenge: {challenge_path}")
                         validate_proxy(identity, report["run_id"], report["server"])
                         if kernel.WaitForSingleObject(handle, 0) != 0x102:
                             raise RuntimeError("owned server exited before Initialize")
                         from desktop77 import verify_server_desktop
                         verify_server_desktop(identity["tid"], identity["pid"], desktop)
+                        check_challenge_read()
                         report["server_desktop_verified"] = True
                         report["proxy_identity"] = identity
                         if profile == "challenge-only-v2":
