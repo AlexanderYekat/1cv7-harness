@@ -150,11 +150,13 @@ def _continuation_issue(report, stand):
     if stand.backend == "native" and platform.get("status") != SKIPPED:
         wait = (platform.get("open") or {}).get("registration_wait") or {}
         # The launcher takes its process baseline only after acquiring the stand.
-        cancelled_in_queue = (report.get("cancelled") is True and platform.get("status") == BLOCKED
-                              and platform.get("reason") == "cancelled" and wait.get("acquired") is False
-                              and shutdown.get("forced_cleanup") is False)
+        reason = platform.get("reason")
+        cancelled = reason == "cancelled" and report.get("cancelled") is True
+        timed_out = reason == "open_timeout" and report.get("timeout_phase") == "open"
+        stopped_in_queue = (platform.get("status") == BLOCKED and wait.get("acquired") is False
+                            and shutdown.get("forced_cleanup") is False and (cancelled or timed_out))
         if shutdown.get("cleanup_verified") is not True or (
-                shutdown.get("others_preserved") is not True and not cancelled_in_queue):
+                shutdown.get("others_preserved") is not True and not stopped_in_queue):
             return "native session cleanup was not verified"
     if copy is not None:
         if (copy.get("removal") or {}).get("removed") is not True:

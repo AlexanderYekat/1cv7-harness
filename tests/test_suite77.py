@@ -197,6 +197,33 @@ class SuiteTests(unittest.TestCase):
                 self.assertEqual(suite77._continuation_issue(report, stand), "native session cleanup was not verified")
                 evidence[key] = previous
 
+    def test_open_timeout_in_stand_queue_allows_next_scenario_and_keeps_junit_reason(self):
+        simulation = self.stand
+        self.stand = dataclasses.replace(simulation, backend="native")
+        profiles = self.profile([("first", self.project), ("second", self.project), ("third", self.project)])
+        calls = []
+
+        def runner(project, stand, deadlines, **kwargs):
+            calls.append(kwargs["run_id"])
+            result = run77.execute(project, simulation, deadlines, **kwargs)
+            result["shutdown"] = {"cleanup_verified": True, "forced_cleanup": False, "others_preserved": True}
+            if len(calls) == 2:
+                result.update(status="blocked", exit_code=2, reason="open_timeout", timeout_phase="open")
+                result["shutdown"]["others_preserved"] = False
+                platform = next(stage for stage in result["stages"] if stage["stage"] == "platform_check")
+                platform.update(status="blocked", reason="open_timeout", open={"registration_wait": {"acquired": False}})
+            atomic_json(Path(result["run_dir"]) / "run.json", result)
+            return result
+
+        report = self.go(profiles, runner=runner)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual((report["exit_code"], report["reason"], report["cancelled"]), (2, "open_timeout", False))
+        self.assertEqual([row["status"] for row in report["scenarios"]], ["passed", "blocked", "passed"])
+        first, second, third = self.xml(report)
+        self.assertIsNone(first.find("error"))
+        self.assertEqual(second.find("error").get("message"), "open_timeout")
+        self.assertIsNone(third.find("error"))
+
     def test_late_cancellation_cannot_leave_an_all_green_junit(self):
         cancel = threading.Event()
         def runner(*args, **kwargs):
