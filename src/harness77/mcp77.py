@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -36,8 +37,8 @@ harness77 — проверка разработки для 1С 7.7: статич
 компилятора, извлечение и сборка ERT с формой, полный цикл проверки настоящей 1С (run), \
 сравнение снимков формы. Каждый инструмент — команда CLI `harness77 <команда>` с теми же \
 ключами. Ответ содержит код выхода и JSON операции. Код 0 означает успех, код 1 — дефект \
-кода или провал теста, код 2 — отказ входа или инфраструктуры (isError). Для `run` коды 0 \
-и 1 требуют корректной итоговой сводки. Относительные \
+кода или провал теста, код 2 — отказ входа или инфраструктуры (isError). Для `run` и `suite` \
+коды 0 и 1 требуют корректной итоговой сводки. Относительные \
 пути — от рабочего каталога сервера: {cwd}. Выход (output) — только новый файл или каталог: \
 существующие не перезаписываются. run запускает 1С на базе стенда и может идти десятки минут; \
 отмена запроса отменяет запуск. Утверждение визуальных эталонов и построение каталога \
@@ -291,6 +292,36 @@ def _valid_run_summary(summary, exit_code, requested_id):
                     for key in ("reason", "timeout_phase")))
 
 
+def _valid_suite_summary(summary, exit_code, requested_id):
+    """A suite result requires a completed aggregate and its JUnit evidence."""
+    if not isinstance(summary, dict):
+        return False
+    counts = summary.get("counts")
+    if (not isinstance(counts, dict) or counts.keys() != {"passed", "failed", "blocked", "skipped"}
+            or any(type(count) is not int or count < 0 for count in counts.values())):
+        return False
+    suite_id = summary.get("suite_id")
+    junit = summary.get("junit")
+    return (summary.get("status") == ("passed" if exit_code == 0 else "failed")
+            and type(summary.get("exit_code")) is int and summary["exit_code"] == exit_code
+            and isinstance(suite_id, str) and bool(suite_id) and (requested_id is None or suite_id == requested_id)
+            and all(isinstance(summary.get(key), str) and summary[key] for key in ("suite_dir", "runs_dir"))
+            and summary.get("complete") is True and summary.get("cancelled") is False
+            and counts["blocked"] == counts["skipped"] == 0
+            and counts["passed"] + counts["failed"] > 0 and bool(counts["failed"]) == (exit_code == 1)
+            and "reason" in summary and (summary["reason"] is None or isinstance(summary["reason"], str))
+            and isinstance(junit, dict) and junit.get("name") == junit.get("path") == "junit.xml"
+            and junit.get("complete") is True and junit.get("exists") is True
+            and type(junit.get("size_bytes")) is int and junit["size_bytes"] > 0
+            and isinstance(junit.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", junit["sha256"]) is not None)
+
+
+SUMMARY_CHECKS = {
+    "run": ("run_id", _valid_run_summary),
+    "suite": ("suite_id", _valid_suite_summary),
+}
+
+
 def _tool_error(message):
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
@@ -531,10 +562,11 @@ class Server:
                       "stdout": _parse(stdout), "stderr": _parse(stderr), "duration_s": duration}
         content = [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}]
         is_error = exit_code not in (0, 1)
-        if call.tool.name == "run" and not is_error:
-            is_error = not _valid_run_summary(structured["stdout"], exit_code, call.arguments.get("run_id"))
+        if call.tool.name in SUMMARY_CHECKS and not is_error:
+            identifier, validate = SUMMARY_CHECKS[call.tool.name]
+            is_error = not validate(structured["stdout"], exit_code, call.arguments.get(identifier))
             if is_error:
-                content.append({"type": "text", "text": "run завершился без корректной итоговой сводки"})
+                content.append({"type": "text", "text": f"{call.tool.name} завершился без корректной итоговой сводки"})
         return {"content": content, "structuredContent": structured, "isError": is_error}
 
     def _cancel_path(self):

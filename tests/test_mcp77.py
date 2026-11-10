@@ -312,6 +312,7 @@ class ServerProcessTests(unittest.TestCase):
                                              "suite_id": "mcp-suite", "output_root": str(self.dir / "suites")})
         content = result["structuredContent"]
         self.assertEqual(content["exit_code"], 0, result)
+        self.assertFalse(result["isError"])
         self.assertTrue(any(a.startswith("--cancel-file=") for a in content["argv"]))
         self.assertIn("--wait-for-copy", content["argv"])
         summary = content["stdout"]
@@ -375,6 +376,15 @@ def fake_run_summary(status="passed", exit_code=0, run_id="fake-run"):
                                platform_checked=False, reason=None, cancelled=False, timeout_phase=None,
                                stages=[{"stage": name, "status": status if name == "tests" else "passed"}
                                        for name in ("static", "build", "platform_check", "tests")]))
+
+
+def fake_suite_summary(exit_code=0):
+    return {"suite_id": "fake-suite", "suite_dir": "out/fake-suite", "runs_dir": "out/runs",
+            "status": "passed" if exit_code == 0 else "failed", "exit_code": exit_code,
+            "counts": {"passed": 1, "failed": exit_code, "blocked": 0, "skipped": 0},
+            "complete": True, "cancelled": False, "reason": None,
+            "junit": {"name": "junit.xml", "path": "junit.xml", "complete": True, "exists": True,
+                      "size_bytes": 100, "sha256": "a" * 64}}
 
 
 class ServerThreadTests(unittest.TestCase):
@@ -469,7 +479,8 @@ class ServerThreadTests(unittest.TestCase):
 
     def test_suite_progress_keeps_scenario_boundaries_and_repeated_phases_before_fast_exit(self):
         self.server.progress_interval = 30
-        with patch.dict(os.environ, {"FAKE_SUITE_PROGRESS": "1", "FAKE_EXIT_CODE": "0"}):
+        env = {"FAKE_SUITE_PROGRESS": "1", "FAKE_EXIT_CODE": "0", "FAKE_RUN_STDOUT": json.dumps(fake_suite_summary())}
+        with patch.dict(os.environ, env):
             self.call("suite", "suite", {"suite": "s.toml", "stand": "stand.toml"}, meta={"progressToken": "p"})
             self.assertFalse(self.until("suite")["result"]["isError"])
         progress = [m["params"] for m in self.seen if m.get("method") == "notifications/progress"
@@ -508,6 +519,40 @@ class ServerThreadTests(unittest.TestCase):
                 self.assertEqual(content["stdout"], expected)
                 self.assertEqual(content["stderr"].strip(), "child diagnostic")
                 self.assertIn("без корректной итоговой сводки", result["content"][1]["text"])
+        self.assertEqual(self.close(), [])
+
+    def test_suite_exit_requires_a_completed_matching_summary_with_junit(self):
+        success = fake_suite_summary()
+        failure = fake_suite_summary(1)
+        cases = [
+            (0, success, False),
+            (1, failure, False),
+            (1, None, True),
+            (0, None, True),
+            (1, dict(failure, complete=False), True),
+            (1, dict(failure, cancelled=True), True),
+            (1, dict(failure, suite_id="foreign"), True),
+            (1, dict(failure, exit_code=True), True),
+            (1, dict(failure, status="passed"), True),
+            (1, dict(failure, counts=success["counts"]), True),
+            (1, dict(failure, counts=dict(failure["counts"], skipped=1)), True),
+            (1, dict(failure, junit=None), True),
+            (1, dict(failure, junit=dict(failure["junit"], complete=False)), True),
+        ]
+        for request_id, (code, stdout, is_error) in enumerate(cases):
+            with self.subTest(code=code, stdout=stdout):
+                env = {"FAKE_EXIT_CODE": str(code), "FAKE_RUN_STDERR": "child diagnostic"}
+                if stdout is not None:
+                    env["FAKE_RUN_STDOUT"] = json.dumps(stdout)
+                with patch.dict(os.environ, env):
+                    self.call(request_id, "suite", {"suite": "s.toml", "stand": "stand.toml", "suite_id": "fake-suite"})
+                    result = self.until(request_id)["result"]
+                self.assertEqual(result["isError"], is_error)
+                content = result["structuredContent"]
+                self.assertEqual((content["exit_code"], content["stdout"]), (code, stdout))
+                self.assertEqual(content["stderr"].strip(), "child diagnostic")
+                if is_error:
+                    self.assertIn("suite завершился без корректной итоговой сводки", result["content"][1]["text"])
         self.assertEqual(self.close(), [])
 
     def test_cancelled_run_gets_the_cancel_file_and_no_response(self):
