@@ -20,6 +20,9 @@ from .progress77 import publish_suite_scenario
 from .report77 import BLOCKED, FAILED, PASSED, SKIPPED, atomic_json, exit_code, file_evidence
 from . import run77
 
+DEFAULT_OUTPUT_ROOT = Path(".artifacts/suites")
+SUITE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -210,7 +213,7 @@ def execute(suite, stand, *, output_root, suite_id=None, overrides=None, cancel=
             wait_for_copy=False):
     """Execute independent runs in manifest order. The injected runner has run77.execute's API."""
     suite_id = str(uuid.uuid4()) if suite_id is None else suite_id
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", suite_id):
+    if not SUITE_ID_PATTERN.fullmatch(suite_id):
         raise ConfigError("suite-id must be a single ASCII identifier (letters, digits, _ or -)")
     if suite_id.casefold() == "runs":
         raise ConfigError("suite-id 'runs' is reserved for child run results")
@@ -290,7 +293,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="harness77 suite", allow_abbrev=False, description=__doc__)
     parser.add_argument("--suite", type=Path, required=True, help="TOML manifest of scenario project profiles")
     parser.add_argument("--stand", type=Path, required=True)
-    parser.add_argument("--output-root", type=Path, default=Path(".artifacts/suites"))
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--suite-id", help="New result directory name; default: UUID")
     parser.add_argument("--cancel-file", type=Path)
     parser.add_argument("--wait-for-copy", action="store_true", help=argparse.SUPPRESS)

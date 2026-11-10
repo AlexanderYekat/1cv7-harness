@@ -20,6 +20,7 @@ import time
 
 from . import __version__
 from .progress77 import MCP_PROGRESS_ENV, SUITE_PROGRESS_SUFFIX, read_suite_progress
+from .report77 import SCHEMA_VERSION, sha256_file
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 PROGRESS_INTERVAL_S = 10.0
@@ -322,6 +323,54 @@ SUMMARY_CHECKS = {
 }
 
 
+def _suite_artifact_issue(summary, exit_code, cwd, output_root):
+    from .suite77 import DEFAULT_OUTPUT_ROOT, SUITE_ID_PATTERN
+
+    suite_id = summary["suite_id"]
+    if not SUITE_ID_PATTERN.fullmatch(suite_id) or suite_id.casefold() == "runs":
+        return "недопустимый suite_id в итоговой сводке"
+    try:
+        root = (Path(cwd) / (DEFAULT_OUTPUT_ROOT if output_root is None else output_root)).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return "не удалось определить корень отчётов"
+    folder = root / suite_id
+    if Path(summary["suite_dir"]) != folder or Path(summary["runs_dir"]) != root / "runs":
+        return "пути итоговой сводки не совпадают с корнем отчётов запроса"
+
+    suite_path, junit_path = folder / "suite.json", folder / "junit.xml"
+    for path in (suite_path, junit_path):
+        try:
+            if path.resolve(strict=True) != path or not path.is_file():
+                return f"{path.name} не является обычным файлом в каталоге набора"
+        except FileNotFoundError:
+            return f"{path.name} отсутствует"
+        except (OSError, ValueError, RuntimeError):
+            return f"не удалось проверить путь {path.name}"
+    try:
+        report = json.loads(suite_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "suite.json отсутствует"
+    except (OSError, ValueError):
+        return "не удалось прочитать suite.json"
+    if (not _valid_suite_summary(report, exit_code, suite_id) or report.get("operation") != "suite"
+            or type(report.get("schema_version")) is not int or report["schema_version"] != SCHEMA_VERSION
+            or summary.keys() - report.keys() or any(report[key] != value for key, value in summary.items())):
+        return "suite.json не совпадает с итоговой сводкой"
+
+    try:
+        digest = sha256_file(junit_path)
+        size = junit_path.stat().st_size
+    except FileNotFoundError:
+        return "junit.xml отсутствует"
+    except OSError:
+        return "не удалось прочитать junit.xml"
+    if digest != summary["junit"]["sha256"]:
+        return "SHA-256 junit.xml не совпадает с итоговой сводкой"
+    if size != summary["junit"]["size_bytes"]:
+        return "размер junit.xml не совпадает с итоговой сводкой"
+    return None
+
+
 def _tool_error(message):
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
@@ -567,6 +616,11 @@ class Server:
             is_error = not validate(structured["stdout"], exit_code, call.arguments.get(identifier))
             if is_error:
                 content.append({"type": "text", "text": f"{call.tool.name} завершился без корректной итоговой сводки"})
+            elif call.tool.name == "suite":
+                issue = _suite_artifact_issue(structured["stdout"], exit_code, self.cwd, call.arguments.get("output_root"))
+                if issue:
+                    is_error = True
+                    content.append({"type": "text", "text": f"suite: {issue}"})
         return {"content": content, "structuredContent": structured, "isError": is_error}
 
     def _cancel_path(self):
