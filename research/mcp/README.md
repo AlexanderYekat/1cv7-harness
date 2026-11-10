@@ -68,3 +68,10 @@ launcher из репозитория.
 паузы. Результаты и проверка очистки сохраняются в `<output>/verified.json`,
 отчёт набора и JUnit — в `<output>/crash`.
 [Подробности задачи 082](../../docs/tasks/082-native-suite-recovery-probe.md).
+
+Для [задачи 083](../../docs/tasks/083-native-suite-concurrent-recovery.md)
+укажите `--retries 2`. Два отдельных MCP-сервера отправляют по запросу
+`run` на один `copy_path`. В `verified.json` массив `retries` идёт в
+порядке получения копии. Для каждого запроса записываются значение теста,
+число вызовов `Initialize`, время ожидания пути и снятые старые
+COM-регистрации.
