@@ -148,7 +148,13 @@ def _continuation_issue(report, stand):
     # A native platform stage can fail before starting the launcher. Continuing without
     # shutdown evidence would make that distinction an unsafe inference.
     if stand.backend == "native" and platform.get("status") != SKIPPED:
-        if shutdown.get("cleanup_verified") is not True or shutdown.get("others_preserved") is not True:
+        wait = (platform.get("open") or {}).get("registration_wait") or {}
+        # The launcher takes its process baseline only after acquiring the stand.
+        cancelled_in_queue = (report.get("cancelled") is True and platform.get("status") == BLOCKED
+                              and platform.get("reason") == "cancelled" and wait.get("acquired") is False
+                              and shutdown.get("forced_cleanup") is False)
+        if shutdown.get("cleanup_verified") is not True or (
+                shutdown.get("others_preserved") is not True and not cancelled_in_queue):
             return "native session cleanup was not verified"
     if copy is not None:
         if (copy.get("removal") or {}).get("removed") is not True:

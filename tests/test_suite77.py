@@ -176,6 +176,27 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(error.find("error").get("message"), "cancelled")
         self.assertIsNotNone(skipped_case.find("skipped"))
 
+    def test_cancel_before_stand_acquisition_still_requires_launcher_and_copy_cleanup(self):
+        stand = dataclasses.replace(self.stand, backend="native")
+        wait = {"acquired": False}
+        copy = {"removal": {"removed": True}, "lock": {"released": True}, "source_check": {"unchanged": True}}
+        shutdown = {"cleanup_verified": True, "forced_cleanup": False, "others_preserved": False}
+        report = {"cancelled": True, "shutdown": shutdown, "stages": [
+            {"stage": "platform_check", "status": "blocked", "reason": "cancelled",
+             "open": {"registration_wait": wait}, "base_copy": copy}]}
+        self.assertIsNone(suite77._continuation_issue(report, stand))
+
+        copy["removal"]["removed"] = False
+        self.assertEqual(suite77._continuation_issue(report, stand), "base copy removal was not verified")
+        copy["removal"]["removed"] = True
+        for evidence, key, value in ((wait, "acquired", True), (shutdown, "cleanup_verified", False),
+                                     (shutdown, "forced_cleanup", True)):
+            with self.subTest(key=key):
+                previous = evidence[key]
+                evidence[key] = value
+                self.assertEqual(suite77._continuation_issue(report, stand), "native session cleanup was not verified")
+                evidence[key] = previous
+
     def test_late_cancellation_cannot_leave_an_all_green_junit(self):
         cancel = threading.Event()
         def runner(*args, **kwargs):
