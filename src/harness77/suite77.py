@@ -16,6 +16,7 @@ from . import __version__
 from .config77 import (ConfigError, _load_toml, _resolve, load_project, load_stand,
                        path_tag, resolve_deadlines)
 from .deadlines77 import DeadlineError
+from .progress77 import publish_suite_scenario
 from .report77 import BLOCKED, FAILED, PASSED, SKIPPED, atomic_json, exit_code, file_evidence
 from . import run77
 
@@ -225,13 +226,14 @@ def execute(suite, stand, *, output_root, suite_id=None, overrides=None, cancel=
                              "report": None, "platform_checked": False} for s in suite.scenarios]}
     _publish(folder, report, started)
     stop = None
-    for scenario, row in zip(suite.scenarios, report["scenarios"]):
+    for index, (scenario, row) in enumerate(zip(suite.scenarios, report["scenarios"]), 1):
         if cancel.is_set():
             report["cancelled"] = True
             stop = "cancelled"
         if stop:
             row["reason"] = "not started: " + stop
             continue
+        publish_suite_scenario(index, len(suite.scenarios), scenario.scenario_id)
         began = time.monotonic()
         try:
             project = load_project(scenario.project)

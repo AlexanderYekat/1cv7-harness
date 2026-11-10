@@ -346,6 +346,13 @@ FAKE_CHILD = textwrap.dedent('''
         prefix.with_suffix(".copy-acquired").touch()
         prefix.with_suffix(".waiting").touch()
         prefix.with_suffix(".starting").touch()
+    if os.environ.get("FAKE_SUITE_PROGRESS"):
+        from harness77.progress77 import publish_mcp_progress, publish_suite_scenario
+        publish_suite_scenario(1, 2, "first")
+        for phase in ("copy-waiting", "copy-acquired", "waiting", "starting"):
+            publish_mcp_progress(phase)
+        publish_suite_scenario(2, 2, "second")
+        publish_mcp_progress("starting")
     if "FAKE_EXIT_CODE" in os.environ:
         if "FAKE_RUN_STDOUT" in os.environ:
             print(os.environ["FAKE_RUN_STDOUT"])
@@ -456,6 +463,26 @@ class ServerThreadTests(unittest.TestCase):
             self.assertIn(label, transition["message"])
         self.assertEqual([p["progressToken"] for p in transitions], ["p"] * len(labels))
         values = [p["progress"] for p in transitions]
+        self.assertEqual(values, sorted(set(values)))
+        self.assertEqual(self.close(), [])
+        self.assertFalse(self.server.cancel_dir.exists())
+
+    def test_suite_progress_keeps_scenario_boundaries_and_repeated_phases_before_fast_exit(self):
+        self.server.progress_interval = 30
+        with patch.dict(os.environ, {"FAKE_SUITE_PROGRESS": "1", "FAKE_EXIT_CODE": "0"}):
+            self.call("suite", "suite", {"suite": "s.toml", "stand": "stand.toml"}, meta={"progressToken": "p"})
+            self.assertFalse(self.until("suite")["result"]["isError"])
+        progress = [m["params"] for m in self.seen if m.get("method") == "notifications/progress"
+                    and "сценарий " in m["params"]["message"]]
+        first = "suite: сценарий 1/2 «first»"
+        second = "suite: сценарий 2/2 «second»"
+        self.assertEqual([p["message"].rsplit(", ", 1)[0] for p in progress], [
+            first, first + " — ждёт освобождения пути копии", first + " — готовит копию",
+            first + " — ждёт освобождения стенда", first + " — запускает 1С",
+            second, second + " — запускает 1С",
+        ])
+        self.assertEqual([p["progressToken"] for p in progress], ["p"] * len(progress))
+        values = [p["progress"] for p in progress]
         self.assertEqual(values, sorted(set(values)))
         self.assertEqual(self.close(), [])
         self.assertFalse(self.server.cancel_dir.exists())

@@ -18,7 +18,7 @@ import threading
 import time
 
 from . import __version__
-from .progress77 import MCP_PROGRESS_ENV
+from .progress77 import MCP_PROGRESS_ENV, SUITE_PROGRESS_SUFFIX, read_suite_progress
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 PROGRESS_INTERVAL_S = 10.0
@@ -444,9 +444,13 @@ class Server:
         env = os.environ.copy()
         env.pop(MCP_PROGRESS_ENV, None)
         markers = {}
+        suite_progress = None
         if call.tool.name == "run" and call.progress_token is not None:
             env[MCP_PROGRESS_ENV] = str(cancel_file)
             markers = {phase: cancel_file.with_suffix("." + phase) for phase in RUN_PROGRESS}
+        if call.tool.name == "suite" and call.progress_token is not None:
+            suite_progress = cancel_file.with_suffix(SUITE_PROGRESS_SUFFIX)
+            env[MCP_PROGRESS_ENV] = str(suite_progress)
         self._log(f"{call.tool.name} {argv}")
         started = time.monotonic()
         process = subprocess.Popen([*self.child, *argv], cwd=self.cwd, stdin=subprocess.DEVNULL,
@@ -457,11 +461,15 @@ class Server:
         last_progress = -0.001
         seen = set()
         phase_now = None
+        scenario_now = None
+        suite_offset = 0
 
         def send_progress(now, detail=None):
             nonlocal progress_at, last_progress
             elapsed = max(round(now - started, 1), round(last_progress + 0.001, 3))
-            description = f"{detail}, " if detail else ""
+            description = " — ".join(part for part in (scenario_now, detail) if part)
+            if description:
+                description += ", "
             self._send({"jsonrpc": "2.0", "method": "notifications/progress",
                         "params": {"progressToken": call.progress_token, "progress": elapsed,
                                    "message": f"{call.tool.name}: {description}{int(elapsed)} с"}})
@@ -482,6 +490,18 @@ class Server:
                     self._log(f"{call.tool.name}: cancel file created")
                 if call.progress_token is not None and not call.withdrawn.is_set():
                     now = time.monotonic()
+                    if suite_progress is not None:
+                        suite_offset, events = read_suite_progress(suite_progress, suite_offset)
+                        for event in events:
+                            name, index, total = (event.get(key) for key in ("scenario", "index", "total"))
+                            phase = event.get("phase")
+                            if isinstance(name, str) and type(index) is int and type(total) is int:
+                                scenario_now = f"сценарий {index}/{total} «{name}»"
+                                phase_now = None
+                                send_progress(now)
+                            elif scenario_now and isinstance(phase, str) and phase in RUN_PROGRESS:
+                                phase_now = phase
+                                send_progress(now, RUN_PROGRESS[phase])
                     # Check later checkpoints first to preserve order across concurrent writes.
                     ready = {phase for phase, marker in reversed(markers.items())
                              if phase not in seen and os.path.isfile(marker)}
@@ -498,7 +518,8 @@ class Server:
         finally:
             if cancel_file is not None:
                 cancel_file.unlink(missing_ok=True)
-            for marker in markers.values():
+            progress_files = [suite_progress] if suite_progress is not None else markers.values()
+            for marker in progress_files:
                 try:
                     marker.unlink(missing_ok=True)
                 except OSError as error:

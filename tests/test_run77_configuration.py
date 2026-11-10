@@ -240,7 +240,7 @@ class ConfigurationRunTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="h77-cfg-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()  # Match the resolved paths used by the copy executor.
         self.base = fake_base(self.root / "base-for-test")
         self.modules = self.root / "configuration"
         md77.extract(self.base / "1Cv7.MD", self.modules)
