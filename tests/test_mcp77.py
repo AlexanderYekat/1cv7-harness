@@ -13,6 +13,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 from harness77 import __version__, ert_module as ert, mcp77, run77
 from harness77.report77 import file_evidence
@@ -389,7 +390,18 @@ def write_fake_suite(root, exit_code=0):
                "counts": {"passed": 1, "failed": exit_code, "blocked": 0, "skipped": 0},
                "complete": True, "cancelled": False, "reason": None,
                "junit": file_evidence(junit, root=folder, complete=True)}
-    (folder / "suite.json").write_text(json.dumps(dict(summary, schema_version=1, operation="suite")), encoding="utf-8")
+    scenarios = []
+    for index, status in enumerate(["passed"] + ["failed"] * exit_code, 1):
+        run_id = str(uuid4())
+        path = root / "runs" / run_id / "run.json"
+        path.parent.mkdir(parents=True)
+        child = {"run_id": run_id, "operation": "run", "status": status, "exit_code": int(status == "failed")}
+        path.write_text(json.dumps(child), encoding="utf-8")
+        evidence = file_evidence(path, complete=True)
+        evidence["path"] = f"../runs/{run_id}/run.json"
+        scenarios.append({"id": f"scenario {index}", "status": status, "run_id": run_id, "report": evidence})
+    report = dict(summary, schema_version=1, operation="suite", scenarios=scenarios)
+    (folder / "suite.json").write_text(json.dumps(report), encoding="utf-8")
     return summary
 
 
@@ -601,6 +613,43 @@ class ServerThreadTests(unittest.TestCase):
                 self.assertEqual((content["exit_code"], content["stdout"]), (1, summary))
                 self.assertEqual(content["stderr"].strip(), "child diagnostic")
                 self.assertIn(expected, result["content"][1]["text"])
+        self.assertEqual(self.close(), [])
+
+    def test_suite_checks_each_child_report_before_returning_a_test_failure(self):
+        root = self.root / "out"
+        suite_path = root / "fake-suite/suite.json"
+        for request_id, case in enumerate(("missing", "changed", "foreign_id", "foreign_path")):
+            with self.subTest(case=case):
+                summary = write_fake_suite(root, 1)
+                suite = json.loads(suite_path.read_text(encoding="utf-8"))
+                row = suite["scenarios"][1]
+                path = root / "runs" / row["run_id"] / "run.json"
+                if case == "missing":
+                    path.unlink()
+                    expected = "run.json отсутствует"
+                elif case == "changed":
+                    path.write_bytes(path.read_bytes().replace(b"failed", b"passed"))
+                    expected = "SHA-256 run.json не совпадает"
+                elif case == "foreign_id":
+                    child = json.loads(path.read_text(encoding="utf-8"))
+                    child["run_id"] = suite["scenarios"][0]["run_id"]
+                    path.write_text(json.dumps(child), encoding="utf-8")
+                    row["report"].update(file_evidence(path, complete=True))
+                    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+                    expected = "run_id или операция в run.json не совпадает"
+                else:
+                    row["report"]["path"] = suite["scenarios"][0]["report"]["path"]
+                    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+                    expected = "некорректная ссылка на run.json"
+                env = {"FAKE_EXIT_CODE": "1", "FAKE_RUN_STDOUT": json.dumps(summary)}
+                with patch.dict(os.environ, env):
+                    self.call(request_id, "suite", {"suite": "s.toml", "stand": "stand.toml",
+                                                    "suite_id": "fake-suite", "output_root": "out"})
+                    result = self.until(request_id)["result"]
+                self.assertTrue(result["isError"])
+                content = result["structuredContent"]
+                self.assertEqual((content["exit_code"], content["stdout"]), (1, summary))
+                self.assertIn(f"сценарий «scenario 2»: {expected}", result["content"][1]["text"])
         self.assertEqual(self.close(), [])
 
     def test_cancelled_run_gets_the_cancel_file_and_no_response(self):

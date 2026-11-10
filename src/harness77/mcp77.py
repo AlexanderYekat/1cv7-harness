@@ -17,10 +17,11 @@ import sys
 import tempfile
 import threading
 import time
+from uuid import UUID
 
 from . import __version__
 from .progress77 import MCP_PROGRESS_ENV, SUITE_PROGRESS_SUFFIX, read_suite_progress
-from .report77 import SCHEMA_VERSION, sha256_file
+from .report77 import SCHEMA_VERSION, sha256_bytes, sha256_file
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 PROGRESS_INTERVAL_S = 10.0
@@ -293,6 +294,13 @@ def _valid_run_summary(summary, exit_code, requested_id):
                     for key in ("reason", "timeout_phase")))
 
 
+def _complete_file_evidence(evidence, name):
+    return (isinstance(evidence, dict) and evidence.get("name") == name
+            and evidence.get("complete") is True and evidence.get("exists") is True
+            and type(evidence.get("size_bytes")) is int and evidence["size_bytes"] > 0
+            and isinstance(evidence.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", evidence["sha256"]) is not None)
+
+
 def _valid_suite_summary(summary, exit_code, requested_id):
     """A suite result requires a completed aggregate and its JUnit evidence."""
     if not isinstance(summary, dict):
@@ -311,16 +319,85 @@ def _valid_suite_summary(summary, exit_code, requested_id):
             and counts["blocked"] == counts["skipped"] == 0
             and counts["passed"] + counts["failed"] > 0 and bool(counts["failed"]) == (exit_code == 1)
             and "reason" in summary and (summary["reason"] is None or isinstance(summary["reason"], str))
-            and isinstance(junit, dict) and junit.get("name") == junit.get("path") == "junit.xml"
-            and junit.get("complete") is True and junit.get("exists") is True
-            and type(junit.get("size_bytes")) is int and junit["size_bytes"] > 0
-            and isinstance(junit.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", junit["sha256"]) is not None)
+            and _complete_file_evidence(junit, "junit.xml") and junit.get("path") == "junit.xml")
 
 
 SUMMARY_CHECKS = {
     "run": ("run_id", _valid_run_summary),
     "suite": ("suite_id", _valid_suite_summary),
 }
+
+
+def _artifact_path_issue(path):
+    try:
+        if path.resolve(strict=True) != path or not path.is_file():
+            return f"{path.name} не является обычным файлом в ожидаемом каталоге"
+    except FileNotFoundError:
+        return f"{path.name} отсутствует"
+    except (OSError, ValueError, RuntimeError):
+        return f"не удалось проверить путь {path.name}"
+    return None
+
+
+def _suite_run_issue(row, runs_dir):
+    run_id, evidence = row.get("run_id"), row.get("report")
+    try:
+        valid_id = isinstance(run_id, str) and str(UUID(run_id)) == run_id
+    except ValueError:
+        valid_id = False
+    if not valid_id:
+        return "некорректный run_id"
+    if (not _complete_file_evidence(evidence, "run.json")
+            or evidence.get("path") != f"../runs/{run_id}/run.json"):
+        return "некорректная ссылка на run.json"
+
+    path = runs_dir / run_id / "run.json"
+    if issue := _artifact_path_issue(path):
+        return issue
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return "run.json отсутствует"
+    except OSError:
+        return "не удалось прочитать run.json"
+    if sha256_bytes(data) != evidence["sha256"]:
+        return "SHA-256 run.json не совпадает с suite.json"
+    if len(data) != evidence["size_bytes"]:
+        return "размер run.json не совпадает с suite.json"
+    try:
+        report = json.loads(data)
+    except ValueError:
+        return "run.json содержит некорректный JSON"
+    if not isinstance(report, dict) or report.get("operation") != "run" or report.get("run_id") != run_id:
+        return "run_id или операция в run.json не совпадает с ожидаемыми"
+    if (report.get("status") != row["status"] or type(report.get("exit_code")) is not int
+            or report["exit_code"] != (0 if row["status"] == "passed" else 1)):
+        return "статус или код run.json не совпадает с результатом сценария"
+    return None
+
+
+def _suite_runs_issue(suite, runs_dir):
+    rows = suite.get("scenarios")
+    if not isinstance(rows, list):
+        return "suite.json не содержит список сценариев"
+    counts = {"passed": 0, "failed": 0}
+    seen = set()
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+            return f"сценарий {index}: отсутствует идентификатор"
+        label = f"сценарий «{row['id']}»"
+        status = row.get("status")
+        if status not in ("passed", "failed"):
+            return f"{label}: некорректный итоговый статус"
+        if issue := _suite_run_issue(row, runs_dir):
+            return f"{label}: {issue}"
+        if row["run_id"] in seen:
+            return f"{label}: повторяющийся run_id"
+        seen.add(row["run_id"])
+        counts[status] += 1
+    if any(count != suite["counts"][status] for status, count in counts.items()):
+        return "сценарии в suite.json не совпадают с итоговыми счётчиками"
+    return None
 
 
 def _suite_artifact_issue(summary, exit_code, cwd, output_root):
@@ -339,13 +416,8 @@ def _suite_artifact_issue(summary, exit_code, cwd, output_root):
 
     suite_path, junit_path = folder / "suite.json", folder / "junit.xml"
     for path in (suite_path, junit_path):
-        try:
-            if path.resolve(strict=True) != path or not path.is_file():
-                return f"{path.name} не является обычным файлом в каталоге набора"
-        except FileNotFoundError:
-            return f"{path.name} отсутствует"
-        except (OSError, ValueError, RuntimeError):
-            return f"не удалось проверить путь {path.name}"
+        if issue := _artifact_path_issue(path):
+            return issue
     try:
         report = json.loads(suite_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -368,7 +440,7 @@ def _suite_artifact_issue(summary, exit_code, cwd, output_root):
         return "SHA-256 junit.xml не совпадает с итоговой сводкой"
     if size != summary["junit"]["size_bytes"]:
         return "размер junit.xml не совпадает с итоговой сводкой"
-    return None
+    return _suite_runs_issue(report, root / "runs")
 
 
 def _tool_error(message):
