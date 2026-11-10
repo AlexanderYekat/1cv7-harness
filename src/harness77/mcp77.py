@@ -21,7 +21,7 @@ from uuid import UUID
 
 from . import __version__
 from .progress77 import MCP_PROGRESS_ENV, SUITE_PROGRESS_SUFFIX, read_suite_progress
-from .report77 import SCHEMA_VERSION, sha256_bytes, sha256_file
+from .report77 import SCHEMA_VERSION, sha256_bytes
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 PROGRESS_INTERVAL_S = 10.0
@@ -401,7 +401,7 @@ def _suite_runs_issue(suite, runs_dir):
 
 
 def _suite_artifact_issue(summary, exit_code, cwd, output_root):
-    from .suite77 import DEFAULT_OUTPUT_ROOT, SUITE_ID_PATTERN
+    from .suite77 import DEFAULT_OUTPUT_ROOT, SUITE_ID_PATTERN, junit_issue
 
     suite_id = summary["suite_id"]
     if not SUITE_ID_PATTERN.fullmatch(suite_id) or suite_id.casefold() == "runs":
@@ -430,17 +430,16 @@ def _suite_artifact_issue(summary, exit_code, cwd, output_root):
         return "suite.json не совпадает с итоговой сводкой"
 
     try:
-        digest = sha256_file(junit_path)
-        size = junit_path.stat().st_size
+        data = junit_path.read_bytes()
     except FileNotFoundError:
         return "junit.xml отсутствует"
     except OSError:
         return "не удалось прочитать junit.xml"
-    if digest != summary["junit"]["sha256"]:
+    if sha256_bytes(data) != summary["junit"]["sha256"]:
         return "SHA-256 junit.xml не совпадает с итоговой сводкой"
-    if size != summary["junit"]["size_bytes"]:
+    if len(data) != summary["junit"]["size_bytes"]:
         return "размер junit.xml не совпадает с итоговой сводкой"
-    return _suite_runs_issue(report, root / "runs")
+    return _suite_runs_issue(report, root / "runs") or junit_issue(data, report)
 
 
 def _tool_error(message):

@@ -14,8 +14,9 @@ import time
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
+import xml.etree.ElementTree as ET
 
-from harness77 import __version__, ert_module as ert, mcp77, run77
+from harness77 import __version__, ert_module as ert, mcp77, run77, suite77
 from harness77.report77 import file_evidence
 from harness77.visual77 import Image, write_png
 from stage4_fixtures import base_scenario, write_project, write_sim_stand
@@ -383,13 +384,10 @@ def fake_run_summary(status="passed", exit_code=0, run_id="fake-run"):
 def write_fake_suite(root, exit_code=0):
     folder = root / "fake-suite"
     folder.mkdir(parents=True, exist_ok=True)
-    junit = folder / "junit.xml"
-    junit.write_bytes(b"<testsuites />\n")
     summary = {"suite_id": folder.name, "suite_dir": str(folder), "runs_dir": str(root / "runs"),
                "status": "passed" if exit_code == 0 else "failed", "exit_code": exit_code,
                "counts": {"passed": 1, "failed": exit_code, "blocked": 0, "skipped": 0},
-               "complete": True, "cancelled": False, "reason": None,
-               "junit": file_evidence(junit, root=folder, complete=True)}
+               "complete": True, "cancelled": False, "reason": None}
     scenarios = []
     for index, status in enumerate(["passed"] + ["failed"] * exit_code, 1):
         run_id = str(uuid4())
@@ -399,8 +397,13 @@ def write_fake_suite(root, exit_code=0):
         path.write_text(json.dumps(child), encoding="utf-8")
         evidence = file_evidence(path, complete=True)
         evidence["path"] = f"../runs/{run_id}/run.json"
-        scenarios.append({"id": f"scenario {index}", "status": status, "run_id": run_id, "report": evidence})
-    report = dict(summary, schema_version=1, operation="suite", scenarios=scenarios)
+        scenarios.append({"id": f"scenario {index}", "status": status, "run_id": run_id, "report": evidence,
+                          "duration_s": 1, "reason": None})
+    report = dict(summary, schema_version=1, operation="suite", name="fixture", duration_s=len(scenarios),
+                  scenarios=scenarios)
+    junit = folder / "junit.xml"
+    junit.write_bytes(suite77.junit(report))
+    summary["junit"] = report["junit"] = file_evidence(junit, root=folder, complete=True)
     (folder / "suite.json").write_text(json.dumps(report), encoding="utf-8")
     return summary
 
@@ -561,11 +564,11 @@ class ServerThreadTests(unittest.TestCase):
         ]
         for request_id, (code, stdout, is_error) in enumerate(cases):
             with self.subTest(code=code, stdout=stdout):
+                if not is_error:
+                    stdout = write_fake_suite(output, code)
                 env = {"FAKE_EXIT_CODE": str(code), "FAKE_RUN_STDERR": "child diagnostic"}
                 if stdout is not None:
                     env["FAKE_RUN_STDOUT"] = json.dumps(stdout)
-                if not is_error:
-                    write_fake_suite(output, code)
                 with patch.dict(os.environ, env):
                     self.call(request_id, "suite", {"suite": "s.toml", "stand": "stand.toml",
                                                     "suite_id": "fake-suite", "output_root": "out"})
@@ -650,6 +653,42 @@ class ServerThreadTests(unittest.TestCase):
                 content = result["structuredContent"]
                 self.assertEqual((content["exit_code"], content["stdout"]), (1, summary))
                 self.assertIn(f"сценарий «scenario 2»: {expected}", result["content"][1]["text"])
+        self.assertEqual(self.close(), [])
+
+    def test_suite_rejects_inconsistent_junit_cases_even_with_a_matching_digest(self):
+        root = self.root / "out"
+        folder = root / "fake-suite"
+        suite_path, junit_path = folder / "suite.json", folder / "junit.xml"
+        for request_id, case in enumerate(("name", "outcome", "link", "counts")):
+            with self.subTest(case=case):
+                summary = write_fake_suite(root, 1)
+                report = json.loads(suite_path.read_text(encoding="utf-8"))
+                tree = ET.parse(junit_path)
+                first, second = tree.findall("testsuite/testcase")
+                if case == "name":
+                    second.set("name", first.get("name"))
+                    expected = "сценарий «scenario 2»: имя testcase"
+                elif case == "outcome":
+                    second.remove(second.find("failure"))
+                    expected = "сценарий «scenario 2»: исход testcase"
+                elif case == "link":
+                    second.find("system-out").text = first.findtext("system-out")
+                    expected = "сценарий «scenario 2»: ссылка system-out"
+                else:
+                    tree.getroot().set("failures", "0")
+                    expected = "счётчики junit.xml не совпадают"
+                tree.write(junit_path, encoding="utf-8", xml_declaration=True)
+                summary["junit"] = report["junit"] = file_evidence(junit_path, root=folder, complete=True)
+                suite_path.write_text(json.dumps(report), encoding="utf-8")
+                env = {"FAKE_EXIT_CODE": "1", "FAKE_RUN_STDOUT": json.dumps(summary)}
+                with patch.dict(os.environ, env):
+                    self.call(request_id, "suite", {"suite": "s.toml", "stand": "stand.toml",
+                                                    "suite_id": "fake-suite", "output_root": "out"})
+                    result = self.until(request_id)["result"]
+                self.assertTrue(result["isError"])
+                content = result["structuredContent"]
+                self.assertEqual((content["exit_code"], content["stdout"]), (1, summary))
+                self.assertIn(expected, result["content"][1]["text"])
         self.assertEqual(self.close(), [])
 
     def test_cancelled_run_gets_the_cancel_file_and_no_response(self):

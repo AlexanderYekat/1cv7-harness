@@ -88,12 +88,19 @@ def _xml_text(value):
     return _XML_BAD.sub("\ufffd", str(value))
 
 
+def _junit_counts(report):
+    counts = report["counts"]
+    return {"tests": str(len(report["scenarios"])), "failures": str(counts[FAILED]),
+            "errors": str(counts[BLOCKED]), "skipped": str(counts[SKIPPED])}
+
+
+def _junit_link(row):
+    return {key: row.get(key) for key in ("run_id", "report", "platform_checked", "cancelled", "timeout_phase")}
+
+
 def junit(report):
     """One testcase per scenario, judged by the full cycle, not raw operation statuses."""
-    counts = report["counts"]
-    attributes = {"name": _xml_text(report["name"]), "tests": str(len(report["scenarios"])),
-                  "failures": str(counts[FAILED]), "errors": str(counts[BLOCKED]),
-                  "skipped": str(counts[SKIPPED]), "time": str(report["duration_s"])}
+    attributes = {"name": _xml_text(report["name"]), **_junit_counts(report), "time": str(report["duration_s"])}
     root = ET.Element("testsuites", attributes)
     suite = ET.SubElement(root, "testsuite", attributes)
     properties = ET.SubElement(suite, "properties")
@@ -106,11 +113,52 @@ def junit(report):
         if tag:
             outcome = ET.SubElement(case, tag, message=_xml_text(row["reason"] or row["status"]))
             outcome.text = _xml_text(json.dumps(row.get("problems", []), ensure_ascii=False, indent=2))
-        ET.SubElement(case, "system-out").text = _xml_text(json.dumps(
-            {key: row.get(key) for key in ("run_id", "report", "platform_checked", "cancelled", "timeout_phase")},
-            ensure_ascii=False))
+        ET.SubElement(case, "system-out").text = _xml_text(json.dumps(_junit_link(row), ensure_ascii=False))
     ET.indent(root)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
+
+
+def junit_issue(data, report):
+    """Compare the JUnit cases with a verified, completed suite report."""
+    try:
+        xml = data.decode("utf-8")
+        if "<!DOCTYPE" in xml:
+            return "junit.xml содержит объявление DOCTYPE"
+        root = ET.fromstring(xml)
+    except (ValueError, ET.ParseError):
+        return "junit.xml содержит некорректный XML"
+    if root.tag != "testsuites" or len(root) != 1 or root[0].tag != "testsuite":
+        return "структура junit.xml не совпадает с форматом suite"
+    suite = root[0]
+    counters = _junit_counts(report)
+    if any(node.get(key) != value for node in (root, suite) for key, value in counters.items()):
+        return "счётчики junit.xml не совпадают с suite.json"
+    cases = suite.findall("testcase")
+    rows = report["scenarios"]
+    if len(cases) != len(rows):
+        return "число testcase в junit.xml не совпадает с suite.json"
+    suite_name = report.get("name")
+    if not isinstance(suite_name, str) or any(node.get("name") != _xml_text(suite_name) for node in (root, suite)):
+        return "имя набора в junit.xml не совпадает с suite.json"
+    for row, case in zip(rows, cases):
+        label = f"сценарий «{row['id']}»"
+        if case.get("name") != _xml_text(row["id"]) or case.get("classname") != _xml_text(suite_name):
+            return f"{label}: имя testcase в junit.xml не совпадает с suite.json"
+        outcomes = [node for node in case if node.tag in ("failure", "error", "skipped")]
+        if [node.tag for node in outcomes] != (["failure"] if row["status"] == FAILED else []):
+            return f"{label}: исход testcase в junit.xml не совпадает с suite.json"
+        if outcomes and outcomes[0].get("message") != _xml_text(row.get("reason") or row["status"]):
+            return f"{label}: причина провала в junit.xml не совпадает с suite.json"
+        outputs = case.findall("system-out")
+        if len(outputs) != 1 or len(outputs[0]):
+            return f"{label}: отсутствует однозначная ссылка system-out в junit.xml"
+        try:
+            link = json.loads(outputs[0].text or "")
+        except ValueError:
+            return f"{label}: system-out в junit.xml содержит некорректный JSON"
+        if json.dumps(link, sort_keys=True) != json.dumps(_junit_link(row), sort_keys=True):
+            return f"{label}: ссылка system-out в junit.xml не совпадает с suite.json"
+    return None
 
 
 def _publish_with_retry(write, *args):
