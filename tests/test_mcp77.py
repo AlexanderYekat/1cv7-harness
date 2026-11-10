@@ -313,6 +313,7 @@ class ServerProcessTests(unittest.TestCase):
         content = result["structuredContent"]
         self.assertEqual(content["exit_code"], 0, result)
         self.assertTrue(any(a.startswith("--cancel-file=") for a in content["argv"]))
+        self.assertIn("--wait-for-copy", content["argv"])
         summary = content["stdout"]
         self.assertEqual(summary["counts"], {"passed": 2, "failed": 0, "blocked": 0, "skipped": 0})
         folder = Path(summary["suite_dir"])

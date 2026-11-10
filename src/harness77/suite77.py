@@ -109,6 +109,20 @@ def junit(report):
     return ET.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
 
 
+def _publish_with_retry(write, *args):
+    # Readers of the previous checkpoint can briefly deny replacement on Windows.
+    until = time.monotonic() + 1
+    while True:
+        try:
+            write(*args)
+            return
+        except PermissionError as error:
+            remaining = until - time.monotonic()
+            if getattr(error, "winerror", None) not in (5, 32, 33) or remaining <= 0:
+                raise
+            time.sleep(min(0.025, remaining))
+
+
 def _publish(folder, report, started):
     report["duration_s"] = round(time.monotonic() - started, 3)
     report["counts"] = _counts(report["scenarios"])
@@ -116,21 +130,25 @@ def _publish(folder, report, started):
     report["exit_code"] = exit_code(report["status"])
     temporary = folder / "junit.xml.tmp"
     temporary.write_bytes(junit(report))
-    temporary.replace(folder / "junit.xml")
+    _publish_with_retry(temporary.replace, folder / "junit.xml")
     report["junit"] = file_evidence(folder / "junit.xml", root=folder, complete=True)
-    atomic_json(folder / "suite.json", report)
+    _publish_with_retry(atomic_json, folder / "suite.json", report)
 
 
 def _continuation_issue(report, stand):
     """Do not hand an unverified session or copy to the next scenario."""
     platform = next((s for s in report["stages"] if s["stage"] == "platform_check"), {})
+    copy = platform.get("base_copy")
+    # Leaving the copy queue without acquiring a lock never starts a native session.
+    if (platform.get("status") == BLOCKED and copy is not None and set(copy) == {"wait"}
+            and copy["wait"].get("acquired") is False):
+        return None
     shutdown = report.get("shutdown") or {}
     # A native platform stage can fail before starting the launcher. Continuing without
     # shutdown evidence would make that distinction an unsafe inference.
     if stand.backend == "native" and platform.get("status") != SKIPPED:
         if shutdown.get("cleanup_verified") is not True or shutdown.get("others_preserved") is not True:
             return "native session cleanup was not verified"
-    copy = platform.get("base_copy")
     if copy is not None:
         if (copy.get("removal") or {}).get("removed") is not True:
             return "base copy removal was not verified"
@@ -179,7 +197,8 @@ def _problems(stages):
     return rows
 
 
-def execute(suite, stand, *, output_root, suite_id=None, overrides=None, cancel=None, runner=None):
+def execute(suite, stand, *, output_root, suite_id=None, overrides=None, cancel=None, runner=None,
+            wait_for_copy=False):
     """Execute independent runs in manifest order. The injected runner has run77.execute's API."""
     suite_id = str(uuid.uuid4()) if suite_id is None else suite_id
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", suite_id):
@@ -188,6 +207,7 @@ def execute(suite, stand, *, output_root, suite_id=None, overrides=None, cancel=
         raise ConfigError("suite-id 'runs' is reserved for child run results")
     cancel = cancel if cancel is not None else threading.Event()
     runner = runner or run77.execute
+    run_options = {"wait_for_copy": True} if wait_for_copy else {}
     folder = Path(output_root).resolve() / suite_id
     # Keep the native launcher's paths independent of the suite identifier's length.
     # Deeply nesting UUID/suite/runs/UUID reproduced open_timeout on the pinned 1C 7.7 stand.
@@ -227,7 +247,7 @@ def execute(suite, stand, *, output_root, suite_id=None, overrides=None, cancel=
             _publish(folder, report, started)
             try:
                 result = runner(project, stand, deadlines, output_root=runs,
-                                run_id=row["run_id"], cancel=cancel)
+                                run_id=row["run_id"], cancel=cancel, **run_options)
                 disk = _run_result(folder, row, row["run_id"], result)
                 stop = _continuation_issue(disk, stand)
                 if stop:
@@ -263,6 +283,7 @@ def main(argv=None):
     parser.add_argument("--output-root", type=Path, default=Path(".artifacts/suites"))
     parser.add_argument("--suite-id", help="New result directory name; default: UUID")
     parser.add_argument("--cancel-file", type=Path)
+    parser.add_argument("--wait-for-copy", action="store_true", help=argparse.SUPPRESS)
     for phase in ("open", "calculation", "cancel", "shutdown", "total", "reindex"):
         parser.add_argument(f"--{phase}-timeout-s", type=float)
     args = parser.parse_args(argv)
@@ -287,7 +308,7 @@ def main(argv=None):
         overrides = {f"{p}_timeout_s": getattr(args, f"{p}_timeout_s")
                      for p in ("open", "calculation", "cancel", "shutdown", "total", "reindex")}
         report = execute(suite, stand, output_root=args.output_root, suite_id=args.suite_id,
-                         overrides=overrides, cancel=cancel)
+                         overrides=overrides, cancel=cancel, wait_for_copy=args.wait_for_copy)
     except (ConfigError, DeadlineError, OSError, ValueError, TypeError, KeyError) as error:
         print(json.dumps({"schema_version": 1, "tool": "harness77", "operation": "suite", "status": BLOCKED,
                           "exit_code": 2, "reason": f"{type(error).__name__}: {error}"}, ensure_ascii=False),

@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from harness77 import cli, mcp77, run77, suite77
@@ -69,6 +70,24 @@ class SuiteTests(unittest.TestCase):
         cases = self.xml(report)
         self.assertEqual([c.get("name") for c in cases], ["один", "два"])
         self.assertTrue(all(c.find("failure") is None and c.find("error") is None for c in cases))
+
+    def test_checkpoint_replacement_retries_when_a_reader_briefly_holds_the_report(self):
+        original = Path.replace
+        blocked = set()
+
+        def replace(path, destination):
+            if destination.name in ("suite.json", "junit.xml") and destination.exists() and destination.name not in blocked:
+                blocked.add(destination.name)
+                error = PermissionError("reader holds the previous checkpoint")
+                error.winerror = 5
+                raise error
+            return original(path, destination)
+
+        with patch.object(Path, "replace", replace):
+            report = self.go()
+        self.assertEqual(blocked, {"suite.json", "junit.xml"})
+        self.assertEqual((report["status"], report["complete"]), ("passed", True))
+        self.xml(report)
 
     def test_failure_continues_and_expected_negative_passes(self):
         wrong = write_project(self.root / "wrong", tests=[{"name": "wrong", "command": "control-42",
@@ -133,6 +152,29 @@ class SuiteTests(unittest.TestCase):
         self.assertIsNotNone(report["scenarios"][0]["report"])
         self.assertIsNone(report["scenarios"][1]["run_id"])
         self.xml(report)
+
+    def test_copy_queue_cancellation_keeps_its_reason_and_skips_remaining_scenarios(self):
+        simulation = self.stand
+        self.stand = dataclasses.replace(simulation, backend="native")
+
+        def runner(project, stand, deadlines, **kwargs):
+            self.assertTrue(kwargs["wait_for_copy"])
+            result = run77.execute(project, simulation, deadlines, **kwargs)
+            result.update(status="blocked", exit_code=2, cancelled=True, reason="cancelled", shutdown=None)
+            platform = next(stage for stage in result["stages"] if stage["stage"] == "platform_check")
+            platform.update(status="blocked", reason="cancelled",
+                            base_copy={"wait": {"acquired": False, "elapsed_s": 0.5}})
+            atomic_json(Path(result["run_dir"]) / "run.json", result)
+            return result
+
+        report = self.go(wait_for_copy=True, runner=runner)
+        self.assertEqual((report["exit_code"], report["cancelled"], report["reason"]), (2, True, "cancelled"))
+        waiting, skipped = report["scenarios"]
+        self.assertEqual((waiting["status"], waiting["reason"]), ("blocked", "cancelled"))
+        self.assertEqual((skipped["status"], skipped["run_id"]), ("skipped", None))
+        error, skipped_case = self.xml(report)
+        self.assertEqual(error.find("error").get("message"), "cancelled")
+        self.assertIsNotNone(skipped_case.find("skipped"))
 
     def test_late_cancellation_cannot_leave_an_all_green_junit(self):
         cancel = threading.Event()

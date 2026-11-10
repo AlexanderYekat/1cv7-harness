@@ -240,6 +240,7 @@ TOOLS = (
     Tool("suite", "Набор сценариев 1С 7.7", ("suite",),
          "Последовательный запуск профилей проектов из TOML-манифеста на одном стенде. "
          "Отдельный run.json для каждого сценария; общие suite.json и junit.xml. "
+         "Сценарий с копией ждёт освобождения copy_path в пределах своего срока открытия. "
          "Провал теста не останавливает набор, отмена запроса останавливает текущий run и набор.",
          [Arg("suite", "--suite", "string", "TOML-манифест сценариев", required=True),
           Arg("stand", "--stand", "string", "Профиль стенда TOML", required=True),
@@ -438,7 +439,7 @@ class Server:
         cancel_file = self._cancel_path() if call.tool.cancel_file else None
         if cancel_file is not None:
             argv.append(f"--cancel-file={cancel_file}")
-        if call.tool.name == "run":
+        if call.tool.name in ("run", "suite"):
             argv.append("--wait-for-copy")
         env = os.environ.copy()
         env.pop(MCP_PROGRESS_ENV, None)
