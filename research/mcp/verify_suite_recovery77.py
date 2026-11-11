@@ -43,7 +43,7 @@ DEADLINES = {"open_timeout_s": 650, "total_timeout_s": 900}
 
 
 class Probe:
-    def __init__(self, stand, project, output, retry_count):
+    def __init__(self, stand, project, output, retry_count, cancel_waiter=False):
         self.stand, self.project, self.out = stand, project, output
         self.source = stand.base.resolve(strict=True)
         self.runs = output / "runs"
@@ -52,9 +52,10 @@ class Probe:
         self.guard = self.lock.with_name(self.lock.name + ".guard")
         self.marker = self.copy / basecopy77.MARKER
         self.sentinel = self.copy / "stale-copy.txt"
-        self.task = "082" if retry_count == 1 else "083"
+        self.task = "084" if cancel_waiter else ("082" if retry_count == 1 else "083")
         self.retries = {channel: self.runs / str(uuid4())
                         for channel in ("retry", "retry-2")[:retry_count]}
+        self.next_run = self.runs / str(uuid4()) if cancel_waiter else None
 
 
 def toml_value(value):
@@ -218,6 +219,19 @@ def verify_passed(run):
     return {"run_id": run.name, "values": values, "initialize_calls": calls}
 
 
+def verify_cancelled(run):
+    report = read_json(run / "run.json")
+    assert (report["run_id"], report["status"], report["exit_code"]) == (run.name, "blocked", 2)
+    assert report["cancelled"] and not report["platform_checked"] and report["timeout_phase"] is None
+    stage = platform(report)
+    assert stage["reason"] == "cancelled" and not stage["platform_checked"]
+    assert set(stage["base_copy"]) == {"wait"}
+    copy_wait = stage["base_copy"]["wait"]
+    assert not copy_wait["acquired"] and copy_wait["elapsed_s"] > 0
+    return {"run_id": run.name, "status": report["status"], "exit_code": report["exit_code"],
+            "reason": stage["reason"], "platform_checked": False, "copy_wait": copy_wait}
+
+
 def initialize_calls(native):
     events = native / "ert-events.jsonl"
     if not events.is_file():
@@ -344,6 +358,45 @@ def verify(probe, evidence):
             assert init["result"]["serverInfo"]["name"] == "harness77"
             send(channel, "notifications/initialized")
 
+        def start_retry(channel, run):
+            held.add(run / "native")
+            call(channel, "run", "retry", project=str(probe.out / "hold.toml"),
+                 output_root=str(probe.runs), run_id=run.name)
+
+        def cancel_waiter(owner, run):
+            channel = "retry-2"
+            queued_run = probe.retries[channel]
+            owner_copy = copy_snapshot(probe)
+            registrations = [json.loads(owner_copy[4][index][COM[index]][OWNER_VALUE]) for index in (0, 2)]
+            assert all(record["run_id"] == run.name for record in registrations)
+            owner_processes = registrations[0]["processes"]
+            assert owner_processes == registrations[1]["processes"]
+            assert [row["role"] for row in owner_processes] == ["registrar", "debugger", "server", "client"]
+            start_retry(channel, queued_run)
+            wait((owner, channel), lambda: heartbeats(channel) >= 2,
+                 "second retry waiting for the recovered copy", 30, "retry")
+            verify_queued(channel, queued_run)
+            assert copy_snapshot(probe) == owner_copy
+            send(channel, "notifications/cancelled", {"requestId": "retry", "reason": "task 084: cancel copy waiter"})
+            log = probe.out / f"mcp-{channel}-stderr.txt"
+            wait((owner, channel), lambda: (queued_run / "run.json").is_file()
+                 and "run: exit 2 in " in log.read_text(encoding="utf-8"),
+                 "cancelled CLI exits before the owner is released", 60, "retry")
+            cancelled = verify_cancelled(queued_run)
+            send(channel, "ping", request="after-cancel")
+            pong = wait(channel, lambda: reply(channel, "after-cancel"), "MCP ping after cancellation", 15, "retry")
+            assert pong["result"] == {}
+            verify_queued(channel, queued_run)
+            assert not (run / "native/probe-release").exists() and not reply(owner, "retry")
+            assert copy_snapshot(probe) == owner_copy
+            assert basecopy77._native_holds_lock(probe.lock) and basecopy77.open_in_1c(probe.copy) == "1SUSERS.DBF"
+            assert all(process_gone(entry) is None for entry in owner_processes)
+            evidence["cancelled_retry"] = dict(cancelled, channel=channel, copy_path=str(probe.copy),
+                                               owner_run_id=run.name, owner_copy_preserved=True,
+                                               owner_processes_live=True, mcp_response_delivered=False,
+                                               initialize_calls=0, wait_heartbeats=heartbeats(channel))
+            print(f"{channel} cancelled before starting 1C; {owner} still holds the recovered copy", flush=True)
+
         try:
             start_server("suite")
             call("suite", "suite", "crash", suite=str(probe.out / "suite.toml"), output_root=str(probe.out),
@@ -411,13 +464,12 @@ def verify(probe, evidence):
 
             for channel in probe.retries:
                 start_server(channel)
-            for channel, run in probe.retries.items():
-                held.add(run / "native")
-                call(channel, "run", "retry", project=str(probe.out / "hold.toml"),
-                     output_root=str(probe.runs), run_id=run.name)
-            wait(probe.retries, lambda: all(heartbeats(channel) >= 2 for channel in probe.retries),
+            initial_retries = {"retry": probe.retries["retry"]} if probe.next_run else probe.retries
+            for channel, run in initial_retries.items():
+                start_retry(channel, run)
+            wait(initial_retries, lambda: all(heartbeats(channel) >= 2 for channel in initial_retries),
                  "retry copy queue heartbeats with live old session", 180, "retry")
-            for channel, run in probe.retries.items():
+            for channel, run in initial_retries.items():
                 verify_queued(channel, run)
             assert all(kernel.WaitForSingleObject(handles[role], 0) == 0x102 for role in SURVIVORS)
             assert basecopy77._native_holds_lock(probe.lock) and basecopy77.open_in_1c(probe.copy) == "1SUSERS.DBF"
@@ -426,9 +478,9 @@ def verify(probe, evidence):
             evidence["waiting"] = {"heartbeats": heartbeats("retry"), "copy_preserved": True,
                                    "native_lease_active": True, "open_table": "1SUSERS.DBF",
                                    "live_processes": [entry for entry in identities if entry["role"] in SURVIVORS]}
-            if len(probe.retries) == 2:
-                evidence["waiting"]["retry_heartbeats"] = {channel: heartbeats(channel) for channel in probe.retries}
-            print(f"{len(probe.retries)} retry request(s) waiting; old copy, lock, COM and processes preserved", flush=True)
+            if len(initial_retries) == 2:
+                evidence["waiting"]["retry_heartbeats"] = {channel: heartbeats(channel) for channel in initial_retries}
+            print(f"{len(initial_retries)} retry request(s) waiting; old copy, lock, COM and processes preserved", flush=True)
 
             (native / "probe-release").touch()
             waited_for_survivors = True
@@ -440,7 +492,7 @@ def verify(probe, evidence):
             assert any(row["name"] == "server_released" for row in shutdown)
             assert all(process_gone(entry) for entry in native_processes)
             evidence["survivors_exited"] = {"exit_codes": exit_codes, "server_released": True}
-            pending_retries = dict(probe.retries)
+            pending_retries = dict(initial_retries)
             completed = []
             while pending_retries:
                 channel = wait(pending_retries, lambda: next(
@@ -464,6 +516,8 @@ def verify(probe, evidence):
                         "owner_copy_preserved": True,
                     }
                     print(f"{channel} owns the fresh copy; {other} is still queued", flush=True)
+                if probe.next_run and channel == "retry":
+                    cancel_waiter(channel, run)
                 (run / "native/probe-release").touch()
                 retry_reply = wait(channel, lambda: reply(channel, "retry"), "retry result", 900)["result"]
                 assert not retry_reply["isError"] and retry_reply["structuredContent"]["exit_code"] == 0
@@ -471,10 +525,14 @@ def verify(probe, evidence):
                 retry_copy = retry_stage["base_copy"]
                 stale_run_id = second.name if not completed else None
                 assert retry_copy["previous_run_id"] == retry_copy["lock"]["stale_run_id"] == stale_run_id
-                copy_wait = retry_copy["wait"]
-                assert copy_wait["acquired"] and copy_wait["elapsed_s"] >= 10
                 retry_labels = progress(channel, "retry")
-                assert retry_labels.index(waiting) < retry_labels.index("run: " + PREPARE_COPY) < retry_labels.index("run: " + START)
+                copy_wait = retry_copy.get("wait")
+                if channel == "next":
+                    assert copy_wait is None and waiting not in retry_labels
+                    assert "run: " + START in retry_labels
+                else:
+                    assert copy_wait["acquired"] and copy_wait["elapsed_s"] >= 10
+                    assert retry_labels.index(waiting) < retry_labels.index("run: " + PREPARE_COPY) < retry_labels.index("run: " + START)
                 stale = retry_stage["open"]["stale_com_registrations"]
                 assert len(stale) == (2 if stale_run_id else 0)
                 for index, record in enumerate(stale):
@@ -492,6 +550,11 @@ def verify(probe, evidence):
                     evidence["retries"] = completed
                 print(f"{channel} initialized once, returned 42 and removed {len(stale)} stale COM registrations",
                       flush=True)
+                if probe.next_run and channel == "retry":
+                    assert not probe.copy.exists() and not probe.lock.exists() and com_snapshot() == [None] * len(COM)
+                    start_server("next")
+                    start_retry("next", probe.next_run)
+                    pending_retries["next"] = probe.next_run
             assert verify_checkpoint(probe, first, second) == checkpoint
             assert not probe.copy.exists() and not probe.lock.exists() and com_snapshot() == [None] * len(COM)
         finally:
@@ -511,10 +574,14 @@ def verify(probe, evidence):
                 readers[channel].join(timeout=15)
     assert all(channels[channel]["exit_code"] == (KILL_CODE if channel == "suite" else 0)
                and not reader.is_alive() for channel, reader in readers.items())
+    if probe.next_run:
+        assert not reply("retry-2", "retry")
 
 
 def recover_probe_state(probe, evidence):
     own_ids = {evidence["crashed_run_id"], *(run.name for run in probe.retries.values())}
+    if probe.next_run:
+        own_ids.add(probe.next_run.name)
     with registration_lock(timeout_ms=30000):
         for index, dll in ((0, "identity"), (2, "helper")):
             tree = read_tree(COM[index], VIEW)
@@ -598,12 +665,16 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new directory for the copy and evidence")
     parser.add_argument("--retries", type=int, choices=(1, 2), default=1,
                         help="number of independent MCP retry requests on the same copy")
+    parser.add_argument("--cancel-waiter", action="store_true",
+                        help="cancel the second retry while the first holds the recovered copy, then run again")
     args = parser.parse_args(argv)
+    if args.cancel_waiter and args.retries != 2:
+        parser.error("--cancel-waiter requires --retries 2")
     if os.name != "nt" or not __debug__:
         parser.error("the recovery probe requires Windows and enabled Python assertions")
     try:
         stand, project = load_stand(args.stand), load_project(args.project)
-        probe = Probe(stand, project, args.output.resolve(), args.retries)
+        probe = Probe(stand, project, args.output.resolve(), args.retries, args.cancel_waiter)
         if (stand.backend != "native" or not probe.source.is_dir()
                 or not all(path and path.is_file() for path in (stand.exe, stand.cdb, stand.helper, stand.identity))):
             raise ValueError("a native stand with a source base, 1C, x86 CDB, helper and identity DLLs is required")
