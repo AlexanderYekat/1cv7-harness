@@ -43,7 +43,7 @@ DEADLINES = {"open_timeout_s": 650, "total_timeout_s": 900}
 
 
 class Probe:
-    def __init__(self, stand, project, output, retry_count, cancel_waiter=False):
+    def __init__(self, stand, project, output, retry_count, waiter_mode=None):
         self.stand, self.project, self.out = stand, project, output
         self.source = stand.base.resolve(strict=True)
         self.runs = output / "runs"
@@ -52,10 +52,12 @@ class Probe:
         self.guard = self.lock.with_name(self.lock.name + ".guard")
         self.marker = self.copy / basecopy77.MARKER
         self.sentinel = self.copy / "stale-copy.txt"
-        self.task = "084" if cancel_waiter else ("082" if retry_count == 1 else "083")
+        self.waiter_mode = waiter_mode
+        self.task = {"cancel": "084", "timeout": "085", "close": "086", "crash": "087"}.get(
+            waiter_mode, "082" if retry_count == 1 else "083")
         self.retries = {channel: self.runs / str(uuid4())
                         for channel in ("retry", "retry-2")[:retry_count]}
-        self.next_run = self.runs / str(uuid4()) if cancel_waiter else None
+        self.next_run = self.runs / str(uuid4()) if waiter_mode else None
 
 
 def toml_value(value):
@@ -105,7 +107,7 @@ def checked(value):
     return value
 
 
-def process_parents():
+def process_parents(image=None):
     snapshot = kernel.CreateToolhelp32Snapshot(2, 0)
     if snapshot == C.c_void_p(-1).value:
         raise C.WinError(C.get_last_error())
@@ -115,7 +117,8 @@ def process_parents():
         row.dwSize = C.sizeof(row)
         found = kernel.Process32FirstW(snapshot, C.byref(row))
         while found:
-            parents[row.th32ProcessID] = row.th32ParentProcessID
+            if image is None or row.szExeFile.casefold() == image.casefold():
+                parents[row.th32ProcessID] = row.th32ParentProcessID
             found = kernel.Process32NextW(snapshot, C.byref(row))
         return parents
     finally:
@@ -155,7 +158,7 @@ def retain_suite_processes(probe, stack, suite_server, cli_pid, native_processes
 
 
 def stop_owned(role, handle):
-    assert role in CONTROLLERS
+    assert role in (*CONTROLLERS, "cli")
     state = kernel.WaitForSingleObject(handle, 0)
     if state == 0:
         return
@@ -219,12 +222,14 @@ def verify_passed(run):
     return {"run_id": run.name, "values": values, "initialize_calls": calls}
 
 
-def verify_cancelled(run):
+def verify_stopped(run, reason):
     report = read_json(run / "run.json")
     assert (report["run_id"], report["status"], report["exit_code"]) == (run.name, "blocked", 2)
-    assert report["cancelled"] and not report["platform_checked"] and report["timeout_phase"] is None
+    cancelled = reason == "cancelled"
+    assert report["cancelled"] == cancelled and not report["platform_checked"]
+    assert report["timeout_phase"] == (None if cancelled else "open")
     stage = platform(report)
-    assert stage["reason"] == "cancelled" and not stage["platform_checked"]
+    assert stage["reason"] == reason and not stage["platform_checked"]
     assert set(stage["base_copy"]) == {"wait"}
     copy_wait = stage["base_copy"]["wait"]
     assert not copy_wait["acquired"] and copy_wait["elapsed_s"] > 0
@@ -320,7 +325,7 @@ def verify(probe, evidence):
             return value
 
         def call(channel, tool, name, **arguments):
-            arguments = dict(arguments, stand=str(probe.out / "stand.toml"), **DEADLINES)
+            arguments = dict(DEADLINES, **arguments, stand=str(probe.out / "stand.toml"))
             send(channel, "tools/call", dict(name=tool, arguments=arguments, _meta={"progressToken": name}), name)
 
         def progress(channel, name):
@@ -358,12 +363,12 @@ def verify(probe, evidence):
             assert init["result"]["serverInfo"]["name"] == "harness77"
             send(channel, "notifications/initialized")
 
-        def start_retry(channel, run):
+        def start_retry(channel, run, **deadlines):
             held.add(run / "native")
             call(channel, "run", "retry", project=str(probe.out / "hold.toml"),
-                 output_root=str(probe.runs), run_id=run.name)
+                 output_root=str(probe.runs), run_id=run.name, **deadlines)
 
-        def cancel_waiter(owner, run):
+        def stop_waiter(owner, run):
             channel = "retry-2"
             queued_run = probe.retries[channel]
             owner_copy = copy_snapshot(probe)
@@ -372,30 +377,92 @@ def verify(probe, evidence):
             owner_processes = registrations[0]["processes"]
             assert owner_processes == registrations[1]["processes"]
             assert [row["role"] for row in owner_processes] == ["registrar", "debugger", "server", "client"]
-            start_retry(channel, queued_run)
+            mode = probe.waiter_mode
+            start_retry(channel, queued_run, **({"open_timeout_s": 25} if mode == "timeout" else {}))
             wait((owner, channel), lambda: heartbeats(channel) >= 2,
                  "second retry waiting for the recovered copy", 30, "retry")
             verify_queued(channel, queued_run)
             assert copy_snapshot(probe) == owner_copy
-            send(channel, "notifications/cancelled", {"requestId": "retry", "reason": "task 084: cancel copy waiter"})
             log = probe.out / f"mcp-{channel}-stderr.txt"
-            wait((owner, channel), lambda: (queued_run / "run.json").is_file()
-                 and "run: exit 2 in " in log.read_text(encoding="utf-8"),
-                 "cancelled CLI exits before the owner is released", 60, "retry")
-            cancelled = verify_cancelled(queued_run)
-            send(channel, "ping", request="after-cancel")
-            pong = wait(channel, lambda: reply(channel, "after-cancel"), "MCP ping after cancellation", 15, "retry")
-            assert pong["result"] == {}
-            verify_queued(channel, queued_run)
+            if mode == "crash":
+                # A Windows console host may also be a child; select the Python CLI only.
+                parents = process_parents(Path(sys.executable).name)
+                server = servers[channel]
+                children = [pid for pid, parent in parents.items() if parent == server.pid]
+                assert len(children) == 1, f"expected one Python CLI child of {server.pid}, found {children}"
+                killed = []
+                # Retain both identities before ending either process. No owner or native PID is selected.
+                with ExitStack() as waiter_handles:
+                    targets = []
+                    for role, pid in (("mcp", server.pid), ("cli", children[0])):
+                        handle = checked(kernel.OpenProcess(0x100000 | 0x1000 | 1, False, pid))
+                        waiter_handles.callback(kernel.CloseHandle, handle)
+                        identity = process_identity(handle)
+                        assert kernel.WaitForSingleObject(handle, 0) == 0x102
+                        assert Path(identity["image"]).resolve() == Path(sys.executable).resolve()
+                        if role == "mcp":
+                            assert identity == process_identity(int(server._handle))
+                        else:
+                            assert identity["creation_filetime"] >= process_identity(int(server._handle))["creation_filetime"]
+                            assert process_parents().get(pid) == server.pid
+                        waiter_handles.callback(stop_owned, role, handle)
+                        targets.append((role, handle))
+                        killed.append(dict(identity, pid=pid, parent_pid=parents[pid], role=role))
+                    for (role, handle), record in zip(targets, killed):
+                        stop_owned(role, handle)
+                        code = C.c_ulong()
+                        checked(kernel.GetExitCodeProcess(handle, C.byref(code)))
+                        assert code.value == KILL_CODE
+                        record["exit_code"] = code.value
+                assert server.wait(timeout=20) == KILL_CODE
+                readers[channel].join(timeout=15)
+                assert not readers[channel].is_alive()
+                assert not (queued_run / "run.json").exists()
+                assert "cancel file created" not in log.read_text(encoding="utf-8")
+                stopped = {"run_id": queued_run.name, "terminated": killed, "complete_report": False}
+                delivered = False
+            else:
+                if mode == "cancel":
+                    send(channel, "notifications/cancelled", {"requestId": "retry", "reason": "cancel copy waiter"})
+                elif mode == "close":
+                    servers[channel].stdin.close()
+                wait(owner, lambda: (queued_run / "run.json").is_file()
+                     and "run: exit 2 in " in log.read_text(encoding="utf-8"),
+                     "waiting CLI exits before the owner is released", 60)
+                stopped = verify_stopped(queued_run, "open_timeout" if mode == "timeout" else "cancelled")
+                if mode == "cancel":
+                    send(channel, "ping", request="after-cancel")
+                    pong = wait(channel, lambda: reply(channel, "after-cancel"), "MCP ping after cancellation", 15, "retry")
+                    assert pong["result"] == {}
+                    delivered = False
+                else:
+                    result = wait(owner, lambda: reply(channel, "retry"), "stopped retry result", 15)["result"]
+                    assert result["isError"] and result["structuredContent"]["exit_code"] == 2
+                    delivered = True
+                    if mode == "close":
+                        assert servers[channel].wait(timeout=20) == 0
+                        readers[channel].join(timeout=15)
+                        assert not readers[channel].is_alive()
+                        assert "input closed; waiting for 1 call(s)" in log.read_text(encoding="utf-8")
+                    else:
+                        assert stopped["copy_wait"]["elapsed_s"] >= 25
+                        send(channel, "ping", request="after-timeout")
+                        assert wait(channel, lambda: reply(channel, "after-timeout"), "ping after timeout", 15)["result"] == {}
+            assert not (queued_run / "native").exists() and initialize_calls(queued_run / "native") == 0
+            labels = progress(channel, "retry")
+            assert "run: " + PREPARE_COPY not in labels and "run: " + START not in labels
+            assert bool(reply(channel, "retry")) == delivered
             assert not (run / "native/probe-release").exists() and not reply(owner, "retry")
             assert copy_snapshot(probe) == owner_copy
             assert basecopy77._native_holds_lock(probe.lock) and basecopy77.open_in_1c(probe.copy) == "1SUSERS.DBF"
             assert all(process_gone(entry) is None for entry in owner_processes)
-            evidence["cancelled_retry"] = dict(cancelled, channel=channel, copy_path=str(probe.copy),
-                                               owner_run_id=run.name, owner_copy_preserved=True,
-                                               owner_processes_live=True, mcp_response_delivered=False,
-                                               initialize_calls=0, wait_heartbeats=heartbeats(channel))
-            print(f"{channel} cancelled before starting 1C; {owner} still holds the recovered copy", flush=True)
+            evidence_key = {"cancel": "cancelled_retry", "timeout": "timed_out_retry",
+                            "close": "closed_retry", "crash": "crashed_retry"}[mode]
+            evidence[evidence_key] = dict(
+                stopped, channel=channel, copy_path=str(probe.copy), owner_run_id=run.name,
+                owner_copy_preserved=True, owner_processes_live=True, mcp_response_delivered=delivered,
+                initialize_calls=0, wait_heartbeats=heartbeats(channel))
+            print(f"{channel} stopped ({mode}) before starting 1C; {owner} still holds the recovered copy", flush=True)
 
         try:
             start_server("suite")
@@ -517,7 +584,7 @@ def verify(probe, evidence):
                     }
                     print(f"{channel} owns the fresh copy; {other} is still queued", flush=True)
                 if probe.next_run and channel == "retry":
-                    cancel_waiter(channel, run)
+                    stop_waiter(channel, run)
                 (run / "native/probe-release").touch()
                 retry_reply = wait(channel, lambda: reply(channel, "retry"), "retry result", 900)["result"]
                 assert not retry_reply["isError"] and retry_reply["structuredContent"]["exit_code"] == 0
@@ -572,10 +639,11 @@ def verify(probe, evidence):
             for channel, server in servers.items():
                 channels[channel]["exit_code"] = server.wait(timeout=240)
                 readers[channel].join(timeout=15)
-    assert all(channels[channel]["exit_code"] == (KILL_CODE if channel == "suite" else 0)
+    assert all(channels[channel]["exit_code"] == (
+                   KILL_CODE if channel == "suite" or (channel == "retry-2" and probe.waiter_mode == "crash") else 0)
                and not reader.is_alive() for channel, reader in readers.items())
     if probe.next_run:
-        assert not reply("retry-2", "retry")
+        assert bool(reply("retry-2", "retry")) == (probe.waiter_mode in ("timeout", "close"))
 
 
 def recover_probe_state(probe, evidence):
@@ -665,16 +733,23 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new directory for the copy and evidence")
     parser.add_argument("--retries", type=int, choices=(1, 2), default=1,
                         help="number of independent MCP retry requests on the same copy")
-    parser.add_argument("--cancel-waiter", action="store_true",
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--cancel-waiter", dest="waiter_mode", action="store_const", const="cancel",
                         help="cancel the second retry while the first holds the recovered copy, then run again")
+    modes.add_argument("--timeout-waiter", dest="waiter_mode", action="store_const", const="timeout",
+                       help="expire the second retry's open budget behind the recovered copy owner")
+    modes.add_argument("--close-waiter", dest="waiter_mode", action="store_const", const="close",
+                       help="close the waiting MCP server's stdin behind the recovered copy owner")
+    modes.add_argument("--crash-waiter", dest="waiter_mode", action="store_const", const="crash",
+                       help="terminate the waiting MCP and CLI behind the recovered copy owner")
     args = parser.parse_args(argv)
-    if args.cancel_waiter and args.retries != 2:
-        parser.error("--cancel-waiter requires --retries 2")
+    if args.waiter_mode and args.retries != 2:
+        parser.error("waiter modes require --retries 2")
     if os.name != "nt" or not __debug__:
         parser.error("the recovery probe requires Windows and enabled Python assertions")
     try:
         stand, project = load_stand(args.stand), load_project(args.project)
-        probe = Probe(stand, project, args.output.resolve(), args.retries, args.cancel_waiter)
+        probe = Probe(stand, project, args.output.resolve(), args.retries, args.waiter_mode)
         if (stand.backend != "native" or not probe.source.is_dir()
                 or not all(path and path.is_file() for path in (stand.exe, stand.cdb, stand.helper, stand.identity))):
             raise ValueError("a native stand with a source base, 1C, x86 CDB, helper and identity DLLs is required")
