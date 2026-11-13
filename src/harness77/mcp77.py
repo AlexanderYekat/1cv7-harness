@@ -465,6 +465,15 @@ class Server:
         self.calls, self.workers = {}, []
         self.broken = False
         self.cancel_dir, self.counter = None, 0
+        # Only project launcher sessions opt into marker gating. Direct MCP stays
+        # an explicit invocation. No global registration or watcher is installed.
+        activation = os.environ.get('HARNESS77_LOCAL_CONFIG')
+        self.local = None
+        if activation:
+            from .local_launcher77 import Local
+            self.local = Local(activation)
+            self.local.load()
+            self.child = [sys.executable, '-I', '-B', '-m', 'harness77']
 
     def serve(self):
         self._log(f"started {__version__}, cwd {self.cwd}")
@@ -550,12 +559,23 @@ class Server:
                     call.stop.set()
 
     def _start(self, request_id, params):
+        if self.local is not None and not self.local.enabled():
+            return self._reply(request_id, _tool_error('disabled: harness77.txt is absent; no harness operation performed'))
         tool = TOOLS_BY_NAME.get(params.get("name"))
         if tool is None:
             return self._error(request_id, -32602, f"Unknown tool: {params.get('name')}")
         meta = params.get("_meta")
         token = meta.get("progressToken") if isinstance(meta, dict) else None
         arguments = params.get("arguments")
+        if self.local is not None and (arguments is None or isinstance(arguments, dict)):
+            try:
+                defaults = self.local.bindings()
+            except (OSError, ValueError, KeyError, TypeError):
+                return self._reply(request_id, _tool_error('blocked: bound project/stand profiles unavailable'))
+            keys = ('project', 'stand') if tool.name in ('run', 'doctor') else ('suite', 'stand') if tool.name == 'suite' else ()
+            arguments = {**{k: defaults[k] for k in keys if k in defaults}, **(arguments or {})}
+            if tool.name in ('run', 'suite'):
+                arguments.setdefault('output_root', str(self.local.home / 'results'))
         call = Call(request_id, tool, {} if arguments is None else arguments, token)
         with self.state:
             self.workers = [worker for worker in self.workers if worker.is_alive()]

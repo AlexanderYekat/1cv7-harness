@@ -9,9 +9,9 @@ import time
 
 
 class Client:
-    def __init__(self, cwd, output, env):
+    def __init__(self, cwd, output, env, command=None):
         self.output = Path(output)
-        self.process = subprocess.Popen([sys.executable, '-B', '-m', 'harness77', 'mcp'], cwd=cwd, env=env,
+        self.process = subprocess.Popen(command or [sys.executable, '-B', '-m', 'harness77', 'mcp'], cwd=cwd, env=env,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.counter = 0

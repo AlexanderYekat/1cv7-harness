@@ -18,6 +18,7 @@ from mcp_client import Client
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--local-activation', action='store_true', help='099: doctor/run/suite/MCP via project-local launcher')
     args = parser.parse_args()
     if os.name != 'nt' or sys.prefix == sys.base_prefix or os.environ.get('PYTHONPATH') or os.environ.get('PYTHONHOME'):
         parser.error('requires clean installed Windows venv')
@@ -59,12 +60,15 @@ def main():
                 'plans': {}, 'suites': [], 'commands': [], 'created': [], 'runs': [], 'refusals': []}
     env = dict(os.environ, PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
     client = None
+    activation = None
 
     def save():
         write_json(out / 'verified.json', evidence)
 
     def execute(name, command, expected=0):
         argv = [sys.executable, '-B', '-m', 'harness77', *map(str, command)]
+        if activation is not None and command[0] in ('doctor', 'run', 'suite'):
+            argv = [sys.executable, '-I', '-B', str(activation), *map(str, command)]
         response = subprocess.run(argv, cwd=working, env=env, capture_output=True, timeout=1800)
         (out / (name + '.log')).write_bytes(response.stdout + response.stderr)
         evidence['commands'].append({'name': name, 'argv': argv, 'exit_code': response.returncode})
@@ -144,6 +148,11 @@ def main():
             evidence['plans'][name] = {'project': str(profile), 'project_sha256': digest(profile),
                                        'md': str(planned), 'md_sha256': digest(planned),
                                        'module_sha256': digest(target), 'build': built, 'audit': audit}
+            if args.local_activation and activation is None:
+                execute('connect-local', ['connect', '--directory', working, '--external-python', sys.executable,
+                                          '--project', profile, '--stand', stand, '--format', 'json'])
+                activation = working / '.harness77/launch.py'
+                evidence['activation'] = {'launcher': str(activation), 'config_sha256': digest(activation.with_name('config.json'))}
             doctor = execute('doctor-' + name, ['doctor', '--project', profile, '--stand', stand,
                                                 '--output-root', out / 'future', '--format', 'json'])
             assert doctor['status'] == 'ready' and not doctor['launch_performed'] and not (out / 'future').exists()
@@ -203,7 +212,8 @@ def main():
         frozen = {str(p): digest(p) for p in (*projects.rglob('*'), *manifests.values()) if p.is_file()}
         for transport in ('cli', 'mcp'):
             if transport == 'mcp':
-                client = Client(working, out / 'mcp-traffic.json', env)
+                client = Client(working, out / 'mcp-traffic.json', env,
+                                command=[sys.executable, '-I', '-B', str(activation), 'mcp'] if activation else None)
                 evidence['mcp_pid'] = client.process.pid
             for name in ('regression', 'invalid-results', 'success'):
                 if transport == 'cli' and name == 'success':
@@ -244,6 +254,15 @@ def main():
                                            'response': response, 'progress': progress, 'verification': verified})
                 save()
                 print(transport + ' ' + name + ': verified ' + summary['status'], flush=True)
+        if activation is not None:
+            marker = working / 'harness77.txt'
+            marker.unlink()
+            disabled, _ = client.request('tools/call', {'name': 'suite', 'arguments': {}})
+            assert disabled['result']['isError'] and 'disabled' in disabled['result']['content'][0]['text']
+            ping, _ = client.request('ping')
+            assert ping['result'] == {}
+            evidence['mcp_disabled_after_marker_removal'] = disabled
+            marker.touch()
         assert client.close() == 0
         client = None
         evidence['mcp_exit_code'] = 0

@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import zipfile
 
 HERE = Path(__file__).resolve().parent
 
@@ -17,15 +18,19 @@ def main():
     source, wheel, out = args.application_suite.resolve(), args.wheel.resolve(), args.output.resolve()
     manifest = json.loads((source / 'kit.json').read_text(encoding='utf-8'))
     assert all(hashlib.sha256((source / n).read_bytes()).hexdigest() == sha for n, sha in manifest['files'].items())
-    assert wheel.name == 'harness77-0.6.0-py3-none-any.whl'
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_name, = [n for n in archive.namelist() if n.endswith('.dist-info/METADATA')]
+        metadata = archive.read(metadata_name).decode('utf-8')
+        assert 'Name: harness77' in metadata.splitlines() and wheel.name.startswith('harness77-')
     out.mkdir(parents=True, exist_ok=False)
     for name in ('inputs.json', 'expected.json', 'inputs/template.ert', 'inputs/form-module.1s',
                  'inputs/scenario.json', 'dependencies/helper.dll', 'dependencies/identity.dll',
                  'verification/verify_document_form77.py', 'verification/verify_suite77.py',
-                 'verification/support96.py', 'mcp_client.py'):
+                 'verification/support96.py'):
         target = out / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / name, target)
+    shutil.copy2(HERE.parent / 'application-suite/mcp_client.py', out / 'mcp_client.py')
     shutil.copy2(source / 'verify.py', out / 'suite_verify.py')
     for name in ('run.py', 'verify.py', 'README.md'):
         shutil.copy2(HERE / name, out / name)

@@ -6,6 +6,13 @@
 
 Куда двигаться дальше — в [короткой дорожной карте](docs/roadmap.md). Границы компонентов описаны в [начальной архитектуре](docs/architecture.md), выполненные переносы — в [журнале упорядочивания](docs/housekeeping.md). Подробный проект требований — [методологическое ТЗ](docs/restructuring-spec.md).
 
+Задача 099 добавляет в 0.7.0 `connect`: локальный блок AGENTS.md, пустой
+`harness77.txt` и самодостаточную команду `.harness77/launch.py`. Поставка
+закрепляется по версии и SHA-256: внешний путь, wheel в проекте или загрузка
+конкретного wheel (в том числе GitHub Releases). Без skills и глобальных настроек.
+[Подключение, перенос и диагностика](src/harness77/local_project77.md),
+[задание и проверки](docs/tasks/099-local-project-activation.md).
+
 Задача 098 добавляет в 0.6.0 `project-init --runtime forms --source … --scenario …`:
 прикладной профиль, модуль и JSON-ожидания создаются одной командой.
 [Пример](examples/forms-project-init/README.md), [проверка](docs/tasks/098-forms-project-init.md).

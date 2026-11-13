@@ -30,6 +30,7 @@ def main():
     args = parser.parse_args()
     kit, native, out = args.kit.resolve(), args.native.resolve(), args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
+    sys.path.insert(0, str(kit))  # Standalone forms kits expose the inherited suite verifier here.
     specification = importlib.util.spec_from_file_location('application_verifier097', kit / 'verify.py')
     verifier = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(verifier)
