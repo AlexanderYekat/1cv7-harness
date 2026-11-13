@@ -12,6 +12,10 @@
 [Контракт и задание](docs/tasks/101-direct-invoice-caption.md),
 [проверки](docs/tasks/101-direct-invoice-caption-acceptance.md).
 
+[Релиз 0.8.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.8.0)
+опубликован; [полный цикл через скачанный wheel и harness77.txt](docs/tasks/101-release-080-acceptance.md)
+повторно проверен через run, suite и MCP с тестами принятой 101.
+
 Задача 100 проверяет отдельный проект счёта-фактуры из опубликованного wheel
 0.7.0 через `harness77.txt`: исходник, контролируемая ошибка, исправление
 и повтор с одинаковыми тестами через run/suite/MCP.
