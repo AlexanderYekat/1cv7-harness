@@ -1220,13 +1220,25 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             return "1C reported an error during choice: " + str(trip["diagnostics"][0])
         return trip.get("table_error")
 
-    def wait_cell_editor(self, form, table, focus, editor):
-        # The controller can report the new column before the native editor has taken focus.
+    def wait_cell_editor(self, form, table, focus, editor, expected=None, record=None):
+        from form_window77 import cell_editor_ready
+        # The controller can report the new column while focus still belongs to
+        # the 1CEDIT wrapper. Wait for its real text child, without reactivation.
         deadline = time.monotonic() + CELL_EDITOR_WAIT_S
-        while editor is None and time.monotonic() < deadline and not self.stopped.wait(0.02):
+        observations = []
+        if record is not None:
+            record["editor_wait"] = {"observations": observations, "ready": False}
+        while True:
+            ready = cell_editor_ready(focus, editor)
+            observations.append({"focus": focus, "editor": editor, "ready": ready})
+            if ready or (editor is not None and expected is not None and editor.get("id") != expected):
+                if record is not None:
+                    record["editor_wait"]["ready"] = ready
+                return focus, editor
+            if time.monotonic() >= deadline or self.stopped.wait(0.02):
+                return focus, None
             focus = form.focused()
             editor = form.editor_of(focus, table)
-        return focus, editor
 
     def begin_choice(self, form, inspection, step, table, seen):
         """F4 in a reference editor, position the verified choice list, then Enter or Escape (task 028)."""
@@ -1255,7 +1267,8 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         focus = form.focused()
         editor = form.editor_of(focus, table["hwnd"])
         if "row" in step and not issue:
-            focus, editor = self.wait_cell_editor(form, table["hwnd"], focus, editor)
+            focus, editor = self.wait_cell_editor(form, table["hwnd"], focus, editor,
+                                                  expected=step["column_window"], record=chain.record)
             if ((trip.get("column") or "").casefold() != step["column"].casefold()
                     or not editor or not editor.get("visible") or not editor.get("enabled")):
                 issue = "the current column or its editor was not verified before F4"
@@ -1446,7 +1459,8 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             if current.casefold() != step["column"].casefold():
                 chain.record.update(record, refused=f"column {step['column']!r} did not become current: {current!r}")
                 return chain
-            focus, editor = self.wait_cell_editor(form, hwnd, focus, record["editor_before"])
+            focus, editor = self.wait_cell_editor(form, hwnd, focus, record["editor_before"],
+                                                  expected=step["column_window"], record=record)
             record.update(focus_before=focus, editor_before=editor)
             if editor is None:
                 chain.record.update(record, refused=f"no cell editor opened; the focus is {focus}")
@@ -1458,6 +1472,10 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             record.update(typing=typed, target=focus["hwnd"], expected_editor=step.get("column_window"))
             if not typed["typed"]:
                 chain.record.update(record, failed_stage="type", last_error=typed.get("last_error"))
+                return chain
+            record["focus_before_enter"] = form.focused()
+            if not record["focus_before_enter"] or record["focus_before_enter"]["hwnd"] != focus["hwnd"]:
+                chain.record.update(record, refused="cell focus changed before Enter")
                 return chain
             target, key = focus["hwnd"], scenario77.KEYS["enter"]
         else:

@@ -17,6 +17,23 @@ python -m venv .venv
 собранного wheel с `--no-index --no-deps`. Для офлайн-сборки заранее сохраните
 wheel закреплённого setuptools через `pip download -r requirements-build.txt`.
 
+С задачи 092 штатный native runtime поставляется обычным wheel. Список
+`native_catalog77.json` объявляет его 33 исходных файла; NativeBuild копирует
+их в build/lib/harness77/_native и формирует манифест версии/SHA-256.
+Исходники остаются в research, производные копии не редактируются вручную.
+`verify_package77.py` проверяет сборку из sdist, точный состав и установку.
+Для разработки исполнителя через checkout сохраняется явный launcher;
+штатный режим проверяется установленным wheel без editable/PYTHONPATH.
+[Установка и границы](tasks/092-installed-native-runtime.md).
+
+Для прикладного проекта в 0.6.0 используйте
+`project-init --runtime forms --source … --scenario …`: модуль и
+parameters/tests задаются явными входами, профиль сразу готов для doctor/run.
+Прежний вызов создаёт headless-проект. Изменения конфигурации помещайте
+в созданную configuration/ после md-extract; сгенерированные профиль и
+тестовый модуль не требуется переписывать.
+[Пример полного цикла из wheel](../examples/forms-project-init/README.md).
+
 Существующие `ert_module.replace_text` и операции диалога сохранены как внутренний
 legacy-код с прежними ограничениями; публичная безопасная сборка —
 `harness77.artifacts.build`, извлечение — `harness77.artifacts.extract`.

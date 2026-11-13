@@ -55,7 +55,30 @@ def prepare_observer(out, run_id, profile=DEFAULT_OBSERVER):
             '.echo HARNESS77_OBSERVER_EMPTY_END:' + run_id + '; gc\n')
     for file, contents in files.items():
         (out / file).write_text(contents, encoding="ascii")
-    return 'bu10 combase!CoRegisterClassObject ' + callback("identity-register.txt") + '\n', name
+    # A temporary image mapping can leave CDB's module list missing combase
+    # even though it remains loaded in the target (091). Refresh debugger state
+    # once, before binding; do not wait for another loader notification.
+    return ('.reload /s /f combase.dll\n'
+            + 'bu10 combase!CoRegisterClassObject ' + callback("identity-register.txt") + '\n'
+            + '.echo HARNESS77_OBSERVER_BOUND_BEGIN:' + run_id + '\nbl 10\n'
+            + '.echo HARNESS77_OBSERVER_BOUND_END:' + run_id + '\n'), name
+
+
+def observer_binding(log, run_id):
+    """A nonce-delimited, enabled, resolved breakpoint; command echoes do not count."""
+    lines = log.splitlines()
+    begin, end = ('HARNESS77_OBSERVER_BOUND_' + state + ':' + run_id for state in ('BEGIN', 'END'))
+    if begin not in lines or end not in lines:
+        return None
+    if lines.count(begin) != 1 or lines.count(end) != 1 or lines.index(begin) >= lines.index(end):
+        raise ValueError('duplicate or reordered observer binding evidence')
+    rows = lines[lines.index(begin) + 1:lines.index(end)]
+    bindings = [re.match(r'^10\s+e\s+([0-9a-fA-F]{8})\s+.*combase!CoRegisterClassObject(?:\s|$)', row)
+                for row in rows]
+    bindings = [match for match in bindings if match]
+    if len(bindings) != 1 or int(bindings[0][1], 16) == 0:
+        raise ValueError('COM observer breakpoint is not enabled and resolved')
+    return {'address': bindings[0][1].lower(), 'symbol': 'combase!CoRegisterClassObject'}
 
 
 def observed_identity(log, run_id, server):

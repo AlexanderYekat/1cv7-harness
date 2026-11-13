@@ -52,13 +52,18 @@ def verify(args):
         checkout = evidence / "source"
         checkout.mkdir()
         # Copy an explicit distribution set, never .local, databases or sibling repos.
-        for name in ("pyproject.toml", "MANIFEST.in", "README.md", "requirements-build.txt"):
+        for name in ("pyproject.toml", "MANIFEST.in", "setup.py", "README.md", "requirements-build.txt"):
             shutil.copy2(ROOT / name, checkout / name)
         for name in ("src", "tests", "docs", "examples"):
             shutil.copytree(ROOT / name, checkout / name,
                             ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
         (checkout / "scripts").mkdir()
         shutil.copy2(Path(__file__), checkout / "scripts/verify_package77.py")
+        catalog = json.loads((ROOT / 'src/harness77/native_catalog77.json').read_text(encoding='utf-8'))
+        for name in catalog['files']:
+            target = checkout / 'research' / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / 'research' / name, target)
         dist = evidence / "dist"
         dist.mkdir()
         run("build-sdist", [args.build_python, "-c",
@@ -68,6 +73,9 @@ def verify(args):
         expanded = evidence / "sdist"
         expanded.mkdir()
         with tarfile.open(sdist) as archive:
+            research = {name.split('/research/', 1)[1] for name in archive.getnames()
+                        if '/research/' in name and archive.getmember(name).isfile()}
+            assert research == set(catalog['files']), 'sdist native source set differs'
             archive.extractall(expanded, filter="data")
         source, = expanded.iterdir()
         run("build-wheel-from-sdist", [args.build_python, "-c",
@@ -75,9 +83,16 @@ def verify(args):
         wheel, = dist.glob("*.whl")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            for resource in ("lint77-builtins.json", "lint77-globals.json", "catalog77.json"):
+            for resource in ("lint77-builtins.json", "lint77-globals.json", "catalog77.json", "project_headless77.1s"):
                 assert "harness77/" + resource in names, resource
-            assert all(n.startswith(("harness77/", "harness77-0.1.0.dist-info/")) for n in names)
+                assert archive.read('harness77/' + resource) == (ROOT / 'src/harness77' / resource).read_bytes()
+            assert all(n.startswith("harness77/") or re.fullmatch(r'harness77-[^/]+\.dist-info/.*', n) for n in names)
+            manifest = json.loads(archive.read('harness77/_native/manifest.json'))
+            assert set(manifest['files']) == set(catalog['files'])
+            for name, sha in manifest['files'].items():
+                assert hashlib.sha256(archive.read('harness77/_native/' + name)).hexdigest() == sha
+                assert hashlib.sha256((ROOT / 'research' / name).read_bytes()).hexdigest() == sha
+            assert {n.removeprefix('harness77/_native/') for n in names if n.startswith('harness77/_native/')} == {*catalog['files'], 'manifest.json'}
         summary["distributions"] = [{"file": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
                                     for p in (sdist, wheel)]
         environment = evidence / "venv"
@@ -91,6 +106,9 @@ def verify(args):
         run("installed-resource", [python, "-c",
             "import sys, pathlib, json, importlib.metadata as m; import harness77; "
             "from harness77.lint77 import load_builtins, load_catalog; "
+            "from harness77.native_runtime77 import inspect_runtime; "
+            "assert inspect_runtime('forms')['files_checked'] == 33; "
+            "assert inspect_runtime('headless')['runtime_version'] == harness77.__version__; "
             "assert pathlib.Path(harness77.__file__).is_relative_to(pathlib.Path(sys.prefix)); "
             "assert len(load_builtins()) > 10; "
             "assert len(load_catalog().reserved) == 162 and load_catalog().readable; "

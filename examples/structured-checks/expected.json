@@ -1,0 +1,16 @@
+{
+  "document": {
+    "posted": 1,
+    "comment": "Harness77 форма 033",
+    "row_count": 2,
+    "product_links": 1,
+    "rows": [
+      {"quantity": "3", "price": "10", "amount": "30"},
+      {"quantity": "2", "price": "20", "amount": "40"}
+    ]
+  },
+  "entries": [
+    {"debit": "43", "credit": "40", "quantity": "3", "amount": "30"},
+    {"debit": "43", "credit": "40", "quantity": "2", "amount": "40"}
+  ]
+}

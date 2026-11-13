@@ -12,9 +12,11 @@ On Error Resume Next
 Set v = CreateObject("V77L.Application")
 CheckCOM "activation"
 __PROXY_IDENTITY__
+CallMarker "initialize", "started"
 result = v.Initialize(v.RMTrade, "/D""" & WScript.Arguments(0) & """ /N""" & WScript.Arguments(1) & """", "NO_SPLASH_SHOW")
 CheckCOM "initialize"
 If Not result Then Fail "initialize", "returned false"
+CallMarker "initialize", "finished"
 actualBase = v.EvalExpr("КаталогИБ()")
 CheckCOM "base-path"
 If LCase(actualBase) <> LCase(WScript.Arguments(0) & "\") Then Fail "base-path", "unexpected database"

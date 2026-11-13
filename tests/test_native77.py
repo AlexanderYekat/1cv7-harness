@@ -12,6 +12,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from stage4_fixtures import run, windows_only, write_project
 
@@ -95,6 +96,20 @@ class NativeBackendTests(unittest.TestCase):
         self.assertEqual(report["status"], "blocked")
         self.assertIn("native_preflight", report["reason"])
         self.assertFalse(report["platform_checked"])
+
+    @windows_only
+    def test_damaged_packaged_runtime_is_refused_before_any_launcher(self):
+        from harness77.native_runtime77 import RuntimeUnavailable
+        stand = self.stand(launcher_body='pass\n')
+        lines = stand.read_text(encoding='utf-8').splitlines()
+        stand.write_text('\n'.join('runtime = "headless"' if s.startswith('launcher = ') else s for s in lines), encoding='utf-8')
+        with patch('harness77.native_runtime77.inspect_runtime', side_effect=RuntimeUnavailable('damaged payload')), \
+                patch('harness77.native77.subprocess.Popen', side_effect=AssertionError('must not launch')) as popen:
+            report = self.go(stand)
+        popen.assert_not_called()
+        self.assertEqual(report['status'], 'blocked')
+        self.assertFalse(report['platform_checked'])
+        self.assertIn('damaged payload', report['reason'])
 
 
 if __name__ == "__main__":

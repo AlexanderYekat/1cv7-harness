@@ -19,6 +19,7 @@ import time
 from marker_read77 import MarkerReadError, read_marker
 from shutdown77 import Deadline, atomic_json, read_events, sha256
 from win32_session77 import kernel, processes, register_cleanup_helper, registration_lock
+from startup77 import StartupTrace, command_marker, commands_processed
 
 
 def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, identity_dll=None, pinned=None,
@@ -39,16 +40,18 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
     commands = out / "debugger.txt"
     observer = ""
     if identity_dll is not None:
-        from proxy_debug77 import DEFAULT_OBSERVER, prepare_observer, observed_identity, observer_retired
+        from proxy_debug77 import DEFAULT_OBSERVER, prepare_observer, observed_identity, observer_retired, observer_binding
         profile = report.setdefault("identity_observer_profile", DEFAULT_OBSERVER)
         observer, report["identity_challenge"] = prepare_observer(out, report["run_id"], profile)
         report["identity_observer_hashes_before"] = {p.name: sha256(p) for p in out.glob("identity-*.txt")}
     commands.write_text(
         'sxe -c ".echo HARNESS77_FIRST_CHANCE_AV; .exr -1; r; kv; ~*kv; lm; '
         '.dump /ma ' + (out / "first-av.dmp").as_posix() + '; q" av\n'
-        + observer + '.echo HARNESS77_DEBUGGER_READY\ng\n', encoding="ascii")
+        + observer + '.echo ' + command_marker(report['run_id']) + '\n.echo HARNESS77_DEBUGGER_READY\ng\n', encoding="ascii")
     report["debugger_commands_sha256"] = sha256(commands)
     started = time.monotonic()
+    startup_trace = StartupTrace(out, report['run_id'])
+    report['startup'] = startup_trace.data
     deadline = Deadline(started)
     debugger = client = registration_cleanup = None
     identity_cleanup = baseline = None
@@ -149,6 +152,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             on_wait = None if progress is None else lambda: progress("waiting")
             lock.enter_context(registration_lock(wait_ms=startup_wait_ms, on_wait=on_wait))
             acquired = True
+            startup_trace.note('registration_acquired', waiting_for='debugger_create')
         finally:
             report["registration_wait"] = {"acquired": acquired, "elapsed_s": round(time.monotonic() - wait_started, 3)}
         report["hashes_before"] = hashes()
@@ -182,6 +186,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                  str(out / "debugger.log"), "-cf", str(commands), str(exe), "-Embedding"],
                 stdout=debug_stdout, cwd=str(exe.parent))
             report["debugger_pid"] = debugger.pid
+            startup_trace.note('debugger_created', waiting_for='server_ownership', pid=debugger.pid, image_name=Path(cdb).name)
             note("debugger", debugger.pid, int(debugger._handle))
             if progress is not None:
                 progress("starting")
@@ -215,6 +220,9 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         creation_filetime=server_time, ownership_verified=True,
                         ownership="direct CDB child; image/time verified; retained HANDLE")
                     report["startup_elapsed_seconds"] = {"ownership": round(time.monotonic() - started, 3)}
+                    startup_trace.note('server_owned', waiting_for='debugger_commands',
+                                       **{k: report['server'][k] for k in ('pid', 'parent_pid', 'creation_filetime', 'ownership_verified')},
+                                       image_name=exe.name, debugger_creation_filetime=debug_time)
                     note("server", candidate["pid"], handle)
                     atomic_json(out / "owner.json", report)
                     break
@@ -229,18 +237,31 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                 startup_log = debug_text()
                 if "Couldn't resolve error" in startup_log:
                     raise RuntimeError("debugger observer could not resolve COM entry point")
-                if ("\nHARNESS77_DEBUGGER_READY\n" in startup_log
-                        and (identity_dll is None or "\nHARNESS77_FACTORY_WATCH\n" in startup_log)):
+                processed = commands_processed(startup_log, report['run_id'])
+                try:
+                    binding = observer_binding(startup_log, report['run_id']) if identity_dll is not None else None
+                except ValueError:
+                    startup_trace.data['waiting_for'] = 'observer_binding'
+                    raise
+                if processed and not report['debugger_ready']:
                     report["debugger_ready"] = True
                     report["startup_elapsed_seconds"]["debugger_ready"] = round(time.monotonic() - started, 3)
+                    startup_trace.note('debugger_commands', waiting_for='observer_binding' if identity_dll is not None else 'activation')
+                if processed and binding:
+                    startup_trace.note('observer_bound', waiting_for='factory_registration', **binding)
+                factory = "\nHARNESS77_FACTORY_WATCH\n" in startup_log
+                if processed and binding and factory:
+                    startup_trace.note('factory_observed', waiting_for='activation')
+                if processed and (identity_dll is None or (binding and factory)):
+                    startup_trace.note('activation_ready', waiting_for='client_create')
                     break
                 if debugger.poll() is not None:
                     raise RuntimeError("CDB exited before ready")
                 caller_cancelled()
                 time.sleep(0.1)
             else:
-                report["timeout_phase"] = "debugger-ready"
-                raise TimeoutError("CDB readiness deadline")
+                report["timeout_phase"] = startup_trace.data['waiting_for'].replace('_', '-')
+                raise TimeoutError('startup deadline: ' + startup_trace.data['waiting_for'])
             # Allow the OLE class factory to register before activation.
             time.sleep(1)
             current = processes()
@@ -256,6 +277,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                  "activation-only" if report.get("activation_only") else "ert"],
                 stdout=client_stdout)
             report["helper_pid"] = client.pid
+            startup_trace.note('client_created', waiting_for='proxy_verification' if identity_dll is not None else 'initialize', pid=client.pid)
             note("client", client.pid, int(client._handle))
             # How long the polling rounds take: under load a round lasted over 10 s (task 015, R1).
             # Each step is timed too, to name what stretches a round (task 017); perf_counter
@@ -302,11 +324,24 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
                         if profile == "challenge-only-v2":
                             report["identity_observer_retired_before_initialize"] = True
                         report["proxy_verified_before_initialize"] = True
+                        startup_trace.note('proxy_verified', waiting_for='initialize_permission', pid=identity['pid'], tid=identity['tid'])
                         atomic_json(out / "proxy-verified.json", {"identity": identity, "server": report["server"], "desktop": desktop})
                         permit = out / "initialize-permit.tmp"
                         permit.write_text(report["run_id"], encoding="ascii")
                         permit.replace(out / "initialize-permit")
+                        startup_trace.note('initialize_permitted', waiting_for='initialize')
                 lap("identity")
+                for state in ('started', 'finished'):
+                    marker = out / ('ert-initialize-' + state)
+                    stage = 'initialize_' + state
+                    if marker.exists() and stage not in startup_trace.seen:
+                        value = read_marker(marker, marker_read_retries, check=check_marker_read,
+                                            operation='startup-initialize-' + state)
+                        if value != report['run_id']:
+                            raise ValueError('foreign Initialize startup marker')
+                        if identity_dll is not None and not report.get('proxy_verified_before_initialize'):
+                            raise ValueError('Initialize marker before proxy verification')
+                        startup_trace.note(stage, waiting_for='initialize' if state == 'started' else 'ert_command')
                 try:
                     events = read_events(out)
                 except (OSError, UnicodeError, ValueError):
@@ -450,6 +485,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         report["error"] = f"{type(error).__name__}: {error}"
         if isinstance(error, MarkerReadError):
             report["marker_read_failure"] = error.detail
+        startup_trace.finish(report['error'], bool(report.get('user_cancelled')))
     finally:
         # Every cleanup step is independent; a failed step must not skip the rest.
         def attempt(label, action):
@@ -538,4 +574,6 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             and (identity_cleanup is None or report.get("identity_registration", {}).get("removed") is True)
             and (debugger is None or report.get("debugger_exit_code") is not None)
             and (client is None or report.get("helper_exit_code") is not None))
+        if not report.get('error'):
+            startup_trace.finish()
     return report

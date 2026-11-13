@@ -86,7 +86,7 @@ class SessionFailureTests(unittest.TestCase):
 
     def test_caller_cancel_takes_the_owned_cleanup_and_client_limit_is_configurable(self):
         # Reach the main loop: the debugger reports ready, the client is a separate process.
-        (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
+        (self.out / "debugger.log").write_text("\nHARNESS77_STARTUP_COMMANDS:simulation\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
         client = Mock(pid=11, _handle=43)
         client.poll.return_value = None
         # The client process ends once the cleanup asked it to and waited.
@@ -127,7 +127,7 @@ class SessionFailureTests(unittest.TestCase):
         self.cleanup.assert_not_called()
 
     def test_open_deadline_stops_a_session_whose_first_command_never_starts(self):
-        (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
+        (self.out / "debugger.log").write_text("\nHARNESS77_STARTUP_COMMANDS:simulation\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
         client = Mock(pid=11, _handle=43)
         client.poll.return_value = None
         client.wait.side_effect = lambda timeout=None: setattr(client.poll, "return_value", 0)
@@ -177,7 +177,7 @@ class SessionFailureTests(unittest.TestCase):
 
         `events` are the successive reads of the shutdown events.
         """
-        (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
+        (self.out / "debugger.log").write_text("\nHARNESS77_STARTUP_COMMANDS:simulation\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
         client = Mock(pid=11, _handle=43, returncode=0)
         client.poll.return_value = 0
         self.kernel.WaitForSingleObject.side_effect = None
@@ -203,7 +203,7 @@ class SessionFailureTests(unittest.TestCase):
 
     def test_round_steps_name_what_stretched_the_slowest_round(self):
         # Task 017: under load a round lasted up to 16 s; the steps say which part took it.
-        (self.out / "debugger.log").write_text("\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
+        (self.out / "debugger.log").write_text("\nHARNESS77_STARTUP_COMMANDS:simulation\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
         reads, clock = [0], [0.0]
 
         def tick():
@@ -302,7 +302,19 @@ class SessionFailureTests(unittest.TestCase):
         result = self.slow_start(startup=180)
         self.assertGreater(result["startup_elapsed_seconds"]["ownership"], 20)
         self.assertTrue(result["server"]["ownership_verified"])
-        self.assertEqual(result["timeout_phase"], "debugger-ready")
+        self.assertEqual(result["timeout_phase"], "debugger-commands")
+
+    def test_legacy_ready_without_this_runs_commands_cannot_launch_client(self):
+        (self.out / 'debugger.log').write_text('\nHARNESS77_DEBUGGER_READY\n', encoding='ascii')
+        self.debugger.wait.side_effect = lambda timeout=None: setattr(self.debugger.poll, 'return_value', 0)
+        result = self.slow_start(startup=180)
+        self.assertEqual(result['timeout_phase'], 'debugger-commands')
+        self.assertFalse(result['debugger_ready'])
+        self.assertEqual(result['startup']['waiting_for'], 'debugger_commands')
+        self.assertEqual(result['startup']['status'], 'blocked')
+        self.assertNotIn('helper_pid', result)
+        self.assertNotIn('client_created', [e['stage'] for e in result['startup']['events']])
+        self.assertTrue(result['cleanup_verified'])
 
     def test_startup_keeps_the_research_20_s_by_default(self):
         result = self.slow_start()

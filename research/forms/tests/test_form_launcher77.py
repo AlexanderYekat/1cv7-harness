@@ -109,13 +109,13 @@ class TableEditorTests(unittest.TestCase):
         self.windows.post_key.return_value = {"returned": True}
         self.windows.await_action.return_value = {"returned": True}
         self.step = {"kind": "cell", "column": "Количество", "column_window": 4225, "text": "2"}
-        self.editor = {"id": 4225, "visible": True, "enabled": True}
+        self.editor = {"hwnd": 15, "class": "BMASKED", "id": 4225, "visible": True, "enabled": True}
 
     def begin(self):
         return self.watcher.begin_table(self.windows, {"chain": [{"hwnd": 10}]}, self.step, {"hwnd": 11}, [])
 
     def test_waits_for_editor_without_reissuing_the_activation(self):
-        self.windows.focused.side_effect = [{"hwnd": 11}, {"hwnd": 12}]
+        self.windows.focused.side_effect = [{"hwnd": 11}, {"hwnd": 12}, {"hwnd": 12}]
         self.windows.editor_of.side_effect = [None, self.editor]
         chain = self.begin()
         self.assertTrue(chain.record["returned"])

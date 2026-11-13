@@ -64,7 +64,16 @@ class NativeBackend:
         if os.name != "nt":
             return "native_preflight: 1C 7.7 requires Windows; this is " + os.name
         launcher = self.stand.extra.get("launcher")
-        if not launcher:
+        runtime = self.stand.extra.get("runtime")
+        if runtime is not None:
+            from .native_runtime77 import inspect_runtime, RuntimeUnavailable
+            try:
+                inspect_runtime(runtime)
+            except RuntimeUnavailable as error:
+                return 'native_preflight: ' + str(error)
+            if not self.configuration_sha256:
+                return 'native_preflight: packaged runtime requires configuration modules and a verified base copy'
+        elif not launcher:
             return "native_preflight: stand.launcher is not configured"
         required = {"exe": self.stand.exe, "base": self.stand.base}
         for role, path in required.items():
@@ -85,10 +94,10 @@ class NativeBackend:
         reason = self._preflight()
         if reason is not None:
             return self._blocked(reason)
-        launcher = Path(self.stand.extra["launcher"])
+        from .native_runtime77 import launch_prefix
         result_path = self.run_dir / "platform-result.json"
         deadlines = run_clock.deadlines
-        command = [sys.executable, "-B", str(launcher),
+        command = [*launch_prefix(self.stand),
                    "--run-dir", str(self.run_dir), "--ert", str(self.ert_path),
                    "--ert-sha256", self.ert_sha256, "--run-id", self.run_id,
                    "--base", str(self.stand.base), "--user", self.stand.user,

@@ -252,8 +252,12 @@ def _problems(stages):
         rows.append({"stage": stage["stage"], "status": stage["status"], "reason": stage.get("reason"),
                      "diagnostics_count": len(diagnostics), "diagnostics": diagnostics[:20],
                      "unmet_tests_count": len(tests), "unmet_tests": [
-                         {k: str(t[k])[:2000] for k in ("name", "expect", "status", "expect_value", "value", "note")
-                          if k in t} for t in tests[:20]]})
+                         {**{k: str(t[k])[:2000] for k in ("name", "expect", "status", "expect_value", "value", "note")
+                             if k in t},
+                          **({'structured': {k: t['structured'][k] for k in
+                                             ('status', 'difference_count', 'differences_truncated', 'result', 'diagnostics')
+                                             if k in t['structured']}}
+                             if 'structured' in t else {})} for t in tests[:20]]})
     return rows
 
 

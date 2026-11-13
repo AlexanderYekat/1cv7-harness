@@ -40,6 +40,33 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_project(path)
 
+    def test_stand_launcher_resolves_from_profile_dir(self):
+        stand = load_stand(self.minimal_stand(extra="launcher = 'adapter/launch.py'\n"))
+        self.assertEqual(Path(stand.extra["launcher"]), self.root / "adapter/launch.py")
+
+    def test_stand_absolute_launcher_is_preserved(self):
+        launcher = (self.root / "launch.py").as_posix()
+        stand = load_stand(self.minimal_stand(extra=f"launcher = '{launcher}'\n"))
+        self.assertEqual(stand.extra["launcher"], str(Path(launcher)))
+
+    def test_stand_launcher_rejects_invalid_paths(self):
+        for value in ("''", "42", "[]"):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                load_stand(self.minimal_stand(extra=f"launcher = {value}\n"))
+
+    def test_packaged_runtime_selection_is_explicit_and_exclusive(self):
+        for name in ('forms', 'headless'):
+            path = self.minimal_stand(extra=f"runtime = '{name}'\n")
+            path.write_text(path.read_text(encoding='utf-8').replace("backend = 'simulation'", "backend = 'native'"), encoding='utf-8')
+            self.assertEqual(load_stand(path).extra['runtime'], name)
+        for extra in ("runtime='other'\n", "runtime=[]\n", "runtime='forms'\nlauncher='custom.py'\n"):
+            path = self.minimal_stand(extra=extra)
+            path.write_text(path.read_text(encoding='utf-8').replace("backend = 'simulation'", "backend = 'native'"), encoding='utf-8')
+            with self.assertRaises(ConfigError):
+                load_stand(path)
+        with self.assertRaises(ConfigError):
+            load_stand(self.minimal_stand(extra="runtime='forms'\n"))
+
     def test_test_expect_is_validated(self):
         path = self.minimal_project("[[platform.tests]]\nname='t'\nexpect='maybe'\n")
         with self.assertRaises(ConfigError):

@@ -181,6 +181,19 @@ def editor(control):
     return inner[0] if len(inner) == 1 else control
 
 
+def cell_editor_ready(focus, control):
+    """A table's 1CEDIT wrapper is not its text editor (task 090).
+
+    editor_of() has already tied focus to this table/column. During activation
+    focus can visit the wrapper before its inner editor receives it.
+    """
+    if not focus or not focus.get("hwnd") or not control or not control.get("hwnd"):
+        return False
+    if not control.get("visible") or not control.get("enabled"):
+        return False
+    return control.get("class", "").casefold() != "1cedit" or focus["hwnd"] != control["hwnd"]
+
+
 def expected_geometry(description):
     """{window id: (x, y, width, height)} of the described controls."""
     ids = window_ids(description)
@@ -891,16 +904,29 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
 
     def replace_text(self, hwnd, text, timeout_ms=10000):
         """Select the text of the window with the focus and replace it, as in a form's field (task 025)."""
-        record = {"hwnd": hwnd, "id": self.user.GetDlgCtrlID(hwnd), "text": text, "text_before": self.text(hwnd)}
+        record = {"hwnd": hwnd, "id": self.user.GetDlgCtrlID(hwnd), "text": text,
+                  "text_before": self.text(hwnd), "focus_checks": []}
+
+        def focused(stage):
+            actual = self.focused()
+            matches = bool(actual and actual["hwnd"] == hwnd)
+            record["focus_checks"].append({"stage": stage, "focus": actual, "matches": matches})
+            return matches
+
         ansi = not self.user.IsWindowUnicode(hwnd)
         record["encoding"] = "cp1251" if ansi else "utf-16"
         codes = [character.encode("cp1251")[0] if ansi else ord(character) for character in text] or [VK_BACK]
         for name, message, wparam, lparam, as_ansi in ([("select", EM_SETSEL, 0, -1, False)]
                                                         + [("type", WM_CHAR, code, 1, ansi) for code in codes]):
+            if not focused(name):
+                return dict(record, typed=False, failed_stage="focus_before_" + name)
             returned, _, error = self.send(hwnd, message, wparam, lparam, timeout_ms, ansi=as_ansi)
             if not returned:
                 return dict(record, typed=False, failed_stage=name, last_error=error)
-        return dict(record, typed=True, text_after=self.text(hwnd))
+        after = self.text(hwnd)
+        if not focused("after_type"):
+            return dict(record, typed=False, failed_stage="focus_after_type", text_after=after)
+        return dict(record, typed=True, text_after=after)
 
     def alive(self, hwnd):
         """The window still exists on the verified server thread (the form was not closed)."""

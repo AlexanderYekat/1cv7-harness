@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harness77"
-version = "0.1.0"
+version = "0.6.0"
 description = "Reproducible source checks and ERT tooling for 1C 7.7"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,4 +17,4 @@ harness77 = "harness77.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-harness77 = ["lint77-builtins.json", "lint77-globals.json", "catalog77.json"]
+harness77 = ["lint77-builtins.json", "lint77-globals.json", "catalog77.json", "native_catalog77.json", "project_headless77.1s"]

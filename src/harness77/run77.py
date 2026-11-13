@@ -264,7 +264,7 @@ def _build_stage(project, run_dir, stand=None):
     return stage, {"path": output, "sha256": report["output"]["sha256"], "build": report}
 
 
-def _judge_tests(project, platform_result, platform_passed):
+def _judge_tests(project, platform_result, platform_passed, run_dir=None, run_id=None):
     stage = Stage("tests", required=True, scope=STAGE_SCOPES["tests"])
     if not project.tests:
         return stage.finish(BLOCKED, reason="no tests declared; the full cycle requires at least one")
@@ -272,7 +272,7 @@ def _judge_tests(project, platform_result, platform_passed):
         return stage.finish(SKIPPED, reason="platform check did not pass; tests not judged")
     operations = {op.get("name"): op for op in platform_result.get("operations", [])}
     rows, met = [], True
-    for test in project.tests:
+    for index, test in enumerate(project.tests, 1):
         op = operations.get(test["command"]) or operations.get(test["name"])
         if op is None:
             rows.append({**test, "status": BLOCKED, "expectation_met": False,
@@ -280,15 +280,36 @@ def _judge_tests(project, platform_result, platform_passed):
             met = False
             continue
         value_ok = "expect_value" not in test or str(op.get("value")) == test["expect_value"]
-        expectation_met = op.get("status") == test["expect"] and value_ok
-        rows.append({**test, "status": op.get("status"), "value": op.get("value"),
-                     "value_met": value_ok, "diagnostics": op.get("diagnostics", []),
-                     "expectation_met": expectation_met})
+        structured = None
+        if 'expect_json' in test and op.get('status') == 'passed':
+            from .structured77 import judge
+            structured = judge(test, op.get('value'), run_dir, run_id, index)
+            if structured.get('result'):
+                stage.evidence.append(structured['result'])
+        expectation_met = (op.get("status") == test["expect"] and value_ok
+                           and (structured is None or structured['status'] == PASSED))
+        row = {**test, "status": op.get("status"), "value": op.get("value"),
+               "value_met": value_ok, "diagnostics": list(op.get("diagnostics", [])),
+               "expectation_met": expectation_met}
+        if structured is not None:
+            row.update(structured=structured, operation_status=op.get('status'))
+            row['diagnostics'] += structured['diagnostics']
+            if structured['status'] == BLOCKED:
+                row['status'] = BLOCKED
+        if 'expect_json' in test:
+            # The exact text lives in hashed evidence. Do not duplicate large or
+            # invalid-Unicode application payloads in the machine report.
+            row.pop('value', None)
+        rows.append(row)
         met = met and expectation_met
     if any(r["status"] == BLOCKED for r in rows):
-        return stage.finish(BLOCKED, reason="an expected operation was missing", tests=rows)
+        return stage.finish(BLOCKED, reason=next((d['message'] for r in rows if r['status'] == BLOCKED
+                                                 for d in r.get('structured', {}).get('diagnostics', [])),
+                                                "an expected operation was missing"), tests=rows)
+    differences = [d['message'] for r in rows for d in r.get('structured', {}).get('differences', [])]
     return stage.finish(PASSED if met else FAILED, tests=rows,
-                        reason=None if met else "a declared test expectation was not met")
+                        reason=None if met else ('; '.join(differences[:2]) if differences
+                                                 else "a declared test expectation was not met"))
 
 
 def _triage(diagnostics, ert_path):
@@ -587,7 +608,8 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
             report["result_files"] = platform_result.get("result_files", [])
             report["screenshots"] = platform_result.get("screenshots", [])
             report["shutdown"] = platform_result.get("shutdown")
-            tests = _judge_tests(project, platform_result, platform.status == PASSED)
+            tests = _judge_tests(project, platform_result, platform.status == PASSED, run_dir, run_id)
+            report['result_files'] = [*report['result_files'], *tests.evidence]
             if project.visual is not None:
                 # Task 010: captures against approved baselines; a run never writes a baseline.
                 from .visual77 import visual_stage

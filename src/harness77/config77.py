@@ -18,6 +18,7 @@ import tomllib
 from .deadlines77 import Deadlines, PHASES
 
 SCHEMA_VERSION = 1
+PROJECT_SCHEMA_VERSION = 2
 BACKENDS = ("native", "simulation", "import")
 TIMEOUT_KEYS = {"open": "open_timeout_s", "calculation": "calculation_timeout_s",
                 "cancel": "cancel_timeout_s", "shutdown": "shutdown_timeout_s",
@@ -156,8 +157,9 @@ class StandProfile:
 
 def load_project(path) -> ProjectProfile:
     data, path = _load_toml(path)
-    if data.get("schema_version") != SCHEMA_VERSION:
-        raise ConfigError(f"{path}: нужна schema_version = {SCHEMA_VERSION}")
+    version = data.get('schema_version')
+    if type(version) is not int or version not in (SCHEMA_VERSION, PROJECT_SCHEMA_VERSION):
+        raise ConfigError(f"{path}: нужна schema_version = 1 или {PROJECT_SCHEMA_VERSION}")
     base_dir = path.parent
     project = _require(data, "project", str(path))
     build = _require(data, "build", str(path))
@@ -174,6 +176,19 @@ def load_project(path) -> ProjectProfile:
                 "description": str(item.get("description", ""))}
         if "expect_value" in item:
             test["expect_value"] = str(item["expect_value"])
+        if "expect_json" in item or "json_labels" in item:
+            from .structured77 import validate
+            if version != PROJECT_SCHEMA_VERSION:
+                raise ConfigError(f"{path}: expect_json/json_labels требуют schema_version = {PROJECT_SCHEMA_VERSION}, чтобы старый harness не пропустил проверку")
+            if "expect_json" not in item or "expect_value" in item or item['expect'] != 'passed':
+                raise ConfigError(f"{path}: expect_json требует expect='passed', без expect_value; json_labels требует expect_json")
+            try:
+                validate(item['expect_json'], item.get('json_labels', {}))
+            except (ValueError, UnicodeError) as error:
+                raise ConfigError(f"{path}: тест '{test['name']}': {error}") from None
+            test['expect_json'] = item['expect_json']
+            if 'json_labels' in item:
+                test['json_labels'] = dict(item['json_labels'])
         tests.append(test)
     parameters = platform.get("parameters", {})
     if not isinstance(parameters, dict) or not all(_parameter(value) for value in parameters.values()):
@@ -237,6 +252,17 @@ def load_stand(path) -> StandProfile:
     if not isinstance(exclude, list) or not all(
             isinstance(name, str) and name.strip(". ") and not any(c in name for c in '/\\:') for name in exclude):
         raise ConfigError("stand.base.copy_exclude — список имён подкаталогов базы верхнего уровня")
+    extra = {k: v for k, v in stand.items() if k not in (
+        "name", "backend", "paths", "base", "credential_source", "platform_version",
+        "pinned", "tool_hashes", "scenario", "import_protocol", "screenshots")}
+    if "launcher" in extra:
+        extra["launcher"] = str(_resolve(base_dir, extra["launcher"], "stand.launcher"))
+    if "runtime" in extra:
+        from .native_runtime77 import ADAPTERS
+        if backend != "native" or extra["runtime"] not in ADAPTERS:
+            raise ConfigError("stand.runtime: для native допустимы headless и forms")
+        if "launcher" in extra:
+            raise ConfigError("stand: задайте только runtime или launcher")
     return StandProfile(
         path=path, name=str(_require(stand, "name", "stand")), backend=backend,
         exe=optional("exe"), cdb=optional("cdb"), helper=optional("helper"), identity=optional("identity"),
@@ -249,9 +275,7 @@ def load_stand(path) -> StandProfile:
         screenshots=bool(stand.get("screenshots", False)), copy_exclude=tuple(exclude),
         copy_path=(_resolve(base_dir, base_table["copy_path"], "stand.base.copy_path")
                    if "copy_path" in base_table else None),
-        extra={k: v for k, v in stand.items() if k not in (
-            "name", "backend", "paths", "base", "credential_source", "platform_version",
-            "pinned", "tool_hashes", "scenario", "import_protocol", "screenshots")})
+        extra=extra)
 
 
 def resolve_deadlines(project: ProjectProfile, stand: StandProfile, overrides=None) -> Deadlines:

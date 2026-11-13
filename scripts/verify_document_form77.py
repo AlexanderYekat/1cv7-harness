@@ -78,7 +78,8 @@ def step_issues(records, wrong_reopen=False, comment='Harness77 форма 033')
     return issues
 
 
-def check(folder, kind='success', expected_hash=None, readback=READBACK, step_validator=None, allow_fixture_posting=False):
+def check(folder, kind='success', expected_hash=None, readback=READBACK, step_validator=None, allow_fixture_posting=False,
+          expected_md_hash=BASE_MD_SHA256):
     issues = []
     def require(condition, reason):
         if not condition:
@@ -89,7 +90,7 @@ def check(folder, kind='success', expected_hash=None, readback=READBACK, step_va
     require(folder.name == run_id == platform['run_id'], 'foreign run identity')
     require(report['status'] == ('failed' if kind.startswith('wrong') else 'passed'), 'wrong run outcome')
     require(report['platform_checked'] is True, 'no native check')
-    require(report.get('configuration', {}).get('sha256') == BASE_MD_SHA256, 'configuration modules/forms changed')
+    require(report.get('configuration', {}).get('sha256') == expected_md_hash, 'configuration hash differs from expected build')
     controller = (folder / 'native/ert-controller.1s').read_text(encoding='utf-8')
     checked_controller = controller
     if allow_fixture_posting:

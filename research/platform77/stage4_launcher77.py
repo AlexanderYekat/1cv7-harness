@@ -48,6 +48,7 @@ PROTOCOL_DIRECTORY = probe.PROTOCOL_DIRECTORY
 PERMIT_WAIT = "If Elapsed(proxyStart) > 10000 Then"  # the research client's 10 s
 # Core timeout phases in the section 8.5 vocabulary of the run report.
 PHASES = {"ownership": "open", "debugger-ready": "open", "open-base": "open", "open": "open",
+          "debugger-commands": "open", "observer-binding": "open", "factory-registration": "open",
           "ert-operation": "calculation", "modal-recovery": "calculation",
           "session": "total", "shutdown": "shutdown"}
 
@@ -467,6 +468,7 @@ def main(argv=None, adapter=None):
             report["open"]["timeout_windows"] = lifecycle["open_timeout_windows"]
         report["open"]["startup_deadline_s"] = lifecycle.get("startup_timeout_seconds")
         report["open"]["startup_s"] = lifecycle.get("startup_elapsed_seconds")
+        report["open"]["startup"] = lifecycle.get("startup")
         report["open"]["registration_wait"] = lifecycle.get("registration_wait")
         report["open"]["stale_com_registrations"] = stale_registrations(lifecycle)
         report["shutdown"] = {"status": shutdown_result["status"],
