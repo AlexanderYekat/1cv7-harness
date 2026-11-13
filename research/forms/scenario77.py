@@ -97,8 +97,31 @@ def _text(value, where, empty=True):
     return value
 
 
+def existing_document(parameters):
+    return bool(parameters.get('fixture_mode', 'existing') == 'existing'
+            and isinstance(parameters.get('form_object'), str)
+            and re.fullmatch(r'Документ\.[^\W\d]\w*', parameters['form_object'], re.IGNORECASE)
+                and parameters.get('fixture_setup') and parameters.get('fixture_verify'))
+
+
+def direct_caption(parameters):
+    """101: one explicit caption expectation for a directly opened saved document."""
+    if not {'caption_control', 'caption_text'} & parameters.keys():
+        return None
+    if not {'caption_control', 'caption_text'} <= parameters.keys():
+        raise ValueError('direct runtime caption requires caption_control and caption_text')
+    control = _text(parameters['caption_control'], 'caption_control', empty=False)
+    text = _text(parameters['caption_text'], 'caption_text')
+    if not NAME.fullmatch(control):
+        raise ValueError('direct runtime caption requires a control identifier')
+    if not existing_document(parameters):
+        raise ValueError('direct runtime caption requires an existing document fixture with verification')
+    return dict(caption_control=control, caption_text=text)
+
+
 def steps(parameters):
     """The validated steps of ``[platform.parameters]``, numbered from 1, or None without them."""
+    direct_caption(parameters)
     value = parameters.get("steps")
     if value is None:
         return None
@@ -173,8 +196,9 @@ def steps(parameters):
         if kind == "reopen":
             import journal_basis77
             journal_basis77.validate_caption(step)
-            if 'caption_control' in step and not any(s['kind'] == 'journal_basis' or (s['kind'] == 'journal_children' and (s.get('edit') or s.get('browse'))) for s in result):
-                raise ValueError('reopen runtime caption requires journal_basis or editable journal_children')
+            if ('caption_control' in step and not existing_document(parameters)
+                    and not any(s['kind'] == 'journal_basis' or (s['kind'] == 'journal_children' and (s.get('edit') or s.get('browse'))) for s in result)):
+                raise ValueError('reopen runtime caption requires an existing document, journal_basis or editable journal_children')
             if not result or result[-1]["kind"] == "reopen":
                 raise ValueError(f"{where} (reopen): requires a preceding scenario action or check")
             if (not isinstance(parameters.get("form_object"), str)

@@ -433,7 +433,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     """After ``open`` returns: inspect the owned form, run the actions, then release the client."""
 
     def __init__(self, out, lifecycle, desktop, description, actions, evidence_dir, visual_probe=False,
-                 captures=(), configuration=None, steps=None, show=False, created_description=None):
+                 captures=(), configuration=None, steps=None, show=False, created_description=None, direct_existing=False):
         super().__init__(name="harness77-form-watcher", daemon=True)
         self.out, self.lifecycle, self.desktop = out, lifecycle, desktop
         self.description, self.actions, self.evidence_dir = description, list(actions), evidence_dir
@@ -441,6 +441,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         self.captures, self.configuration = list(captures), configuration
         self.steps = steps  # resolved steps of task 025, or None
         self.created_description = created_description
+        self.direct_existing = direct_existing
         # Task 027: 1C makes the cursor of a table part the document's current row in its idle update, which MFC
         # sends to a visible main window only (series 1b–1e): shown while the steps of such a form run.
         self.show = show
@@ -719,7 +720,8 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     from form_window77 import edged_ids, expected_geometry, fit_units, judge_captions, judge_layout
                     if 'caption_control' in step:
                         import journal_basis77
-                        self.description = journal_basis77.runtime_description(self.description, step)
+                        self.description = journal_basis77.runtime_description(
+                            self.description, step, allow_button=self.direct_existing)
                         record['runtime_caption_expectations'] = {step['caption_control']: step['caption_text']}
                     expected = expected_geometry(self.description)
                     reopened = form.inspect(list(expected))
@@ -1810,6 +1812,11 @@ class FormAdapter(launcher.Harness77Adapter):
             self.configuration = PINNED["1Cv7.MD"]
         if name is not None:
             self.form = configuration_description(base / "1Cv7.MD", name, fixture=settings)
+        caption = scenario77.direct_caption(self.parameters)
+        if caption is not None:
+            import journal_basis77
+            self.form = (journal_basis77.runtime_description(self.form[0], caption, allow_button=True),
+                         dict(self.form[1], runtime_caption_expectations={caption['caption_control']: caption['caption_text']}))
         if settings and settings["mode"] in ("journal", "journal_existing"):
             self.journal_form = configuration_description(base / "1Cv7.MD", settings["journal"])
         if settings:
@@ -1817,6 +1824,10 @@ class FormAdapter(launcher.Harness77Adapter):
             metadata = Metadata((base / "1Cv7.MD").read_bytes())
             self.fixture_context = fixture77.context(name, settings, metadata)
             for step in scenario77.steps(self.parameters) or []:
+                if step['kind'] == 'reopen' and 'caption_control' in step:
+                    import journal_basis77
+                    journal_basis77.runtime_description(self.form[0], step,
+                        allow_button=bool(scenario77.existing_document(self.parameters)))
                 if "catalog_caption" in step and step["catalog"].casefold() not in metadata.objects()["Справочник"]:
                     raise ValueError("unknown choice catalog: " + step["catalog"])
                 if step['kind'] == 'journal_children':
@@ -1929,7 +1940,8 @@ End If''')
                                   self.run_dir / "form", visual_probe=self.parameters.get("visual_probe") is True,
                                   captures=self.requests, configuration=self.configuration, steps=steps,
                                   show=steps is not None and bool(description.get("browser")),
-                                  created_description=created_description)
+                                  created_description=created_description,
+                                  direct_existing=bool(scenario77.existing_document(self.parameters)))
             if getattr(self, 'children_form', None):
                 watcher.children_description = self.children_form[0]
                 atomic_json(self.run_dir / 'form' / 'children-description.json', self.children_form[0])
