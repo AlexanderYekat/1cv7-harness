@@ -26,6 +26,12 @@ python C:/work/application/.harness77/launch.py mcp
 `--version 0.7.0 --url <конкретный asset wheel> --sha256 <доверенный SHA-256>`.
 GitHub Releases подходит; адрес опубликованного релиза и итог проверки указаны
 в [приёмке 099](../../docs/tasks/099-local-project-activation-acceptance.md).
+Для опубликованного v0.7.0:
+
+```powershell
+python -m harness77 connect --directory C:/work/application --version 0.7.0 --url https://github.com/AlexanderYekat/1cv7-harness/releases/download/v0.7.0/harness77-0.7.0-py3-none-any.whl --sha256 7f0f81e8ead500ba97920bbb37c316d4680ecc6e0b064bd97fa4ad405ab57d6f --format json
+```
+
 Пустой `harness77.txt` включает новые обращения, удаление выключает их,
 в том числе новые tools/call открытого MCP. Сам маркер ничего не запускает.
 

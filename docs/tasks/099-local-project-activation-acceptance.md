@@ -1,8 +1,9 @@
 # Проверка 099: локальное подключение
 
 13 ноября 2026 года. Реализация и локальные/нативные проверки завершены.
-Владелец разрешил коммит/push и публикацию GitHub Release; выполняется
-публикация и проверка скачивания из него. Этот пункт пока не объявляется выполненным.
+По разрешению владельца отправлен master с четырьмя предыдущими локальными
+коммитами и реализацией 099; опубликован GitHub Release v0.7.0.
+Настоящее скачивание из него и запуск через локальную команду подтверждены.
 
 ## Поставка
 
@@ -99,8 +100,37 @@ suite.problems и JUnit согласованы; нормализованные C
 
 Квалификация нативной части ограничена Windows / 7.70.027 и документом
 «Готовая продукция» из 098. Новые стенды, документы, глобальная регистрация
-MCP и skills не добавлялись. Конкретный сетевой источник выбран — wheel asset
-GitHub Releases этого репозитория, v0.7.0; пока релиз не опубликован, его URL
-не выдаётся за работающую поставку. Подготовлены wheel, SHA256SUMS и описание
-релиза в `.artifacts/s99-distribution/`; коммит/push и публикация разрешены
-владельцем. Следующий шаг — опубликовать и проверить настоящее скачивание GitHub.
+MCP и skills не добавлялись.
+
+## Опубликованный источник и проверка GitHub
+
+[GitHub Release v0.7.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.7.0)
+опубликован из коммита `98c93051bf6dc1be2e2dc4262af15ced301a700e`.
+Публичный источник —
+[harness77-0.7.0-py3-none-any.whl](https://github.com/AlexanderYekat/1cv7-harness/releases/download/v0.7.0/harness77-0.7.0-py3-none-any.whl),
+рядом опубликован
+[SHA256SUMS.txt](https://github.com/AlexanderYekat/1cv7-harness/releases/download/v0.7.0/SHA256SUMS.txt).
+GitHub подтверждает digest `sha256:7f0f81e8ead500ba97920bbb37c316d4680ecc6e0b064bd97fa4ad405ab57d6f`,
+размер wheel — 413028 байт; это тот же дистрибутив, на котором проведена нативная серия.
+
+В новом каталоге `C:/MyProjects/h77-099-github/`, вне checkout, повторена полная
+серия получения с `--url` опубликованного asset.
+[Отчёт](../../.artifacts/s99-evidence/github-download.json): **passed**.
+Первый prepare выбирает download без локального wheel или кеша, pip получает
+реальный GitHub asset, проверяет SHA-256 и устанавливает его изолированно.
+Через эту локальную команду прошли doctor, run, CLI suite и stdio MCP suite.
+Повтор выбирает cache, сохраняет Python, хеши и mtime; удаление маркера блокирует
+новую операцию живого MCP. Реальное скачивание с неверным хешем отвергнуто
+до установки. Недоступная сеть без подходящего кеша проверена отдельным
+loopback-адресом; после отрицательных контролей исходные настройки восстановлены.
+
+```powershell
+python -B scripts/verify_local_activation77.py --wheel .artifacts/s99-distribution/dist/harness77-0.7.0-py3-none-any.whl --installed-python C:/MyProjects/h77-099-kit/venv/Scripts/python.exe --template C:/MyProjects/h77-099-kit/inputs/template.ert --output C:/MyProjects/h77-099-github --url https://github.com/AlexanderYekat/1cv7-harness/releases/download/v0.7.0/harness77-0.7.0-py3-none-any.whl
+```
+
+Выбирайте новый output для повтора. Полная проверка исходного коммита
+[CI](https://github.com/AlexanderYekat/1cv7-harness/actions/runs/43446005680) —
+**success**: Windows Python 3.11/3.13/3.15, Linux Python 3.13,
+сборка sdist/wheel и установленный пакет; общий обязательный ci также успешен.
+[Сохранённые метаданные релиза](../../.artifacts/s99-evidence/github-release.json)
+и [CI](../../.artifacts/s99-evidence/github-ci.json).
