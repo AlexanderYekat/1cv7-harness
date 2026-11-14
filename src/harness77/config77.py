@@ -11,6 +11,7 @@ report and represented by role, basename and a salted-free SHA-256 tag instead.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import tomllib
@@ -20,6 +21,7 @@ from .deadlines77 import Deadlines, PHASES
 SCHEMA_VERSION = 1
 PROJECT_SCHEMA_VERSION = 2
 FILE_FIXTURE_SCHEMA_VERSION = 3
+JSON_FILE_SCHEMA_VERSION = 4
 BACKENDS = ("native", "simulation", "import")
 TIMEOUT_KEYS = {"open": "open_timeout_s", "calculation": "calculation_timeout_s",
                 "cancel": "cancel_timeout_s", "shutdown": "shutdown_timeout_s",
@@ -30,8 +32,16 @@ class ConfigError(ValueError):
     """Readable error for an invalid or incomplete profile."""
 
 
-class FixtureFileError(ConfigError):
+class InputFileError(ConfigError):
+    """An external project input was refused before any platform operation."""
+
+
+class FixtureFileError(InputFileError):
     """A fixture input was refused before any platform operation."""
+
+
+class JsonFileError(InputFileError):
+    """A steps or expected JSON input is invalid."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,68 @@ class FixtureFile:
                 'sha256': hashlib.sha256(self.content).hexdigest(), 'size_bytes': len(self.content)}
 
 
+@dataclass(frozen=True)
+class JsonFile(FixtureFile):
+    test_index: int | None = None
+
+    def public(self):
+        return {**super().public(), **({'test_index': self.test_index} if self.test_index is not None else {})}
+
+    @property
+    def snapshot_name(self):
+        return 'steps.json' if self.test_index is None else f'test-{self.test_index + 1:04d}.expected.json'
+
+
+def json_inputs(parameters, tests, base_dir, version):
+    """Resolve file declarations to the same effective values as inline profiles."""
+    from .structured77 import MAX_BYTES, parse, validate
+    effective, tests, inputs = dict(parameters), [dict(t) if isinstance(t, dict) else t for t in tests], []
+
+    def read_file(role, value, index=None):
+        if version != JSON_FILE_SCHEMA_VERSION:
+            raise JsonFileError(f'{role}_file: требуется schema_version = {JSON_FILE_SCHEMA_VERSION}')
+        path = _resolve(base_dir, value, role + '_file').resolve(strict=True)
+        if not path.is_file():
+            raise ValueError('ожидается обычный файл')
+        with path.open('rb') as stream:
+            raw = stream.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise ValueError('JSON exceeds 1 MiB')
+        if raw.startswith(b'\xef\xbb\xbf'):
+            raise ValueError('нужен UTF-8 без BOM')
+        text = raw.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+        value = parse(text)
+        inputs.append(JsonFile(role, path, raw, index))
+        return text, value
+
+    where = 'steps_file'
+    try:
+        if 'steps_file' in effective:
+            if 'steps' in effective:
+                raise ValueError('нельзя одновременно задавать steps и steps_file')
+            text, value = read_file('steps', effective.pop('steps_file'))
+            # Operation semantics and metadata continue to use the native preflight.
+            if not isinstance(value, list) or not value or not all(isinstance(x, dict) and x for x in value):
+                raise ValueError('steps: нужен непустой JSON-массив непустых объектов')
+            steps = json.loads(text)
+            if not _parameter(steps):
+                raise ValueError('steps: значения полей должны быть скалярами')
+            json.dumps(steps, allow_nan=False)
+            effective['steps'] = steps
+        for index, test in enumerate(tests):
+            if not isinstance(test, dict) or 'expect_json_file' not in test:
+                continue
+            where = f'tests[{index}].expect_json_file'
+            if 'expect_json' in test or 'expect_value' in test or test.get('expect') != 'passed':
+                raise ValueError('expect_json_file требует expect=passed, без expect_json/expect_value')
+            text, _ = read_file('expect_json', test.pop('expect_json_file'), index)
+            validate(text, test.get('json_labels', {}))
+            test['expect_json'] = text
+    except (OSError, ValueError, RuntimeError) as error:
+        raise JsonFileError(f'{where}: {type(error).__name__}: {error}') from None
+    return effective, tests, tuple(inputs)
+
+
 def fixture_parameters(parameters, base_dir, version):
     """Read each explicit file once; keep its exact bytes for execution evidence."""
     effective, inputs = dict(parameters), []
@@ -52,7 +124,7 @@ def fixture_parameters(parameters, base_dir, version):
         key = role + '_file'
         if key not in parameters:
             continue
-        if version != FILE_FIXTURE_SCHEMA_VERSION:
+        if version not in (FILE_FIXTURE_SCHEMA_VERSION, JSON_FILE_SCHEMA_VERSION):
             raise FixtureFileError(f'{key}: требуется schema_version = {FILE_FIXTURE_SCHEMA_VERSION}')
         if role in parameters:
             raise FixtureFileError(f'{key}: нельзя одновременно задавать {role} и {key}')
@@ -85,6 +157,19 @@ def refresh_fixture_files(project):
         declared[item.role + '_file'] = str(item.path)
     parameters, inputs = fixture_parameters(declared, project.path.parent, FILE_FIXTURE_SCHEMA_VERSION)
     return replace(project, parameters=parameters, fixture_files=inputs)
+
+
+def refresh_project_files(project):
+    project = refresh_fixture_files(project)
+    if not project.json_files:
+        return project
+    parameters, tests = dict(project.parameters), [dict(t) for t in project.tests]
+    for item in project.json_files:
+        target = parameters if item.test_index is None else tests[item.test_index]
+        target.pop(item.role, None)
+        target[item.role + '_file'] = str(item.path)
+    parameters, tests, inputs = json_inputs(parameters, tests, project.path.parent, JSON_FILE_SCHEMA_VERSION)
+    return replace(project, parameters=parameters, tests=tuple(tests), json_files=inputs)
 
 
 def _load_toml(path):
@@ -155,6 +240,7 @@ class ProjectProfile:
     configuration: Path | None = None
     keep_copy: bool = False
     fixture_files: tuple[FixtureFile, ...] = ()
+    json_files: tuple[JsonFile, ...] = ()
 
     def public(self):
         return {"project_id": self.project_id, "profile": path_tag(self.path),
@@ -168,7 +254,8 @@ class ProjectProfile:
                              "allow": list(self.allow), "strict": self.strict},
                 "tests": [dict(t) for t in self.tests], "parameters": dict(self.parameters),
                 "visual": self.visual.public() if self.visual is not None else None,
-                **({'fixture_files': [item.public() for item in self.fixture_files]} if self.fixture_files else {})}
+                **({'fixture_files': [item.public() for item in self.fixture_files]} if self.fixture_files else {}),
+                **({'json_files': [item.public() for item in self.json_files]} if self.json_files else {})}
 
     def commands(self):
         """Commands of the declared tests, in declaration order, without repeats."""
@@ -218,15 +305,21 @@ class StandProfile:
 def load_project(path) -> ProjectProfile:
     data, path = _load_toml(path)
     version = data.get('schema_version')
-    if type(version) is not int or version not in (SCHEMA_VERSION, PROJECT_SCHEMA_VERSION, FILE_FIXTURE_SCHEMA_VERSION):
-        raise ConfigError(f"{path}: нужна schema_version = 1, {PROJECT_SCHEMA_VERSION} или {FILE_FIXTURE_SCHEMA_VERSION}")
+    if type(version) is not int or version not in (SCHEMA_VERSION, PROJECT_SCHEMA_VERSION, FILE_FIXTURE_SCHEMA_VERSION, JSON_FILE_SCHEMA_VERSION):
+        raise ConfigError(f"{path}: нужна schema_version = 1, 2, 3 или {JSON_FILE_SCHEMA_VERSION}")
     base_dir = path.parent
     project = _require(data, "project", str(path))
     build = _require(data, "build", str(path))
     analysis = data.get("analysis", {})
     platform = data.get("platform", {})
+    parameters = platform.get("parameters", {})
+    if not isinstance(parameters, dict) or not all(_parameter(value) for value in parameters.values()):
+        raise ConfigError(f"{path}: [platform.parameters] допускает строки, числа, логические значения "
+                          "и массивы из них или из таблиц таких значений")
+    parameters, fixture_files = fixture_parameters(parameters, base_dir, version)
+    parameters, declarations, json_files = json_inputs(parameters, platform.get('tests', []), base_dir, version)
     tests = []
-    for index, item in enumerate(platform.get("tests", [])):
+    for index, item in enumerate(declarations):
         if not isinstance(item, dict) or "name" not in item or "expect" not in item:
             raise ConfigError(f"{path}: тест #{index} требует 'name' и 'expect'")
         if item["expect"] not in ("passed", "failed", "blocked"):
@@ -250,11 +343,6 @@ def load_project(path) -> ProjectProfile:
             if 'json_labels' in item:
                 test['json_labels'] = dict(item['json_labels'])
         tests.append(test)
-    parameters = platform.get("parameters", {})
-    if not isinstance(parameters, dict) or not all(_parameter(value) for value in parameters.values()):
-        raise ConfigError(f"{path}: [platform.parameters] допускает строки, числа, логические значения "
-                          "и массивы из них или из таблиц таких значений")
-    parameters, fixture_files = fixture_parameters(parameters, base_dir, version)
     visual = None
     if "visual" in data:
         from .visual77 import VisualError, parse_config
@@ -282,7 +370,7 @@ def load_project(path) -> ProjectProfile:
         metadata=_resolve(base_dir, build["metadata"], "build.metadata") if "metadata" in build else None,
         configuration=(_resolve(base_dir, _require(configuration, "modules", "configuration"), "configuration.modules")
                        if configuration is not None else None),
-        keep_copy=bool((configuration or {}).get("keep_copy", False)), fixture_files=fixture_files)
+        keep_copy=bool((configuration or {}).get("keep_copy", False)), fixture_files=fixture_files, json_files=json_files)
 
 
 def load_stand(path) -> StandProfile:

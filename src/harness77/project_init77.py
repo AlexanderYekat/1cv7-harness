@@ -12,13 +12,13 @@ import tempfile
 import tomllib
 
 from .artifacts import _container, _destination, _input
-from .config77 import load_project, fixture_parameters, FILE_FIXTURE_SCHEMA_VERSION
+from .config77 import load_project, fixture_parameters, json_inputs, FILE_FIXTURE_SCHEMA_VERSION, JSON_FILE_SCHEMA_VERSION
 from .deadlines77 import Deadlines
 from .ert_module import ErtError, decompress_module
 from .report77 import sha256_bytes
 
 PREFIX = '.harness77-project-'
-NAMES = ('project.toml', 'module.1s', 'template.ert', 'scenario.json', 'fixture.1s', 'reader.1s')
+NAMES = ('project.toml', 'module.1s', 'template.ert', 'scenario.json', 'fixture.1s', 'reader.1s', 'steps.json', 'expected.json')
 
 
 def _toml(value):
@@ -50,7 +50,7 @@ def _scenario(raw):
     tests = data.get('tests')
     if not isinstance(data.get('parameters'), dict) or not isinstance(tests, list) or not tests:
         raise ValueError('scenario: нужны parameters и непустой список tests')
-    allowed = {'name', 'command', 'expect', 'description', 'expect_value', 'expect_json', 'json_labels'}
+    allowed = {'name', 'command', 'expect', 'description', 'expect_value', 'expect_json', 'expect_json_file', 'json_labels'}
     names = set()
     for test in tests:
         if not isinstance(test, dict) or set(test) - allowed:
@@ -61,7 +61,7 @@ def _scenario(raw):
         if test['name'] in names:
             raise ValueError('scenario: повторное имя теста ' + test['name'])
         names.add(test['name'])
-        for key in ('description', 'expect_value', 'expect_json'):
+        for key in ('description', 'expect_value', 'expect_json', 'expect_json_file'):
             if key in test and not isinstance(test[key], str):
                 raise ValueError('scenario: ' + key + ' должен быть строкой')
     return data
@@ -93,12 +93,12 @@ def _write(path, payload):
         os.fsync(stream.fileno())
 
 
-def _cleanup(stage, parent):
+def _cleanup(stage, parent, names=NAMES):
     # Delete only known files in our private sibling, never recursively delete
     # a computed/user directory or a competing destination.
     if stage.is_symlink() or stage.resolve().parent != parent.resolve() or not stage.name.startswith(PREFIX):
         raise OSError('Не подтверждён временный каталог проекта: ' + str(stage))
-    for name in NAMES:
+    for name in names:
         (stage / name).unlink(missing_ok=True)
     config = stage / 'configuration'
     if config.exists():
@@ -137,14 +137,26 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
         scenario_path, scenario_bytes = _input(scenario)
         inputs += [(source_path, source_bytes), (scenario_path, scenario_bytes)]
         platform = _scenario(scenario_bytes)
+        if 'steps_file' in platform['parameters'] or any('expect_json_file' in t for t in platform['tests']):
+            profile_version = JSON_FILE_SCHEMA_VERSION
+            _, _, referenced = json_inputs(platform['parameters'], platform['tests'], scenario_path.parent, profile_version)
+            expected_count = sum(i.test_index is not None for i in referenced)
+            for item in referenced:
+                name = ('steps.json' if item.test_index is None else 'expected.json' if expected_count == 1
+                        else f'expected-{item.test_index + 1:04d}.json')
+                fixture_payloads[name] = item.content
+                inputs.append((item.path, item.content))
+                target = platform['parameters'] if item.test_index is None else platform['tests'][item.test_index]
+                target[item.role + '_file'] = name
         if any(key in platform['parameters'] for key in ('fixture_setup_file', 'fixture_verify_file')):
-            profile_version = FILE_FIXTURE_SCHEMA_VERSION
+            profile_version = max(profile_version, FILE_FIXTURE_SCHEMA_VERSION)
             _, referenced = fixture_parameters(platform['parameters'], scenario_path.parent, profile_version)
             for item in referenced:
                 name = 'fixture.1s' if item.role == 'fixture_setup' else 'reader.1s'
                 fixture_payloads[name] = item.content
                 inputs.append((item.path, item.content))
                 platform['parameters'][item.role + '_file'] = name
+        if fixture_payloads:
             scenario_bytes = (json.dumps(platform, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
     else:
         source_bytes = files('harness77').joinpath('project_headless77.1s').read_bytes()
@@ -181,7 +193,7 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
         published = True
     finally:
         if not published:
-            _cleanup(stage, destination.parent)
+            _cleanup(stage, destination.parent, tuple(payloads))
     return {'status': 'created', 'exit_code': 0, 'platform_checked': False, 'launch_performed': False,
             'directory': str(destination), 'project': str(destination / 'project.toml'), 'runtime': runtime,
             'inputs': [{'path': str(path), 'sha256': sha256_bytes(data), 'size_bytes': len(data)} for path, data in inputs],

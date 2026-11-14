@@ -20,6 +20,7 @@ def main():
     p.add_argument('--copy-exclude', action='append', default=[])
     p.add_argument('--direct', action='store_true', help='101: direct document open/reopen with an explicit print caption')
     p.add_argument('--file-fixtures', action='store_true', help='102: copy fixture/reader and reference their files')
+    p.add_argument('--json-files', action='store_true', help='103: read steps and expected JSON files on every run')
     p.add_argument('--wheel', type=Path, help='101: newly built wheel, bundled in the standalone project')
     p.add_argument('--url', help='101: published wheel URL, without a local wheel or bundle')
     p.add_argument('--version', help='101: pinned version for --url')
@@ -38,6 +39,8 @@ def main():
         p.error('explicit package options require --direct; the default task 100 pins its published 0.7.0')
     if a.file_fixtures and not a.direct:
         p.error('--file-fixtures requires --direct')
+    if a.json_files and not (a.direct and a.file_fixtures):
+        p.error('--json-files requires --direct --file-fixtures')
     expected = json.loads((HERE / 'expected.json').read_text(encoding='utf-8'))
     initial = json.loads(json.dumps(expected))
     initial['amount'] = initial['total'] = '80'
@@ -66,7 +69,12 @@ def main():
         for role, name in [('fixture_setup', 'fixture.1s'), ('fixture_verify', 'reader.1s')]:
             scenario['parameters'].pop(role)
             scenario['parameters'][role + '_file'] = str((HERE / ('direct-' + name)).resolve())
-    task = '102' if a.file_fixtures else '101' if a.direct else '100'
+    if a.json_files:
+        scenario['parameters'].pop('steps')
+        scenario['parameters']['steps_file'] = str((HERE / 'direct-steps.json').resolve())
+        scenario['tests'][-1].pop('expect_json')
+        scenario['tests'][-1]['expect_json_file'] = str((HERE / 'expected.json').resolve())
+    task = '103' if a.json_files else '102' if a.file_fixtures else '101' if a.direct else '100'
     # Reserve an exclusive temporary input; never replace an adjacent user's file.
     with tempfile.NamedTemporaryFile(dir=out.parent, prefix='.invoice100-', suffix='.json',
                                      mode='w', encoding='utf-8', delete=False) as temporary:
@@ -109,6 +117,8 @@ def main():
         shutil.copy2(HERE / name, out / name)
     if a.file_fixtures:
         shutil.copy2(HERE / 'file_checks.py', out / 'file_checks.py')
+    if a.json_files:
+        shutil.copy2(HERE / 'json_checks.py', out / 'json_checks.py')
     if a.direct:
         for name in ('fixture.1s', 'reader.1s', 'steps.json'):
             shutil.copy2(HERE / ('direct-' + name), out / name)

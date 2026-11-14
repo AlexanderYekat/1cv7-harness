@@ -562,8 +562,8 @@ def _overall(stages):
 
 
 def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, cancel=None, wait_for_copy=False):
-    from .config77 import refresh_fixture_files
-    project = refresh_fixture_files(project)
+    from .config77 import refresh_project_files
+    project = refresh_project_files(project)
     run_id = run_id or str(uuid.uuid4())
     clock = clock or Clock()
     cancel = cancel or threading.Event()
@@ -580,6 +580,16 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
                 raise OSError('Не подтверждён снимок ' + item.role)
             fixture_evidence.append(dict(file_evidence(snapshot, root=run_dir, complete=True,
                 expected_sha256=sha256_bytes(item.content)), role=item.role, source=item.public()['source']))
+    if project.json_files:
+        folder = run_dir / 'input-files'
+        folder.mkdir()
+        for item in project.json_files:
+            snapshot = folder / item.snapshot_name
+            snapshot.write_bytes(item.content)
+            if snapshot.read_bytes() != item.content:
+                raise OSError('Не подтверждён снимок ' + item.role)
+            fixture_evidence.append({**file_evidence(snapshot, root=run_dir, complete=True,
+                expected_sha256=sha256_bytes(item.content)), **item.public()})
     observe = Observations(run_dir / "observations.jsonl")
     report = {"schema_version": 1, "tool": "harness77", "operation": "run", "mode": "full",
               "version": __version__, "run_id": run_id, "started_at": _now_iso(),

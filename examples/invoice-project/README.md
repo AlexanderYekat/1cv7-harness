@@ -1,5 +1,29 @@
 # Самостоятельный проект счёта-фактуры (100)
 
+## Файловые steps/expected (103, локальный wheel 0.10.0)
+
+К команде файловой 102 ниже добавьте `--json-files` (вместе с
+`--direct --file-fixtures`) и выберите wheel/bootstrap 0.10.0.
+Для этой серии: wheel — `C:/MyProjects/harness77/.artifacts/s103-package-final/dist/harness77-0.10.0-py3-none-any.whl`,
+bootstrap — `C:/MyProjects/harness77/.artifacts/s103-package-final/venv/Scripts/python.exe`,
+проект — `C:/MyProjects/h77-103-final`, результаты — `C:/MyProjects/h77-103-final-cycle`.
+После подготовки все команды идут через локальный launcher с harness77.txt.
+
+Профиль схемы 4 ссылается на fixture.1s, reader.1s, steps.json и expected.json.
+Редактирование каждого файла подхватывается следующим запросом без project-init
+и изменения профиля. JSON — UTF-8 без BOM; входы ограничены 1 MiB и прежними
+проверками structured JSON. Точные steps/expected сохраняются в input-files/,
+fixture/reader — в fixture-inputs/, с размерами, ролями и SHA-256.
+
+Основная серия — четыре фазы и совместимые варианты 101/102 через каждый
+интерфейс. Дополнительно два контроля подписи, девять проб fixture/reader
+и девять проб JSON-файлов: steps меняет количество 3→4, UI читает 120/170,
+прежнее expected обнаруживает расхождения; правка только expected.total
+140→141 даёт одно расхождение при правильном UI; восстановление — passed.
+Все пробы повторяются через run, CLI suite и тот же живой MCP.
+Всего 38 нативных запусков и 54 отказа входов до 1С (21 прежний и 33 новых).
+После проб исходные файлы восстановлены. Новый релиз автоматически не публикуется.
+
 ## Файловые fixture/reader (102, wheel 0.9.0)
 
 Для опубликованного [0.9.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.9.0)

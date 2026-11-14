@@ -79,6 +79,15 @@ def verify_run(folder, phase, plans, expected):
         assert digest(folder / snapshot['path']) == item['sha256']
         text = (folder / snapshot['path']).read_text(encoding='utf-8')
         assert run['inputs']['parameters'][item['role']] == text
+    for item in run['inputs'].get('json_files', []):
+        snapshot = next(f for f in run['result_files'] if f.get('role') == item['role'] and f.get('test_index') == item.get('test_index'))
+        assert snapshot['complete'] and snapshot['sha256_matches'] and snapshot['sha256'] == item['sha256']
+        assert digest(folder / snapshot['path']) == item['sha256']
+        text = (folder / snapshot['path']).read_text(encoding='utf-8')
+        if item['role'] == 'steps':
+            assert json.loads(text) == run['inputs']['parameters']['steps']
+        else:
+            assert text == run['inputs']['tests'][item['test_index']]['expect_json']
     assert not run['cancelled'] and run['finished_at']
     tests = next(s for s in run['stages'] if s['stage'] == 'tests')['tests']
     assert next(t for t in tests if t['name'] == 'form-open')['expectation_met']
@@ -173,7 +182,7 @@ def verify_suite(folder, plans, expected):
     suite = read(folder / 'suite.json')
     assert suite['status'] == 'failed' and suite['exit_code'] == 1 and suite['complete'] and not suite['cancelled']
     cases = ET.parse(folder / 'junit.xml').getroot().findall('testsuite/testcase')
-    phases = ['baseline', 'regression', 'fixed', 'repeat-fixed'] + (['inline101'] if 'inline101' in plans else [])
+    phases = ['baseline', 'regression', 'fixed', 'repeat-fixed'] + (['inline101'] if 'inline101' in plans else []) + (['files102'] if 'files102' in plans else [])
     assert len(cases) == len(suite['scenarios']) == len(phases)
     results = []
     for row, case in zip(suite['scenarios'], cases):
@@ -207,7 +216,7 @@ def main():
     assert record['mcp_exit_code'] == 0
     assert all(digest(Path(n)) == h for n, h in record['inputs'].items())
     expected = read(Path(__file__).with_name('expected.json'))
-    assert len(record['runs']) == (5 if 'inline101' in record['plans'] else 4) and len(record['suites']) == 2
+    assert len(record['runs']) == (6 if 'files102' in record['plans'] else 5 if 'inline101' in record['plans'] else 4) and len(record['suites']) == 2
     for row in record['runs']:
         assert verify_run(Path(row['folder']), row['case'], record['plans'], expected) == row['verification']
     for row in record['suites']:
@@ -217,8 +226,11 @@ def main():
     if 'file_edits' in record:
         from file_checks import verify_files
         verify_files(record, expected)
+    if 'json_edits' in record:
+        from json_checks import verify_json
+        verify_json(record, expected)
     assert record['suites'][0]['verification'] == record['suites'][1]['verification']
-    print(json.dumps({'status': 'passed', 'native_runs': len(record['runs']) + sum(len(s['verification']) for s in record['suites']) + len(record.get('caption_controls', [])) + len(record.get('file_edits', [])), 'unchanged_tests': True,
+    print(json.dumps({'status': 'passed', 'native_runs': len(record['runs']) + sum(len(s['verification']) for s in record['suites']) + len(record.get('caption_controls', [])) + len(record.get('file_edits', [])) + len(record.get('json_edits', [])), 'unchanged_tests': True,
                       'source_registry_and_foreign_sessions_preserved': True}, indent=2))
 
 

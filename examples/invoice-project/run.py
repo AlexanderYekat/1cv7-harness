@@ -92,11 +92,17 @@ def main():
                 fromfile=MODULE, tofile=MODULE)).encode('utf-8'))
         common = tomllib.loads((HERE / 'project.toml').read_text(encoding='utf-8'))
         file_mode = 'fixture_setup_file' in common['platform']['parameters']
+        json_mode = 'steps_file' in common['platform']['parameters']
         for role in ('fixture_setup', 'fixture_verify'):
             key = role + '_file'
             if key in common['platform']['parameters']:
                 common['platform']['parameters'][key] = str((HERE / common['platform']['parameters'][key]).resolve())
-        phases = (*PHASES, 'inline101') if file_mode else PHASES
+        if json_mode:
+            common['platform']['parameters']['steps_file'] = str((HERE / common['platform']['parameters']['steps_file']).resolve())
+            for test in common['platform']['tests']:
+                if 'expect_json_file' in test:
+                    test['expect_json_file'] = str((HERE / test['expect_json_file']).resolve())
+        phases = (*PHASES, 'inline101', 'files102') if json_mode else (*PHASES, 'inline101') if file_mode else PHASES
         for field in ('template', 'source'):
             common['build'][field] = str(HERE / common['build'][field])
         profiles = {}
@@ -113,6 +119,13 @@ def main():
                 for role in ('fixture_setup', 'fixture_verify'):
                     path = Path(profile['platform']['parameters'].pop(role + '_file'))
                     profile['platform']['parameters'][role] = path.read_text(encoding='utf-8')
+            if json_mode and phase in ('inline101', 'files102'):
+                profile['schema_version'] = 2 if phase == 'inline101' else 3
+                params = profile['platform']['parameters']
+                params['steps'] = read(Path(params.pop('steps_file')))
+                for test in profile['platform']['tests']:
+                    if 'expect_json_file' in test:
+                        test['expect_json'] = Path(test.pop('expect_json_file')).read_text(encoding='utf-8')
             profile['configuration']['modules'] = str(configuration)
             path = out / (phase + '.toml')
             path.write_text('\n'.join(json.dumps(k) + '=' + toml_value(v) for k, v in profile.items()) + '\n', encoding='utf-8')
@@ -130,6 +143,9 @@ def main():
             from harness77.config77 import load_project
             assert load_project(profiles['baseline']).parameters == load_project(profiles['inline101']).parameters
             assert load_project(profiles['baseline']).tests == load_project(profiles['inline101']).tests
+            if json_mode:
+                assert load_project(profiles['baseline']).parameters == load_project(profiles['files102']).parameters
+                assert load_project(profiles['baseline']).tests == load_project(profiles['files102']).tests
         save()
         for phase in phases:
             summary = execute('run-' + phase, ['run', '--project', profiles[phase], '--output-root', out / ('run-' + phase)],
@@ -171,8 +187,18 @@ def main():
             for case in ('wrong-open-caption', 'wrong-reopen-caption'):
                 control = tomllib.loads(profiles['baseline'].read_text(encoding='utf-8'))
                 parameters = control['platform']['parameters']
-                target = parameters if case == 'wrong-open-caption' else next(s for s in parameters['steps'] if 'reopen' in s)
-                target['caption_text'] = 'Нет такой подписи 101'
+                if json_mode and case == 'wrong-reopen-caption':
+                    steps = read(Path(parameters['steps_file']))
+                    next(s for s in steps if 'reopen' in s)['caption_text'] = 'Нет такой подписи 101'
+                    steps_path = out / 'wrong-reopen-steps.json'
+                    write(steps_path, steps)
+                    parameters['steps_file'] = str(steps_path)
+                    # The separate control changes its own file, never the project's steps.
+                    target = parameters
+                else:
+                    target = parameters if case == 'wrong-open-caption' else next(s for s in parameters['steps'] if 'reopen' in s)
+                if not (json_mode and case == 'wrong-reopen-caption'):
+                    target['caption_text'] = 'Нет такой подписи 101'
                 profile = out / (case + '.toml')
                 profile.write_text('\n'.join(json.dumps(k) + '=' + toml_value(v) for k, v in control.items()) + '\n', encoding='utf-8')
                 summary = execute(case, ['run', '--project', profile, '--output-root', out / case], code=1)
@@ -185,6 +211,9 @@ def main():
         if file_mode:
             from file_checks import qualify_files
             qualify_files(HERE, out, profiles['baseline'], record, execute, env, preserved, save)
+        if json_mode:
+            from json_checks import qualify_json
+            qualify_json(HERE, out, profiles['baseline'], record, execute, env, preserved, save)
         preserved()
         record['after'] = snapshot()
         record['unchanged_tests'] = True
