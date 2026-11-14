@@ -1,6 +1,13 @@
 # Самостоятельный проект счёта-фактуры (100)
 
-## Файловые steps/expected (103, локальный wheel 0.10.0)
+## Файловые steps/expected (103, wheel 0.10.0)
+
+Для опубликованного [0.10.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.10.0)
+сохраните `--direct --file-fixtures --json-files`, замените `--wheel …` на
+`--url https://github.com/AlexanderYekat/1cv7-harness/releases/download/v0.10.0/harness77-0.10.0-py3-none-any.whl --version 0.10.0 --sha256 24ba9a9b5ef2fc3957a417f56aaf19e683329b11c57c02ec7924766764a84aa2`
+и укажите новый проект/output. Bootstrap — Python с установленной 0.10.0.
+В connect только URL/версия/хеш, первое prepare скачивает опубликованный asset.
+[Повторная проверка поставки](../../docs/tasks/103-release-0100-acceptance.md).
 
 К команде файловой 102 ниже добавьте `--json-files` (вместе с
 `--direct --file-fixtures`) и выберите wheel/bootstrap 0.10.0.
