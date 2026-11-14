@@ -130,3 +130,6 @@ raw JSON, MD, UI, run/suite/JUnit, ответы MCP и состояние ист
 [Принятая 101](101-direct-invoice-caption.md),
 [исходная проверка локальной сборки](101-direct-invoice-caption-acceptance.md),
 [команды подготовки](../../examples/invoice-project/README.md).
+
+
+[Хранение артефактов после очистки 14.11.2026](100-103-artifact-retention.md).

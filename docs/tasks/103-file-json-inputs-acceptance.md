@@ -139,3 +139,6 @@ forced_cleanup=false. Начальный список чужих сеансов 
 
 [Задание](103-file-json-inputs.md), [контракт](../contracts.md),
 [команды](../../examples/invoice-project/README.md).
+
+
+[Хранение артефактов после очистки 14.11.2026](100-103-artifact-retention.md).

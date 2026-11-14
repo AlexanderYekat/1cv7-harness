@@ -116,3 +116,6 @@ Windows / 7.70.027 / квалифицированные DLL / DBF.
 
 [Команды и входы](../../examples/invoice-project/README.md),
 [задание](102-file-fixtures.md), [контракт](../contracts.md).
+
+
+[Хранение артефактов после очистки 14.11.2026](100-103-artifact-retention.md).

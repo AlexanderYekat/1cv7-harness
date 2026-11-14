@@ -162,3 +162,6 @@ external-python или прежнего кеша; подтвердить реа�
 [Принятая 102](102-file-fixtures.md),
 [первоначальная техническая проверка](102-file-fixtures-acceptance.md),
 [команды проекта](../../examples/invoice-project/README.md).
+
+
+[Хранение артефактов после очистки 14.11.2026](100-103-artifact-retention.md).
