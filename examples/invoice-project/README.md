@@ -1,6 +1,13 @@
 # Самостоятельный проект счёта-фактуры (100)
 
-## Файловые fixture/reader (102, локальный wheel 0.9.0)
+## Файловые fixture/reader (102, wheel 0.9.0)
+
+Для опубликованного [0.9.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.9.0)
+сохраните `--direct --file-fixtures`, замените `--wheel …` на
+`--url https://github.com/AlexanderYekat/1cv7-harness/releases/download/v0.9.0/harness77-0.9.0-py3-none-any.whl --version 0.9.0 --sha256 764354bbf8e7d1cd7ccbadb7a7f8e897158f106518003e887b7e927aa6847fd6`
+и укажите новый проект/output. Bootstrap — Python с установленной 0.9.0.
+В connect сохраняются URL/версия/хеш; первое prepare скачивает опубликованный
+asset без локального wheel и bundle. [Отчёт серии](../../docs/tasks/102-release-090-acceptance.md).
 
 К прямому режиму добавьте `--file-fixtures` и выберите установленный
 bootstrap/wheel 0.9.0. Пример проверочного стенда:
