@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 from . import __version__
 from .config77 import (ConfigError, _load_toml, _resolve, load_project, load_stand,
-                       path_tag, resolve_deadlines)
+                       path_tag, resolve_deadlines, FixtureFileError)
 from .deadlines77 import DeadlineError
 from .progress77 import publish_suite_scenario
 from .report77 import BLOCKED, FAILED, PASSED, SKIPPED, atomic_json, exit_code, file_evidence
@@ -322,6 +322,8 @@ def execute(suite, stand, *, output_root, suite_id=None, overrides=None, cancel=
                     stop = "cancelled"
                 if cancel.is_set() and row["status"] == PASSED:
                     row.update(status=BLOCKED, reason="cancelled before scenario completion was recorded")
+            except FixtureFileError as error:  # execute refresh refused inputs before creating a run/session.
+                row.update(status=BLOCKED, reason=f'project_error: {error}', run_id=None)
             except Exception as error:  # A runner failure leaves session state unknown; never start another.
                 stop = f"run_error: {type(error).__name__}: {error}"
                 row.update(status=BLOCKED, reason=stop)

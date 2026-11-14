@@ -19,6 +19,7 @@ def main():
     p.add_argument('--user', required=True)
     p.add_argument('--copy-exclude', action='append', default=[])
     p.add_argument('--direct', action='store_true', help='101: direct document open/reopen with an explicit print caption')
+    p.add_argument('--file-fixtures', action='store_true', help='102: copy fixture/reader and reference their files')
     p.add_argument('--wheel', type=Path, help='101: newly built wheel, bundled in the standalone project')
     p.add_argument('--url', help='101: published wheel URL, without a local wheel or bundle')
     p.add_argument('--version', help='101: pinned version for --url')
@@ -35,6 +36,8 @@ def main():
         p.error('--direct requires --wheel or --url/--version/--sha256')
     if not a.direct and (a.wheel or any(remote)):
         p.error('explicit package options require --direct; the default task 100 pins its published 0.7.0')
+    if a.file_fixtures and not a.direct:
+        p.error('--file-fixtures requires --direct')
     expected = json.loads((HERE / 'expected.json').read_text(encoding='utf-8'))
     initial = json.loads(json.dumps(expected))
     initial['amount'] = initial['total'] = '80'
@@ -59,7 +62,11 @@ def main():
         scenario['parameters'].update(fixture_mode='existing', caption_control='кнПечать', caption_text='Печать')
     else:
         scenario['parameters'].update(fixture_mode='journal_existing', journal_form='Журнал.Товары.ФормаСписка.ФормаСписка')
-    task = '101' if a.direct else '100'
+    if a.file_fixtures:
+        for role, name in [('fixture_setup', 'fixture.1s'), ('fixture_verify', 'reader.1s')]:
+            scenario['parameters'].pop(role)
+            scenario['parameters'][role + '_file'] = str((HERE / ('direct-' + name)).resolve())
+    task = '102' if a.file_fixtures else '101' if a.direct else '100'
     # Reserve an exclusive temporary input; never replace an adjacent user's file.
     with tempfile.NamedTemporaryFile(dir=out.parent, prefix='.invoice100-', suffix='.json',
                                      mode='w', encoding='utf-8', delete=False) as temporary:
@@ -100,6 +107,8 @@ def main():
     (out / 'suite.toml').write_text('schema_version=1\n[suite]\nid="invoice' + task + '"\n\n[[scenarios]]\nid="baseline"\nproject="project.toml"\n', encoding='utf-8')
     for name in ('fixture.1s', 'reader.1s', 'steps.json', 'expected.json', 'run.py', 'verify.py', 'README.md'):
         shutil.copy2(HERE / name, out / name)
+    if a.file_fixtures:
+        shutil.copy2(HERE / 'file_checks.py', out / 'file_checks.py')
     if a.direct:
         for name in ('fixture.1s', 'reader.1s', 'steps.json'):
             shutil.copy2(HERE / ('direct-' + name), out / name)

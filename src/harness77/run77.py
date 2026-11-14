@@ -562,18 +562,31 @@ def _overall(stages):
 
 
 def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, cancel=None, wait_for_copy=False):
+    from .config77 import refresh_fixture_files
+    project = refresh_fixture_files(project)
     run_id = run_id or str(uuid.uuid4())
     clock = clock or Clock()
     cancel = cancel or threading.Event()
     run_dir = Path(output_root).resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
+    fixture_evidence = []
+    if project.fixture_files:
+        folder = run_dir / 'fixture-inputs'
+        folder.mkdir()
+        for item in project.fixture_files:
+            snapshot = folder / (item.role + '.1s')
+            snapshot.write_bytes(item.content)
+            if snapshot.read_bytes() != item.content:
+                raise OSError('Не подтверждён снимок ' + item.role)
+            fixture_evidence.append(dict(file_evidence(snapshot, root=run_dir, complete=True,
+                expected_sha256=sha256_bytes(item.content)), role=item.role, source=item.public()['source']))
     observe = Observations(run_dir / "observations.jsonl")
     report = {"schema_version": 1, "tool": "harness77", "operation": "run", "mode": "full",
               "version": __version__, "run_id": run_id, "started_at": _now_iso(),
               "run_dir": str(run_dir), "deadlines": deadlines.effective(),
               "inputs": project.public(), "platform": stand.public(),
               "platform_checked": False, "cancelled": False, "timeout_phase": None,
-              "reason": None, "stages": [], "result_files": []}
+              "reason": None, "stages": [], "result_files": fixture_evidence}
     static = _build = platform = tests = visual = configuration_stage = configuration = None
     platform_result = None
     try:
@@ -605,7 +618,7 @@ def execute(project, stand, deadlines, *, output_root, run_id=None, clock=None, 
             report["platform"].update(platform_result.get("platform_identity", {}))
             report["cancelled"] = platform_result.get("cancelled", False)
             report["timeout_phase"] = platform_result.get("timeout_phase")
-            report["result_files"] = platform_result.get("result_files", [])
+            report["result_files"] = [*fixture_evidence, *platform_result.get("result_files", [])]
             report["screenshots"] = platform_result.get("screenshots", [])
             report["shutdown"] = platform_result.get("shutdown")
             tests = _judge_tests(project, platform_result, platform.status == PASSED, run_dir, run_id)
@@ -703,7 +716,7 @@ def main(argv=None):
     try:
         report = execute(project, stand, deadlines, output_root=args.output_root, run_id=args.run_id, cancel=cancel,
                          wait_for_copy=args.wait_for_copy)
-    except OSError as error:
+    except (OSError, ConfigError) as error:
         blocked = {"schema_version": 1, "tool": "harness77", "operation": "run", "status": BLOCKED,
                    "exit_code": 2, "reason": f"{type(error).__name__}: {error}", "platform_checked": False}
         print(json.dumps(blocked, ensure_ascii=False, indent=2), file=sys.stderr)

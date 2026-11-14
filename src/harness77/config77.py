@@ -11,7 +11,7 @@ report and represented by role, basename and a salted-free SHA-256 tag instead.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import tomllib
 
@@ -19,6 +19,7 @@ from .deadlines77 import Deadlines, PHASES
 
 SCHEMA_VERSION = 1
 PROJECT_SCHEMA_VERSION = 2
+FILE_FIXTURE_SCHEMA_VERSION = 3
 BACKENDS = ("native", "simulation", "import")
 TIMEOUT_KEYS = {"open": "open_timeout_s", "calculation": "calculation_timeout_s",
                 "cancel": "cancel_timeout_s", "shutdown": "shutdown_timeout_s",
@@ -27,6 +28,63 @@ TIMEOUT_KEYS = {"open": "open_timeout_s", "calculation": "calculation_timeout_s"
 
 class ConfigError(ValueError):
     """Readable error for an invalid or incomplete profile."""
+
+
+class FixtureFileError(ConfigError):
+    """A fixture input was refused before any platform operation."""
+
+
+@dataclass(frozen=True)
+class FixtureFile:
+    role: str
+    path: Path
+    content: bytes
+
+    def public(self):
+        return {'role': self.role, 'source': path_tag(self.path), 'encoding': 'utf-8',
+                'sha256': hashlib.sha256(self.content).hexdigest(), 'size_bytes': len(self.content)}
+
+
+def fixture_parameters(parameters, base_dir, version):
+    """Read each explicit file once; keep its exact bytes for execution evidence."""
+    effective, inputs = dict(parameters), []
+    for role in ('fixture_setup', 'fixture_verify'):
+        key = role + '_file'
+        if key not in parameters:
+            continue
+        if version != FILE_FIXTURE_SCHEMA_VERSION:
+            raise FixtureFileError(f'{key}: требуется schema_version = {FILE_FIXTURE_SCHEMA_VERSION}')
+        if role in parameters:
+            raise FixtureFileError(f'{key}: нельзя одновременно задавать {role} и {key}')
+        try:
+            path = _resolve(base_dir, parameters[key], key).resolve(strict=True)
+            if not path.is_file():
+                raise ValueError('ожидается обычный файл')
+            raw = path.read_bytes()
+            if raw.startswith(b'\xef\xbb\xbf'):
+                raise ValueError('нужен UTF-8 без BOM')
+            text = raw.decode('utf-8', errors='strict')
+            if not text.strip() or '\0' in text:
+                raise ValueError('нужно непустое тело функции без NUL')
+            text.encode('cp1251', errors='strict')
+        except (OSError, ValueError, RuntimeError) as error:
+            raise FixtureFileError(f'{key}: {type(error).__name__}: {error}') from None
+        effective.pop(key)
+        effective[role] = text.replace('\r\n', '\n').replace('\r', '\n')
+        inputs.append(FixtureFile(role, path, raw))
+    return effective, tuple(inputs)
+
+
+def refresh_fixture_files(project):
+    """A retained ProjectProfile must also observe edits before its next execute()."""
+    if not project.fixture_files:
+        return project
+    declared = dict(project.parameters)
+    for item in project.fixture_files:
+        declared.pop(item.role, None)
+        declared[item.role + '_file'] = str(item.path)
+    parameters, inputs = fixture_parameters(declared, project.path.parent, FILE_FIXTURE_SCHEMA_VERSION)
+    return replace(project, parameters=parameters, fixture_files=inputs)
 
 
 def _load_toml(path):
@@ -96,6 +154,7 @@ class ProjectProfile:
     # configuration and checks it on a copy of the base; keep_copy leaves the copy in the run.
     configuration: Path | None = None
     keep_copy: bool = False
+    fixture_files: tuple[FixtureFile, ...] = ()
 
     def public(self):
         return {"project_id": self.project_id, "profile": path_tag(self.path),
@@ -108,7 +167,8 @@ class ProjectProfile:
                 "analysis": {"globals": [path_tag(p) for p in self.globals],
                              "allow": list(self.allow), "strict": self.strict},
                 "tests": [dict(t) for t in self.tests], "parameters": dict(self.parameters),
-                "visual": self.visual.public() if self.visual is not None else None}
+                "visual": self.visual.public() if self.visual is not None else None,
+                **({'fixture_files': [item.public() for item in self.fixture_files]} if self.fixture_files else {})}
 
     def commands(self):
         """Commands of the declared tests, in declaration order, without repeats."""
@@ -158,8 +218,8 @@ class StandProfile:
 def load_project(path) -> ProjectProfile:
     data, path = _load_toml(path)
     version = data.get('schema_version')
-    if type(version) is not int or version not in (SCHEMA_VERSION, PROJECT_SCHEMA_VERSION):
-        raise ConfigError(f"{path}: нужна schema_version = 1 или {PROJECT_SCHEMA_VERSION}")
+    if type(version) is not int or version not in (SCHEMA_VERSION, PROJECT_SCHEMA_VERSION, FILE_FIXTURE_SCHEMA_VERSION):
+        raise ConfigError(f"{path}: нужна schema_version = 1, {PROJECT_SCHEMA_VERSION} или {FILE_FIXTURE_SCHEMA_VERSION}")
     base_dir = path.parent
     project = _require(data, "project", str(path))
     build = _require(data, "build", str(path))
@@ -178,7 +238,7 @@ def load_project(path) -> ProjectProfile:
             test["expect_value"] = str(item["expect_value"])
         if "expect_json" in item or "json_labels" in item:
             from .structured77 import validate
-            if version != PROJECT_SCHEMA_VERSION:
+            if version < PROJECT_SCHEMA_VERSION:
                 raise ConfigError(f"{path}: expect_json/json_labels требуют schema_version = {PROJECT_SCHEMA_VERSION}, чтобы старый harness не пропустил проверку")
             if "expect_json" not in item or "expect_value" in item or item['expect'] != 'passed':
                 raise ConfigError(f"{path}: expect_json требует expect='passed', без expect_value; json_labels требует expect_json")
@@ -194,6 +254,7 @@ def load_project(path) -> ProjectProfile:
     if not isinstance(parameters, dict) or not all(_parameter(value) for value in parameters.values()):
         raise ConfigError(f"{path}: [platform.parameters] допускает строки, числа, логические значения "
                           "и массивы из них или из таблиц таких значений")
+    parameters, fixture_files = fixture_parameters(parameters, base_dir, version)
     visual = None
     if "visual" in data:
         from .visual77 import VisualError, parse_config
@@ -221,7 +282,7 @@ def load_project(path) -> ProjectProfile:
         metadata=_resolve(base_dir, build["metadata"], "build.metadata") if "metadata" in build else None,
         configuration=(_resolve(base_dir, _require(configuration, "modules", "configuration"), "configuration.modules")
                        if configuration is not None else None),
-        keep_copy=bool((configuration or {}).get("keep_copy", False)))
+        keep_copy=bool((configuration or {}).get("keep_copy", False)), fixture_files=fixture_files)
 
 
 def load_stand(path) -> StandProfile:

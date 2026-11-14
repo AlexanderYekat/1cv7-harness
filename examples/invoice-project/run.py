@@ -58,7 +58,7 @@ def main():
         record['commands'].append({'name': name, 'argv': argv, 'exit_code': r.returncode})
         save()
         assert r.returncode == code, (name, r.returncode, r.stdout[-3000:], r.stderr[-3000:])
-        return json.loads(r.stdout)
+        return json.loads(r.stdout if r.stdout.strip() else r.stderr)
     def preserved():
         # Remove only our newly created empty guard, once the runtime has released its lock.
         if before['guard'] is None and not copy.exists() and not lock.exists() and not inspector.processes():
@@ -88,13 +88,19 @@ def main():
         for phase, text in [('baseline', original), ('regression', broken), ('fixed', fixed)]:
             (sources / (phase + '.1s')).write_bytes(text.encode('utf-8'))
         for name, old, new in [('regression', original, broken), ('repair', broken, fixed)]:
-            (sources / (name + '.diff')).write_text(''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
-                fromfile=MODULE, tofile=MODULE)), encoding='utf-8')
+            (sources / (name + '.diff')).write_bytes(''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
+                fromfile=MODULE, tofile=MODULE)).encode('utf-8'))
         common = tomllib.loads((HERE / 'project.toml').read_text(encoding='utf-8'))
+        file_mode = 'fixture_setup_file' in common['platform']['parameters']
+        for role in ('fixture_setup', 'fixture_verify'):
+            key = role + '_file'
+            if key in common['platform']['parameters']:
+                common['platform']['parameters'][key] = str((HERE / common['platform']['parameters'][key]).resolve())
+        phases = (*PHASES, 'inline101') if file_mode else PHASES
         for field in ('template', 'source'):
             common['build'][field] = str(HERE / common['build'][field])
         profiles = {}
-        for phase in PHASES:
+        for phase in phases:
             configuration = out / 'configurations' / phase
             module = configuration / MODULE
             module.parent.mkdir(parents=True)
@@ -102,6 +108,11 @@ def main():
             module.write_bytes(source.encode('utf-8'))
             (configuration / 'modules.json').write_bytes((out / 'extraction/modules.json').read_bytes())
             profile = json.loads(json.dumps(common))
+            if phase == 'inline101':
+                profile['schema_version'] = 2
+                for role in ('fixture_setup', 'fixture_verify'):
+                    path = Path(profile['platform']['parameters'].pop(role + '_file'))
+                    profile['platform']['parameters'][role] = path.read_text(encoding='utf-8')
             profile['configuration']['modules'] = str(configuration)
             path = out / (phase + '.toml')
             path.write_text('\n'.join(json.dumps(k) + '=' + toml_value(v) for k, v in profile.items()) + '\n', encoding='utf-8')
@@ -113,10 +124,14 @@ def main():
             assert bool(audit['changed_streams']) == (phase == 'regression')
             record['plans'][phase] = {'project': str(path), 'project_sha256': digest(path), 'md_sha256': digest(planned), 'audit': audit}
         record['tests_sha256'] = digest(HERE / 'scenario.json')
-        tests = [tomllib.loads(p.read_text(encoding='utf-8'))['platform'] for p in profiles.values()]
-        assert all(t == read(HERE / 'scenario.json') for t in tests)
+        tests = [tomllib.loads(profiles[phase].read_text(encoding='utf-8'))['platform'] for phase in PHASES]
+        assert all(t == common['platform'] for t in tests)
+        if file_mode:
+            from harness77.config77 import load_project
+            assert load_project(profiles['baseline']).parameters == load_project(profiles['inline101']).parameters
+            assert load_project(profiles['baseline']).tests == load_project(profiles['inline101']).tests
         save()
-        for phase in PHASES:
+        for phase in phases:
             summary = execute('run-' + phase, ['run', '--project', profiles[phase], '--output-root', out / ('run-' + phase)],
                               code=1 if phase == 'regression' else 0)
             row = {'case': phase, 'folder': summary['run_dir'], 'summary': summary}
@@ -128,7 +143,7 @@ def main():
         suite = out / 'cycle.toml'
         suite.write_text('schema_version=1\n[suite]\nid=' + json.dumps(common['project']['id'] + '-cycle') + '\n' + ''.join(
             '\n[[scenarios]]\nid=' + json.dumps(phase) + '\nproject=' + json.dumps(profiles[phase].as_posix()) + '\n'
-            for phase in PHASES), encoding='utf-8')
+            for phase in phases), encoding='utf-8')
         for transport in ('cli', 'mcp'):
             root = out / (transport + '-suite')
             if transport == 'cli':
@@ -167,6 +182,9 @@ def main():
                 preserved()
                 save()
                 print(case + ': verified failure', flush=True)
+        if file_mode:
+            from file_checks import qualify_files
+            qualify_files(HERE, out, profiles['baseline'], record, execute, env, preserved, save)
         preserved()
         record['after'] = snapshot()
         record['unchanged_tests'] = True

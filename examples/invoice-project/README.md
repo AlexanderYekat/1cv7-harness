@@ -1,5 +1,35 @@
 # Самостоятельный проект счёта-фактуры (100)
 
+## Файловые fixture/reader (102, локальный wheel 0.9.0)
+
+К прямому режиму добавьте `--file-fixtures` и выберите установленный
+bootstrap/wheel 0.9.0. Пример проверочного стенда:
+
+```powershell
+python -B examples/invoice-project/prepare.py --direct --file-fixtures --wheel C:/MyProjects/harness77/.artifacts/s102-package/dist/harness77-0.9.0-py3-none-any.whl --installed-python C:/MyProjects/harness77/.artifacts/s102-package/venv/Scripts/python.exe --base C:/MyProjects/harness77/.local/bases/base-for-test --copy-path C:/MyProjects/harness77/.local/bases/harness77-copy --exe 'C:/Program Files (x86)/1Cv77/BIN/1cv7l.exe' --cdb 'C:/Program Files (x86)/Windows Kits/10/Debuggers/x86/cdb.exe' --helper C:/MyProjects/harness77/.artifacts/s99-kit-final/dependencies/helper.dll --identity C:/MyProjects/harness77/.artifacts/s99-kit-final/dependencies/identity.dll --template C:/MyProjects/harness77/.local/bases/base-for-test/ExtForms/rp14q1.GRP/FIO.ERT --controller C:/MyProjects/harness77/research/forms/probe_module77.1s --user ВВВ --copy-exclude ExtForms --copy-exclude actofsverok --copy-exclude temp --output C:/MyProjects/h77-102-files
+$env:PYTHONPATH = $null
+$env:PYTHONHOME = $null
+$env:PYTHONIOENCODING = 'utf-8'
+$state = Get-Content C:/MyProjects/h77-102-files/acquisition.json -Raw | ConvertFrom-Json
+& $state.python -B C:/MyProjects/h77-102-files/run.py --output C:/MyProjects/h77-102-cycle
+& $state.python -B C:/MyProjects/h77-102-files/verify.py C:/MyProjects/h77-102-cycle
+```
+
+Проект получает schema_version=3, fixture_setup_file="fixture.1s" и
+fixture_verify_file="reader.1s". Редактируйте именно эти файлы; запуск
+подхватит новые тела без project-init и изменения project.toml/scenario.json.
+В каждом результате fixture-inputs/ содержит точные использованные байты,
+а JSON — их размеры, SHA-256 и роли. Пути разрешаются от профиля.
+Формат — непустой UTF-8 без BOM/NUL, представимый в Windows-1251.
+
+Проверка включает четыре неизменные файловые фазы и совместимый встроенный
+вариант 101 через run/suite/MCP, два контроля подписи, семь отрицательных
+входов через каждый интерфейс и девять запусков с правками файлов:
+fixture меняет сохраняемый комментарий, reader возвращает {}, восстановление
+возвращает passed. Во всех трёх интерфейсах используется тот же профиль
+без перегенерации; MCP остаётся живым между ошибками и последующими запросами.
+Это 26 нативных запусков и 21 отказ входов до 1С. Файлы после проб восстановлены.
+
 ## Прямое открытие и переоткрытие (101, wheel 0.8.0)
 
 Для нового прямого сценария добавьте `--direct --wheel <wheel-0.8.0>`.

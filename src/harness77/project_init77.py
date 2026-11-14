@@ -12,13 +12,13 @@ import tempfile
 import tomllib
 
 from .artifacts import _container, _destination, _input
-from .config77 import load_project
+from .config77 import load_project, fixture_parameters, FILE_FIXTURE_SCHEMA_VERSION
 from .deadlines77 import Deadlines
 from .ert_module import ErtError, decompress_module
 from .report77 import sha256_bytes
 
 PREFIX = '.harness77-project-'
-NAMES = ('project.toml', 'module.1s', 'template.ert', 'scenario.json')
+NAMES = ('project.toml', 'module.1s', 'template.ert', 'scenario.json', 'fixture.1s', 'reader.1s')
 
 
 def _toml(value):
@@ -130,24 +130,36 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
     compound, module, _ = _container(raw)
     decompress_module(compound.read_stream(module)).decode('cp1251')
     platform = {'tests': [{'name': 'control-42', 'command': 'execute', 'expect': 'passed', 'expect_value': '42'}]}
+    profile_version = 1 if runtime == 'headless' else 2
+    fixture_payloads = {}
     if runtime == 'forms':
         source_path, source_bytes = _input(source)
         scenario_path, scenario_bytes = _input(scenario)
         inputs += [(source_path, source_bytes), (scenario_path, scenario_bytes)]
         platform = _scenario(scenario_bytes)
+        if any(key in platform['parameters'] for key in ('fixture_setup_file', 'fixture_verify_file')):
+            profile_version = FILE_FIXTURE_SCHEMA_VERSION
+            _, referenced = fixture_parameters(platform['parameters'], scenario_path.parent, profile_version)
+            for item in referenced:
+                name = 'fixture.1s' if item.role == 'fixture_setup' else 'reader.1s'
+                fixture_payloads[name] = item.content
+                inputs.append((item.path, item.content))
+                platform['parameters'][item.role + '_file'] = name
+            scenario_bytes = (json.dumps(platform, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
     else:
         source_bytes = files('harness77').joinpath('project_headless77.1s').read_bytes()
     source_text = source_bytes.decode('utf-8')
     source_text.encode('cp1251', errors='strict')
     if not source_text.strip():
         raise ValueError('source: пустой модуль')
-    text = ('schema_version = ' + ('2' if runtime == 'forms' else '1') + '\n\n[project]\nid = ' + json.dumps(project_id) + '\n\n'
+    text = ('schema_version = ' + str(profile_version) + '\n\n[project]\nid = ' + json.dumps(project_id) + '\n\n'
             '[build]\ntemplate = "template.ert"\nsource = "module.1s"\nencoding = "utf-8"\n\n'
             '[configuration]\nmodules = "configuration"\n\n'
             '[platform]\n' + ''.join(key + ' = ' + _toml(value) + '\n' for key, value in platform.items()) + '\n'
             '[deadlines]\n' + ''.join(key + ' = ' + json.dumps(value, allow_nan=False) + '\n' for key, value in limits.items()))
     tomllib.loads(text)
     payloads = {'project.toml': text.encode('utf-8'), 'module.1s': source_bytes, 'template.ert': raw}
+    payloads.update(fixture_payloads)
     if runtime == 'forms':
         payloads['scenario.json'] = scenario_bytes
     stage = Path(tempfile.mkdtemp(prefix=PREFIX, dir=destination.parent))
