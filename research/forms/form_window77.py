@@ -758,6 +758,98 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                                                     "inside_client")}}
         return record, Pending(self, button["hwnd"], BM_CLICK)
 
+    def combo_state(self, hwnd):
+        """105: exact strings and selection of an owned native string COMBOBOX.
+
+        CB_* messages are below WM_USER: Windows marshals their string buffers
+        across processes. Reject owner-drawn controls without CBS_HASSTRINGS,
+        where CB_GETLBTEXT returns item data instead of a string.
+        """
+        self.modal.verify()
+        if self.modal.owner(hwnd) != (self.modal.server['pid'], self.modal.tid):
+            raise RuntimeError('COMBOBOX is not on the verified server thread')
+        name = C.create_unicode_buffer(256)
+        if not self.user.GetClassNameW(hwnd, name, len(name)) or name.value.casefold() != 'combobox':
+            raise RuntimeError('select requires a native COMBOBOX window')
+        style = self.style(hwnd)
+        if style & 3 not in (2, 3) or (style & 0x30 and not style & 0x200):
+            raise RuntimeError('select requires a drop-down COMBOBOX with strings')
+
+        def query(message, wparam=0, lparam=0, allow_empty=False):
+            ok, value, error = self.send(hwnd, message, wparam, lparam)
+            if not ok:
+                raise RuntimeError(f'COMBOBOX message {message:#x} did not return: {error}')
+            value = C.c_ssize_t(value).value
+            # A 32-bit server may return CB_ERR zero-extended to the caller.
+            if value in (-1, 0xffffffff):
+                if allow_empty:
+                    return -1
+                raise RuntimeError(f'COMBOBOX message {message:#x} returned CB_ERR')
+            return value
+
+        count = query(0x0146)  # CB_GETCOUNT
+        if not 0 <= count <= 1000:
+            raise RuntimeError('COMBOBOX item count exceeds 1000')
+        items = []
+        for index in range(count):
+            size = query(0x0149, index)  # CB_GETLBTEXTLEN
+            if not 0 <= size <= 4096:
+                raise RuntimeError('COMBOBOX item text exceeds 4096 characters')
+            buffer = C.create_unicode_buffer(size + 1)
+            copied = query(0x0148, index, C.addressof(buffer))  # CB_GETLBTEXTW
+            if copied > size:
+                raise RuntimeError('COMBOBOX item text changed while reading')
+            items.append(buffer.value)
+        if query(0x0146) != count:
+            raise RuntimeError('COMBOBOX item count changed while reading')
+        index = query(0x0147, allow_empty=True)  # CB_GETCURSEL
+        if index < -1 or index >= count:
+            raise RuntimeError('COMBOBOX selection index is invalid')
+        return dict(items=items, index=index, text=items[index] if index >= 0 else None)
+
+    def select_combo(self, inspection, control_id, text):
+        """Select one exact item and notify 1C through the control's parent.
+
+        CB_SETCURSEL alone does not send CBN_SELCHANGE. Send that notification
+        once, pending so a formula's modal dialog uses the usual action chain.
+        Selecting the current item is a verified no-op, without another formula.
+        """
+        record = dict(control_id=control_id, combo=True, requested=False, returned=False,
+                      message='CB_SETCURSEL/CBN_SELCHANGE', text=text)
+        field = next((c for c in inspection.get('controls', []) if c['id'] == control_id), None)
+        if field is None:
+            return dict(record, refused='no COMBOBOX window in the inspected form'), None
+        hwnd = field['hwnd']
+        record.update(hwnd=hwnd, identity_rechecked=True)
+        state = self.element_state(field)
+        if state.get('error') or not state.get('enabled') or not state.get('visible'):
+            return dict(record, refused='COMBOBOX is unavailable, disabled or hidden', state=state), None
+        before = record['before'] = self.combo_state(hwnd)
+        matches = [i for i, item in enumerate(before['items']) if item == text]
+        if len(matches) != 1:
+            return dict(record, refused=f'COMBOBOX exact text {text!r}: {len(matches)} matching items'), None
+        index = record['selected_index'] = matches[0]
+        record['notification_sent'] = False
+        if before['index'] == index:
+            record.update(requested=True, returned=True, selection_verified=True, after=before, unchanged=True)
+            return record, None
+        parent = self.user.GetParent(hwnd)
+        if parent != inspection['chain'][0]['hwnd'] or self.user.GetDlgCtrlID(hwnd) != control_id:
+            return dict(record, refused='COMBOBOX parent or control ID changed'), None
+        ok, selected, error = self.send(hwnd, 0x014E, index)  # CB_SETCURSEL
+        record.update(requested=True, last_error=error)
+        if not ok or selected != index:
+            return dict(record, refused='CB_SETCURSEL did not select the requested index'), None
+        record['notification_sent'] = True
+        return record, Pending(self, parent, WM_COMMAND, (1 << 16) | control_id, hwnd)
+
+    def combo_selected(self, record, outcome):
+        record.update(returned=bool(outcome.get('returned')), last_error=outcome.get('last_error'))
+        if record['returned']:
+            after = record['after'] = self.combo_state(record['hwnd'])
+            record['selection_verified'] = (after['index'] == record['selected_index']
+                                             and after['text'] == record['text'])
+
     def enter_text(self, inspection, control_id, text, leave_to, timeout_ms=10000):
         """Go to the field, replace its text and leave it, as the user does with the keyboard (task 025).
 

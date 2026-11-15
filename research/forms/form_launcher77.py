@@ -1137,6 +1137,8 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if chain.window is None and chain.record.get("choice") and not chain.record.get("choice_checked"):
             # Enter may run the column's formula and its dialog chain first. Only then compare references.
             self.verify_choice(form, chain)
+        if chain.window is None and chain.record.get('combo'):
+            form.combo_selected(chain.record, {'returned': True, 'last_error': 0})
 
     def call(self, step):
         """The step's next call to 1C, numbered by ``trip_number``: its own number first."""
@@ -1156,11 +1158,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             return chain
         if step["kind"] == "choose":
             return self.begin_choice(form, inspection, step, control, seen)
-        if step["kind"] in scenario77.ACTIONS and step["kind"] not in ("click", "input"):
+        if step["kind"] in scenario77.ACTIONS and step["kind"] not in ("click", "input", "select"):
             return self.begin_table(form, inspection, step, control, seen)
         if step["kind"] == "click":
             record, pending = form.click_pending(inspection, control["id"])
             finish = finish_click
+        elif step["kind"] == "select":
+            record, pending = form.select_combo(inspection, control["id"], step["text"])
+            finish = form.combo_selected
         else:
             record, pending = form.enter_text(inspection, control["id"], step["text"],
                                               self.leave_to(form, step, ids, windows))

@@ -43,9 +43,9 @@ answer its save question.
 
 import re
 
-KINDS = ("click", "input", "check", "value", "message", "no_message", "dialog",
+KINDS = ("click", "input", "select", "check", "value", "message", "no_message", "dialog",
          "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis", "journal_children", "tab")
-OPTIONS = {"tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
+OPTIONS = {"select": {"text": str}, "tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str, "row": int}, "delete_row": {"row": int}, "rows": {}, "total": {"text": str},
@@ -58,7 +58,7 @@ OPTIONS = {"tab": {"browser_visible": bool}, "click": {"closes": bool}, "input":
            "journal_children": {"source": str, "link": str, "reference": int, "cancel": bool, "empty": bool, "limit": int, "kinds": str, "edit": bool, "browse": bool, "expected_after": str,
                                 "journal": str, "expected": str, "caption_control": str, "caption_text": str, "browser_visible": bool},
            "journal_copy": {}, "journal_basis": {"source": str, "link": str, "cancel": bool, "caption_control": str, "caption_text": str, "return_journal": str}}
-ACTIONS = ("click", "input", "add_row", "cell", "delete_row", "key", "choose", "close_form")
+ACTIONS = ("click", "input", "select", "add_row", "cell", "delete_row", "key", "choose", "close_form")
 # Steps of the table part of a document's form (task 027); key also works in a list.
 TABLE_KINDS = ("add_row", "row", "cell", "delete_row", "rows", "total", "choose")
 COLUMN_KINDS = ("cell", "total", "choose")
@@ -73,7 +73,7 @@ KEYS = {"insert": ("Insert", 0x2D, True), "delete": ("Delete", 0x2E, True), "ent
 TABLE_WINDOW_ID, LINE_NUMBER, TYPED = 4151, "НомерСтроки", ("S", "N", "D")
 TABLE_ERROR = "error:"
 # Classes of the description a step accepts; a text check reads any window.
-CLASSES = {"click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
+CLASSES = {"select": ("COMBOBOX",), "click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
 NAME = re.compile(r"[^\W\d]\w*\Z")
 STEP_MARKER = "HARNESS77-STEP:"
 REQUEST = "form-step-request"
@@ -153,7 +153,7 @@ def steps(parameters):
                 if not isinstance(item[key], expected):
                     raise ValueError(f"{where} ({kind}): {key} must be {'a string' if expected is str else 'true or false'}")
                 step[key] = _text(item[key], f"{where} {key}") if expected is str else item[key]
-        if kind in ("input", "value", "cell", "total") and "text" not in step:
+        if kind in ("input", "select", "value", "cell", "total") and "text" not in step:
             raise ValueError(f"{where} ({kind}): text is required")
         if kind == "choose" and not (("text" in step and step["text"].strip() and "cancel" not in step)
                                       or (step.get("cancel") is True and "text" not in step)):
@@ -375,7 +375,7 @@ def resolve(items, description):
             step.update(column=field["identifier"], column_class=field["class"], column_window=field.get("window_id"))
             if step["kind"] == "choose" and "catalog" not in step:
                 step["catalog"] = field["kind"]
-        if step["kind"] in ("click", "input", "check"):
+        if step["kind"] in ("click", "input", "select", "check"):
             where = f"step {step['index']} ({step['kind']} {step['target']!r})"
             wanted = step["target"].casefold()
             found = [c for c in controls if (c.get("identifier") or "").casefold() == wanted] \
@@ -826,6 +826,8 @@ def judge(step, record, pending, form_open):
             return f"{name}: {action.get('message') or 'the message'} did not return{after}"
         if action.get("choice") and not action.get("choice_verified"):
             return f"{name}: the returned reference was not verified"
+        if action.get("combo") and not action.get("selection_verified"):
+            return f"{name}: COMBOBOX selection was not verified"
     trip = record.get("round_trip") or {}
     if not trip.get("returned"):
         return f"{name}: 1C did not answer after the step: {trip.get('error') or 'no answer'}"
