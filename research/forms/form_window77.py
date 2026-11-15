@@ -104,6 +104,23 @@ def edged_ids(description):
     return {ids[item["id"]] for item in description["controls"] if item.get("class") in EDGED}
 
 
+def measured_geometry(inspection):
+    """Use the full drop-down rectangle for a combo; keep its collapsed rect as evidence.
+
+    Dialog resource height includes the drop-down, unlike GetWindowRect. SIMPLE
+    combos and all other controls use their actual window rectangle unchanged.
+    """
+    measured = {}
+    for control in inspection['controls']:
+        rect = list(control.get('layout_rect', control['rect']))
+        if 'combo_default_item_height' in control:
+            # WM_SETFONT changes the selection height while retaining list height.
+            # Resource height was specified at creation, before that font change.
+            rect[3] += control['combo_default_item_height'] - control['combo_item_height']
+        measured[control['id']] = tuple(rect)
+    return measured
+
+
 def fit_units(expected, measured, tolerance=TOLERANCE_PX, edged=()):
     """One linear mapping of form numbers to pixels for all controls.
 
@@ -394,6 +411,65 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
             raise C.WinError(C.get_last_error())
         return [rect.right - rect.left, rect.bottom - rect.top]
 
+    def combo_layout_rect(self, hwnd, parent):
+        """CB_GETDROPPEDCONTROLRECT is a marshalled system message, without opening the list."""
+        style = self.state(hwnd)['style']
+        if style & 3 not in (2, 3):  # CBS_SIMPLE has no separate collapsed/drop-down height.
+            return None
+        rect = RECT()
+        ok, returned, error = self.send(hwnd, 0x0152, lparam=C.addressof(rect))
+        if not ok or not returned or rect.right <= rect.left or rect.bottom <= rect.top:
+            raise RuntimeError(f'COMBOBOX drop-down rectangle unavailable: {error}')
+        C.set_last_error(0)
+        mapped = self.user.MapWindowPoints(None, parent, C.byref(rect), 2)
+        if not mapped and C.get_last_error():
+            raise C.WinError(C.get_last_error())
+        return [rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top]
+
+    def combo_item_height(self, hwnd):
+        ok, height, error = self.send(hwnd, 0x0154, C.c_size_t(-1).value)  # CB_GETITEMHEIGHT, selection field
+        if not ok or not 0 < height <= 4096:
+            raise RuntimeError(f'COMBOBOX selection height unavailable: {error}')
+        return height
+
+    def combo_default_item_height(self, hwnd):
+        """Measure the creation-time selection height with a hidden local native control.
+
+        No font is assigned to the probe. Its default selection metric is compared
+        to CB_GETITEMHEIGHT of the target, rather than adding a fixed pixel border.
+        Both windows must have the same DPI. Probe windows are never shown.
+        """
+        dpi = self.dpi(hwnd)
+        if dpi is None:
+            raise RuntimeError('COMBOBOX DPI unavailable')
+        kind = self.state(hwnd)['style'] & 3
+        cache = getattr(self, '_combo_default_heights', {})
+        if (dpi, kind) in cache:
+            return cache[dpi, kind]
+        user = self.user
+        user.CreateWindowExW.argtypes = [W.DWORD, W.LPCWSTR, W.LPCWSTR, W.DWORD,
+            C.c_int, C.c_int, C.c_int, C.c_int, W.HWND, W.HMENU, W.HINSTANCE, C.c_void_p]
+        user.CreateWindowExW.restype = W.HWND
+        user.DestroyWindow.argtypes = [W.HWND]
+        parent = user.CreateWindowExW(0, 'STATIC', '', 0x80000000, 0, 0, 200, 200, None, None, None, None)
+        if not parent:
+            raise C.WinError(C.get_last_error())
+        try:
+            probe = user.CreateWindowExW(0, 'COMBOBOX', '', 0x40000000 | kind,
+                0, 0, 100, 100, parent, None, None, None)
+            if not probe or self.dpi(probe) != dpi:
+                raise RuntimeError('COMBOBOX default metric probe unavailable or DPI differs')
+            result = C.c_size_t()
+            ok = user.SendMessageTimeoutW(probe, 0x0154, C.c_size_t(-1).value, 0,
+                SMTO_ABORTIFHUNG, 2000, C.byref(result))
+            if not ok or not 0 < result.value <= 4096:
+                raise RuntimeError('COMBOBOX default selection height unavailable')
+            cache[dpi, kind] = result.value
+            self._combo_default_heights = cache
+            return result.value
+        finally:
+            user.DestroyWindow(parent)  # also destroys the child probe
+
     def dpi(self, hwnd):
         return self.dpi_for_window(hwnd) if self.dpi_for_window else None
 
@@ -527,6 +603,13 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
                              "text": window["text"], "visible": window["visible"], "enabled": window["enabled"],
                              "rect": rect, "inside_client": inside(rect, chain[0]["client_size"]),
                              "children": inner})
+            if window['class'].casefold() == 'combobox':
+                layout_rect = self.combo_layout_rect(window['hwnd'], parent)
+                if layout_rect is not None:
+                    controls[-1]['layout_rect'] = layout_rect
+                    controls[-1]['layout_rect_source'] = 'CB_GETDROPPEDCONTROLRECT'
+                    controls[-1]['combo_item_height'] = self.combo_item_height(window['hwnd'])
+                    controls[-1]['combo_default_item_height'] = self.combo_default_item_height(window['hwnd'])
         return dict(summary, found=True, parent=chain[0], chain=chain, controls=controls)
 
     def send(self, hwnd, message, wparam=0, lparam=0, timeout_ms=10000, ansi=False):

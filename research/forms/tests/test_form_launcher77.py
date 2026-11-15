@@ -36,6 +36,50 @@ def row(command, diagnostics=()):
 
 
 class UnitsTests(unittest.TestCase):
+    def test_combo_font_change_retains_creation_height_and_raw_evidence(self):
+        expected = EXPECTED.copy()
+        expected[4198] = (259, 51, 141, 86)
+        for current, full in ((15, 83), (25, 93)):
+            controls = [{'id': i, 'rect': list(rect)} for i, rect in EXPECTED.items()]
+            combo = {'id': 4198, 'rect': [259, 51, 141, current + 6],
+                     'layout_rect': [259, 51, 141, full],
+                     'combo_default_item_height': 18, 'combo_item_height': current}
+            controls.append(combo)
+            self.assertTrue(window.fit_units(expected, window.measured_geometry({'controls': controls}))['consistent'])
+            self.assertEqual(combo['layout_rect'][3], full)
+            combo['layout_rect'][3] += 15
+            self.assertFalse(window.fit_units(expected, window.measured_geometry({'controls': controls}))['consistent'])
+
+    def test_combo_full_rectangle_preserves_strict_geometry(self):
+        expected = dict(EXPECTED, **{})
+        expected[4198] = (259, 51, 141, 53)
+        expected[4195] = (259, 66, 141, 37)
+        controls = [{'id': i, 'rect': list(r)} for i, r in expected.items()]
+        for control in controls:
+            if control['id'] in (4195, 4198):
+                control.update(layout_rect=control['rect'][:], layout_rect_source='CB_GETDROPPEDCONTROLRECT')
+                control['rect'][3] = 13  # collapsed control; full list height remains in layout_rect
+        inspection = {'controls': controls}
+        measured = window.measured_geometry(inspection)
+        self.assertTrue(window.fit_units(expected, measured)['consistent'])
+        self.assertFalse(window.fit_units(expected, {c['id']: c['rect'] for c in controls})['consistent'])
+        # Wrong full height, position and width still fail at the original 2-pixel tolerance.
+        for component in range(4):
+            changed = dict(measured)
+            rect = list(changed[4198]); rect[component] += 15
+            changed[4198] = rect
+            self.assertFalse(window.fit_units(expected, changed)['consistent'])
+        self.assertEqual(controls[-1]['rect'][3], 13)  # raw evidence is unchanged
+
+    def test_combo_rectangle_unavailable_fails_closed(self):
+        owned = window.OwnedForm.__new__(window.OwnedForm)
+        owned.state = Mock(return_value={'style': 3})
+        owned.send = Mock(return_value=(True, 0, 0))
+        with self.assertRaisesRegex(RuntimeError, 'rectangle unavailable'):
+            owned.combo_layout_rect(1, 2)
+        owned.state.return_value = {'style': 1}
+        self.assertIsNone(owned.combo_layout_rect(1, 2))
+
     def test_pixels(self):
         fit = window.fit_units(EXPECTED, scaled(1, 1))
         self.assertEqual((fit["consistent"], fit["units"], fit["max_residual_px"]), (True, "pixels", 0))

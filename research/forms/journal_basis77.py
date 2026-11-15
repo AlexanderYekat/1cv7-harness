@@ -74,7 +74,7 @@ def body(kind, step):
 
 
 def execute(watcher, form, inspection, step, record):
-    from form_window77 import Pending, expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+    from form_window77 import Pending, expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, measured_geometry
     import scenario77
     before = record['before_basis'] = watcher.round_trip(-108000 - step['index'])
     record['calls'] = [dict(before, number=-108000 - step['index'])]
@@ -147,7 +147,7 @@ def execute(watcher, form, inspection, step, record):
     created = record['created_form'] = form.inspect(list(expected))
     if not created.get('found'):
         raise RuntimeError('based document form not found')
-    created['units'] = fit_units(expected, {c['id']: tuple(c['rect']) for c in created['controls']},
+    created['units'] = fit_units(expected, measured_geometry(created),
                                 edged=edged_ids(description))
     issues = judge_layout(description, created) + judge_captions(description, created)
     hwnd = int(trip.get('journal_hwnd', '0'))
@@ -160,7 +160,7 @@ def execute(watcher, form, inspection, step, record):
 
 def returned_journal(watcher, form, step, frames, chain):
     """Allow exactly the declared journal after a saved based document's closing click."""
-    from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+    from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, measured_geometry
     description = getattr(watcher, 'return_description', None)
     if not description or step.get('kind') != 'click' or not step.get('closes') or len(frames) != 1:
         return False
@@ -179,7 +179,7 @@ def returned_journal(watcher, form, step, frames, chain):
     opened = form.inspect(list(expected))
     if not opened.get('found'):
         raise RuntimeError('declared returned journal form not found')
-    opened['units'] = fit_units(expected, {c['id']: tuple(c['rect']) for c in opened['controls']}, edged=edged_ids(description))
+    opened['units'] = fit_units(expected, measured_geometry(opened), edged=edged_ids(description))
     issues = judge_layout(description, opened) + judge_captions(description, opened)
     hwnd = int(trip.get('journal_hwnd', '0'))
     if (issues or hwnd != frames[0]['hwnd'] or hwnd not in [w['hwnd'] for w in opened['chain'][:2]]

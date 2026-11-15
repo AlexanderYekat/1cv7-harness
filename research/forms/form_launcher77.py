@@ -469,7 +469,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
 
     def inspect(self):
         import ctypes as C
-        from form_window77 import OwnedForm, awareness, edged_ids, expected_geometry, fit_units
+        from form_window77 import OwnedForm, awareness, edged_ids, expected_geometry, fit_units, measured_geometry
         from harness77.screenshots77 import capture_window, evidence
         from win32_session77 import kernel
         server, tid = self.lifecycle["server"], self.lifecycle["proxy_identity"]["tid"]
@@ -484,7 +484,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
             inspection["elapsed_s"] = round(time.monotonic() - started, 3)
             inspection["measuring_process"] = awareness()
             if inspection["found"]:
-                measured = {c["id"]: tuple(c["rect"]) for c in inspection["controls"]}
+                measured = measured_geometry(inspection)
                 inspection["units"] = fit_units(expected, measured, edged=edged_ids(self.description))
                 shots = []
                 for role, window in (("form", inspection["chain"][1] if len(inspection["chain"]) > 1
@@ -717,7 +717,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     record["calls"].append(self.call(step))
                     record["round_trip"] = scenario77.merge_trips(record["calls"])
                     pending = list(record["round_trip"].get("messages", []))
-                    from form_window77 import edged_ids, expected_geometry, fit_units, judge_captions, judge_layout
+                    from form_window77 import edged_ids, expected_geometry, fit_units, judge_captions, judge_layout, measured_geometry
                     if 'caption_control' in step:
                         import journal_basis77
                         self.description = journal_basis77.runtime_description(
@@ -727,7 +727,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                     reopened = form.inspect(list(expected))
                     record["reopened"] = reopened
                     if reopened.get("found"):
-                        reopened["units"] = fit_units(expected, {c["id"]: tuple(c["rect"]) for c in reopened["controls"]},
+                        reopened["units"] = fit_units(expected, measured_geometry(reopened),
                                                        edged=edged_ids(self.description))
                         issues = judge_layout(self.description, reopened) + judge_captions(self.description, reopened)
                         if issues:
@@ -947,7 +947,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
 
     def find_document(self, form, inspection, step, record):
         """Search the owned journal by keyboard, read each reference, open the exact match with Enter."""
-        from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+        from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, measured_geometry
         table = next(c for c in inspection["controls"] if c["id"] == scenario77.TABLE_WINDOW_ID)
         journal_handles = [w["hwnd"] for w in inspection["chain"][:2]]
         before = {w["hwnd"] for w in form.inventory()}
@@ -993,7 +993,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         record["opened_form"] = opened
         if not opened.get("found"):
             raise RuntimeError("existing document form not found")
-        opened["units"] = fit_units(expected, {c["id"]: tuple(c["rect"]) for c in opened["controls"]},
+        opened["units"] = fit_units(expected, measured_geometry(opened),
                                     edged=edged_ids(description))
         issues = judge_layout(description, opened) + judge_captions(description, opened)
         hwnd = int(trip.get("journal_hwnd", "0"))
@@ -1006,7 +1006,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         """Recheck the selected saved source, dispatch Copy, bind a fresh unsaved form."""
         import journal77
         import journal_copy77 as copying
-        from form_window77 import Pending, expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+        from form_window77 import Pending, expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, measured_geometry
         before = record['before_copy'] = self.round_trip(-108000 - step['index'])
         record['calls'] = [dict(before, number=-108000 - step['index'])]
         journal77.checked_cursor(before, inspection)
@@ -1046,7 +1046,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         created = record['created_form'] = form.inspect(list(expected))
         if not created.get('found'):
             raise RuntimeError('copied document form not found')
-        created['units'] = fit_units(expected, {c['id']: tuple(c['rect']) for c in created['controls']},
+        created['units'] = fit_units(expected, measured_geometry(created),
                                     edged=edged_ids(description))
         issues = judge_layout(description, created) + judge_captions(description, created)
         hwnd = int(trip.get('journal_hwnd', '0'))
@@ -1059,7 +1059,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
     def create_document(self, form, inspection, step, record):
         """Insert in the owned journal, answer its kind chooser, bind the new unsaved form."""
         import journal77
-        from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions
+        from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, measured_geometry
         table = next(c for c in inspection["controls"] if c["id"] == scenario77.TABLE_WINDOW_ID)
         before = {w["hwnd"] for w in form.inventory()}
         seen = form.top_windows()
@@ -1097,7 +1097,7 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         record["created_form"] = created
         if not created.get("found"):
             raise RuntimeError("new document form not found: " + str(created))
-        created["units"] = fit_units(expected, {c["id"]: tuple(c["rect"]) for c in created["controls"]},
+        created["units"] = fit_units(expected, measured_geometry(created),
                                      edged=edged_ids(description))
         issues = judge_layout(description, created) + judge_captions(description, created)
         hwnd = int(trip.get("journal_hwnd", "0"))

@@ -242,12 +242,12 @@ def search_child(form, table, before, handles, step, record, call):
 
 
 def inspect_frame(form, description, frame):
-    from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, inside
+    from form_window77 import expected_geometry, edged_ids, fit_units, judge_layout, judge_captions, inside, measured_geometry
     expected = expected_geometry(description)
     opened = form.inspect(list(expected), frame=frame)
     if not opened.get('found') or len(opened.get('chain', [])) < 2 or opened['chain'][1].get('hwnd') != frame:
         raise RuntimeError('owned subordinate frame/layout missing')
-    opened['units'] = fit_units(expected, {c['id']: tuple(c['rect']) for c in opened['controls']}, edged=edged_ids(description))
+    opened['units'] = fit_units(expected, measured_geometry(opened), edged=edged_ids(description))
     issues = judge_layout(description, opened) + judge_captions(description, opened)
     if description.get('browser'):
         tables = [c for c in opened['controls'] if c.get('id') == 4151]
