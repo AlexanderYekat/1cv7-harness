@@ -43,9 +43,10 @@ answer its save question.
 
 import re
 
-KINDS = ("click", "input", "select", "inspect_combo", "check", "value", "message", "no_message", "dialog",
+COMBO_READ_KINDS = ("inspect_combo", "check_combo")
+KINDS = ("click", "input", "select", *COMBO_READ_KINDS, "check", "value", "message", "no_message", "dialog",
          "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis", "journal_children", "tab")
-OPTIONS = {"inspect_combo": {}, "select": {"text": str}, "tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
+OPTIONS = {"check_combo": {"items": list}, "inspect_combo": {}, "select": {"text": str}, "tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str, "row": int}, "delete_row": {"row": int}, "rows": {}, "total": {"text": str},
@@ -73,7 +74,7 @@ KEYS = {"insert": ("Insert", 0x2D, True), "delete": ("Delete", 0x2E, True), "ent
 TABLE_WINDOW_ID, LINE_NUMBER, TYPED = 4151, "НомерСтроки", ("S", "N", "D")
 TABLE_ERROR = "error:"
 # Classes of the description a step accepts; a text check reads any window.
-CLASSES = {"inspect_combo": ("COMBOBOX",), "select": ("COMBOBOX",), "click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
+CLASSES = {**{kind: ("COMBOBOX",) for kind in COMBO_READ_KINDS}, "select": ("COMBOBOX",), "click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
 NAME = re.compile(r"[^\W\d]\w*\Z")
 STEP_MARKER = "HARNESS77-STEP:"
 REQUEST = "form-step-request"
@@ -147,6 +148,9 @@ def steps(parameters):
         step = {"index": number, "kind": kind, "target": _target(kind, item[kind], where)}
         for key, expected in OPTIONS[kind].items():
             if key in item:
+                if expected is list:
+                    step[key] = combo_items(item[key], f"{where} ({kind}) {key}")
+                    continue
                 if expected is int:
                     step[key] = _number(item[key], f"{where} ({kind}) {key}", 1)
                     continue
@@ -155,6 +159,8 @@ def steps(parameters):
                 step[key] = _text(item[key], f"{where} {key}") if expected is str else item[key]
         if kind in ("input", "select", "value", "cell", "total") and "text" not in step:
             raise ValueError(f"{where} ({kind}): text is required")
+        if kind == "check_combo" and "items" not in step:
+            raise ValueError(f"{where} ({kind}): items is required")
         if kind == "choose" and not (("text" in step and step["text"].strip() and "cancel" not in step)
                                       or (step.get("cancel") is True and "text" not in step)):
             raise ValueError(f"{where} (choose): either non-empty text or cancel = true")
@@ -274,7 +280,7 @@ def steps(parameters):
         tail = result[viewing[0]['index']:]
         if len(viewing) != 1 or not tail or not any(s['kind'] == 'tab' for s in tail):
             raise ValueError('browse journal_children requires one handoff and tab steps')
-        if any(s['kind'] not in ('tab', 'check', 'inspect_combo', 'value', 'rows', 'total') for s in tail):
+        if any(s['kind'] not in ('tab', 'check', *COMBO_READ_KINDS, 'value', 'rows', 'total') for s in tail):
             raise ValueError('browse journal_children allows only read-only form steps')
     return result
 
@@ -283,6 +289,32 @@ def _number(value, where, least):
     if isinstance(value, bool) or not isinstance(value, int) or not least <= value <= 99999:
         raise ValueError(f"{where}: a number {least}…99999, got {value!r}")
     return value
+
+
+def combo_items(value, where):
+    """108: literal expected native strings, bounded exactly like the reader."""
+    if not isinstance(value, list) or len(value) > 1000:
+        raise ValueError(f"{where}: an array of at most 1000 strings")
+    for index, text in enumerate(value):
+        if not isinstance(text, str) or len(text) > 4096 or '\0' in text:
+            raise ValueError(f"{where}[{index}]: a string of at most 4096 characters without NUL")
+        text.encode('cp1251')
+    return list(value)
+
+
+def compare_combo(expected, actual):
+    """First unequal zero-based position; presence distinguishes absence from empty text."""
+    difference = None
+    for index in range(max(len(expected), len(actual))):
+        has_expected, has_actual = index < len(expected), index < len(actual)
+        wanted = expected[index] if has_expected else None
+        shown = actual[index] if has_actual else None
+        if not has_expected or not has_actual or wanted != shown:
+            difference = dict(index=index, path=f'/items/{index}', expected=wanted, actual=shown,
+                              expected_present=has_expected, actual_present=has_actual)
+            break
+    return dict(matches=difference is None, expected_count=len(expected), actual_count=len(actual),
+                first_difference=difference)
 
 
 def _target(kind, value, where):
@@ -375,7 +407,7 @@ def resolve(items, description):
             step.update(column=field["identifier"], column_class=field["class"], column_window=field.get("window_id"))
             if step["kind"] == "choose" and "catalog" not in step:
                 step["catalog"] = field["kind"]
-        if step["kind"] in ("click", "input", "select", "inspect_combo", "check"):
+        if step["kind"] in ("click", "input", "select", *COMBO_READ_KINDS, "check"):
             where = f"step {step['index']} ({step['kind']} {step['target']!r})"
             wanted = step["target"].casefold()
             found = [c for c in controls if (c.get("identifier") or "").casefold() == wanted] \
@@ -882,8 +914,16 @@ def judge(step, record, pending, form_open):
         return f"{name}: the form closed"
     if step['kind'] == 'tab' and not record.get('tab_verified'):
         return f"{name}: native tab selection was not verified"
-    if step['kind'] == 'inspect_combo' and not (record.get('combo_inspection') or {}).get('read_only_verified'):
+    if step['kind'] in COMBO_READ_KINDS and not (record.get('combo_inspection') or {}).get('read_only_verified'):
         return f"{name}: COMBOBOX inspection was not verified"
+    if step['kind'] == 'check_combo':
+        comparison = record['combo_comparison'] = compare_combo(step['items'], record['combo_inspection']['items'])
+        if not comparison['matches']:
+            diff = comparison['first_difference']
+            wanted = repr(diff['expected']) if diff['expected_present'] else '<absent>'
+            actual = repr(diff['actual']) if diff['actual_present'] else '<absent>'
+            return (f"{name}: COMBOBOX items[{diff['index']}]: expected {wanted}, actual {actual} "
+                    f"(expected count {comparison['expected_count']}, actual count {comparison['actual_count']})")
     if step["kind"] == "check":
         shown = record.get("state") or {}
         key = step["expect"]

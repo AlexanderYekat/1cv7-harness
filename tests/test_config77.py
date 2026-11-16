@@ -1,6 +1,7 @@
 """Project and stand profile loading, validation, path resolution and secrets."""
 
 import tempfile
+import json
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,29 @@ from harness77.deadlines77 import DeadlineError
 
 
 class ConfigTests(unittest.TestCase):
+    def test_check_combo_items_inline_and_file(self):
+        items = ['', 'А', 'А', ' а ', 'А\nБ']
+        steps = [{'check_combo': 'Список', 'items': items}]
+        inline = self.minimal_project('[platform.parameters]\nsteps = [{check_combo="Список", items=["", "А", "А", " а ", "А\\nБ"]}]\n')
+        self.assertEqual(load_project(inline).parameters['steps'], steps)
+        self.write('steps.json', json.dumps(steps, ensure_ascii=False))
+        profile = self.minimal_project('[platform.parameters]\nsteps_file="steps.json"\n')
+        # JSON-file inputs are schema 4; existing profile versions are unchanged.
+        profile.write_text(profile.read_text('utf-8').replace('schema_version = 1', 'schema_version = 4'), encoding='utf-8')
+        self.assertEqual(load_project(profile).parameters['steps'], steps)
+
+    def test_only_check_combo_items_accepts_a_string_array_inside_a_step(self):
+        from harness77.config77 import _parameter
+        for value in (
+            [{'input': 'X', 'items': ['a']}], [{'check_combo': 'X', 'other': ['a']}],
+            [{'check_combo': 'X', 'items': [1]}], [{'check_combo': 'X', 'items': [['a']]}],
+            [{'check_combo': 'X', 'items': ['a' * 4097]}],
+            [{'check_combo': 'X', 'items': ['a'] * 1001}], [{'check_combo': 'X', 'items': ['\0']}],
+        ):
+            with self.subTest(value=str(value)[:60]):
+                self.assertFalse(_parameter(value))
+        self.assertTrue(_parameter([{'check_combo': 'X', 'items': []}]))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="harness77-cfg-")
         self.addCleanup(self.temp.cleanup)

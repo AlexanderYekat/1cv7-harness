@@ -100,7 +100,7 @@ def json_inputs(parameters, tests, base_dir, version):
                 raise ValueError('steps: нужен непустой JSON-массив непустых объектов')
             steps = json.loads(text)
             if not _parameter(steps):
-                raise ValueError('steps: значения полей должны быть скалярами')
+                raise ValueError('steps: значения полей должны быть скалярами (check_combo items — массив строк)')
             json.dumps(steps, allow_nan=False)
             effective['steps'] = steps
         for index, test in enumerate(tests):
@@ -204,7 +204,11 @@ def _parameter(value):
     if isinstance(value, SCALAR):
         return True
     return isinstance(value, list) and all(
-        isinstance(item, SCALAR) or isinstance(item, dict) and all(isinstance(v, SCALAR) for v in item.values())
+        isinstance(item, SCALAR) or isinstance(item, dict) and all(
+            isinstance(v, SCALAR) or k == 'items' and 'check_combo' in item
+            and isinstance(v, list) and len(v) <= 1000
+            and all(isinstance(text, str) and len(text) <= 4096 and '\0' not in text for text in v)
+            for k, v in item.items())
         for item in value)
 
 

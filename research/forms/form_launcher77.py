@@ -755,13 +755,13 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                         record["state"] = form.element_state(control, checkbox=step.get("element_class") == "CHECKBOX")
                     if tabular and record["form_open"]:
                         record["table"] = form.table_windows(control["hwnd"])
-                if (step['kind'] == 'inspect_combo' and record.get('form_open')
+                if (step['kind'] in scenario77.COMBO_READ_KINDS and record.get('form_open')
                         and (record.get('round_trip') or {}).get('returned')
                         and (record.get('round_trip') or {}).get('complete')
                         and not record['round_trip'].get('diagnostics')):
                     record['combo_inspection'] = form.inspect_combo(current_inspection, control)
                 record["issue"] = scenario77.judge(step, record, pending, record.get("form_open", True))
-                if step['kind'] == 'inspect_combo' and not record['issue']:
+                if step['kind'] in scenario77.COMBO_READ_KINDS and (not record['issue'] or record.get('combo_comparison')):
                     self.save_combo_inspection(step, control, record)
             except Exception as error:  # noqa: BLE001 - a failed step still closes its window (series 0b)
                 record["issue"] = f"{scenario77.label(step)}: {type(error).__name__}: {error}"
