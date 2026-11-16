@@ -5,7 +5,7 @@
 [Отчёт и свидетельства](../../docs/tasks/106-inspect-combo-acceptance.md).
 
 `inspect_combo` читает фактические пункты без изменения выбора и фокуса.
-Подготовка требует тех же явных путей, что combo-selection, wheel 0.13.0
+Подготовка требует тех же явных путей, что combo-selection, wheel 0.14.0
 и его SHA-256. Используйте Python из acquisition.json без PYTHONPATH/PYTHONHOME.
 `run.py --output <новый каталог>` сначала исследует два COMBOBOX, проверяет
 счётчик обработчика и граничные состояния через run/CLI suite/MCP, затем
@@ -47,14 +47,14 @@ run, CLI suite и stdio MCP. Ошибка в прикладном обработ
 $env:PYTHONPATH = $null
 $env:PYTHONHOME = $null
 $env:PYTHONIOENCODING = 'utf-8'
-& .artifacts/s106-package/venv/Scripts/python.exe -B examples/combo-inspection/prepare.py --base .local/bases/base-for-test --copy-path .local/bases/harness77-copy --exe 'C:/Program Files (x86)/1Cv77/BIN/1cv7l.exe' --cdb 'C:/Program Files (x86)/Windows Kits/10/Debuggers/x86/cdb.exe' --helper .artifacts/s104-inputs/helper.dll --identity .artifacts/s104-inputs/identity.dll --template .local/bases/base-for-test/ExtForms/rp14q1.GRP/FIO.ERT --controller research/forms/probe_module77.1s --wheel .artifacts/s106-package/dist/harness77-0.13.0-py3-none-any.whl --sha256 ef2d947f2e7887ac22caeaeedbc79a75d8754ee33d89b5a93b9e3dd263a56306 --installer-python (Get-Command python).Source --user ВВВ --copy-exclude ExtForms --copy-exclude actofsverok --copy-exclude temp --open-timeout-s 600 --calculation-timeout-s 300 --shutdown-timeout-s 60 --total-timeout-s 1500 --output .artifacts/s106-new-project
+& .artifacts/s107-release-package/venv/Scripts/python.exe -B examples/combo-inspection/prepare.py --base .local/bases/base-for-test --copy-path .local/bases/harness77-copy --exe 'C:/Program Files (x86)/1Cv77/BIN/1cv7l.exe' --cdb 'C:/Program Files (x86)/Windows Kits/10/Debuggers/x86/cdb.exe' --helper .artifacts/s104-inputs/helper.dll --identity .artifacts/s104-inputs/identity.dll --template .local/bases/base-for-test/ExtForms/rp14q1.GRP/FIO.ERT --controller research/forms/probe_module77.1s --wheel .artifacts/s107-release/downloaded/harness77-0.14.0-py3-none-any.whl --sha256 e859c6d2abf3ea2864419a2512f27433263616353f5d1d7f4b44f9d666cbfed8 --installer-python (Get-Command python).Source --user ВВВ --copy-exclude ExtForms --copy-exclude actofsverok --copy-exclude temp --open-timeout-s 600 --calculation-timeout-s 300 --shutdown-timeout-s 60 --total-timeout-s 1500 --output .artifacts/s106-new-project
 $python106 = (Get-Content .artifacts/s106-new-project/acquisition.json -Raw | ConvertFrom-Json).python
 & $python106 -B .artifacts/s106-new-project/run.py --output .artifacts/s106-new-cycle
 & $python106 -B .artifacts/s106-new-project/verify.py .artifacts/s106-new-cycle/cycle
 & $python106 -B .artifacts/s106-new-project/verify_reads.py .artifacts/s106-new-cycle
 ```
 
-При новой сборке передайте её проверенный SHA-256. Эта поставка локальная;
+При новой сборке передайте её проверенный SHA-256. [Поставка 0.14.0 опубликована](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.14.0);
 база, DLL и компоненты стенда в пример не входят. `enabled` означает
 фактическое native-состояние окна, а не значение свойства формы 1С.
 Недоступные окна отдельно проверены на уровне контракта runtime.
