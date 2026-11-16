@@ -755,7 +755,14 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
                         record["state"] = form.element_state(control, checkbox=step.get("element_class") == "CHECKBOX")
                     if tabular and record["form_open"]:
                         record["table"] = form.table_windows(control["hwnd"])
+                if (step['kind'] == 'inspect_combo' and record.get('form_open')
+                        and (record.get('round_trip') or {}).get('returned')
+                        and (record.get('round_trip') or {}).get('complete')
+                        and not record['round_trip'].get('diagnostics')):
+                    record['combo_inspection'] = form.inspect_combo(current_inspection, control)
                 record["issue"] = scenario77.judge(step, record, pending, record.get("form_open", True))
+                if step['kind'] == 'inspect_combo' and not record['issue']:
+                    self.save_combo_inspection(step, control, record)
             except Exception as error:  # noqa: BLE001 - a failed step still closes its window (series 0b)
                 record["issue"] = f"{scenario77.label(step)}: {type(error).__name__}: {error}"
                 if step["kind"] == "create" and record.get("kind_window"):
@@ -786,6 +793,19 @@ class FormWatcher(threading.Thread):  # pragma: no cover - native, verified on t
         if current_inspection is not inspection:
             inspection["final_form"] = current_inspection
         return records
+
+    def save_combo_inspection(self, step, control, record):
+        """Publish only a complete verified snapshot; normal result_files transport carries it."""
+        snapshot = record['combo_inspection']
+        payload = dict(schema_version=1, kind='combobox_inspection', step_index=step['index'],
+                       target=step['target'], record_id=step['record_id'], window_id=control['id'],
+                       **{k: snapshot[k] for k in ('items', 'selected_index', 'selected_text',
+                                                   'visible', 'enabled', 'read_only_verified')})
+        path = self.evidence_dir / f"combo-step-{step['index']:04d}.json"
+        atomic_json(path, payload)
+        record['inspection_file'] = dict(path=path.relative_to(self.evidence_dir.parent).as_posix(),
+                                       sha256=sha256(path), size=path.stat().st_size, complete=True,
+                                       schema_version=1)
 
     def journal_deletion(self, form, inspection, step, record):
         """Toggle only a freshly verified saved target with the native journal command."""

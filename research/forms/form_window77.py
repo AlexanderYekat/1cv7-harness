@@ -807,6 +807,27 @@ class OwnedForm:  # pragma: no cover - native, verified on the stand
             raise RuntimeError('COMBOBOX selection index is invalid')
         return dict(items=items, index=index, text=items[index] if index >= 0 else None)
 
+    def inspect_combo(self, inspection, control):
+        """106: stable read-only snapshot; no focus, selection or notification messages."""
+        hwnd = control['hwnd']
+        # combo_state verifies class, style and ownership, including every message.
+        focus_before = self.focused()
+        before = self.combo_state(hwnd)
+        if (self.user.GetParent(hwnd) != inspection['chain'][0]['hwnd']
+                or self.user.GetDlgCtrlID(hwnd) != control['id']):
+            raise RuntimeError('COMBOBOX parent or control ID changed')
+        state_before = self.element_state(control)
+        after = self.combo_state(hwnd)
+        state_after = self.element_state(control)
+        focus_after = self.focused()
+        if state_before.get('error') or state_after.get('error'):
+            raise RuntimeError('COMBOBOX window state unavailable')
+        if before != after or state_before != state_after or focus_before != focus_after:
+            raise RuntimeError('COMBOBOX state or focus changed during inspection')
+        return dict(items=after['items'], selected_index=None if after['index'] == -1 else after['index'],
+                    selected_text=after['text'], visible=state_after['visible'], enabled=state_after['enabled'],
+                    read_only_verified=True, focus_before=focus_before, focus_after=focus_after)
+
     def select_combo(self, inspection, control_id, text):
         """Select one exact item and notify 1C through the control's parent.
 

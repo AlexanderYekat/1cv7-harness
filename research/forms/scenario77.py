@@ -43,9 +43,9 @@ answer its save question.
 
 import re
 
-KINDS = ("click", "input", "select", "check", "value", "message", "no_message", "dialog",
+KINDS = ("click", "input", "select", "inspect_combo", "check", "value", "message", "no_message", "dialog",
          "add_row", "row", "cell", "delete_row", "rows", "total", "key", "choose", "reopen", "create", "created", "find_document", "close_form", "journal_period", "journal_unpost", "journal_deletion", "journal_copy", "journal_basis", "journal_children", "tab")
-OPTIONS = {"select": {"text": str}, "tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
+OPTIONS = {"inspect_combo": {}, "select": {"text": str}, "tab": {"browser_visible": bool}, "click": {"closes": bool}, "input": {"text": str}, "value": {"text": str, "row": int},
            "check": {"text": str, "checked": bool, "enabled": bool, "visible": bool},
            "message": {}, "no_message": {}, "dialog": {"button": str, "text": str, "closes": bool},
            "add_row": {}, "row": {}, "cell": {"text": str, "row": int}, "delete_row": {"row": int}, "rows": {}, "total": {"text": str},
@@ -73,7 +73,7 @@ KEYS = {"insert": ("Insert", 0x2D, True), "delete": ("Delete", 0x2E, True), "ent
 TABLE_WINDOW_ID, LINE_NUMBER, TYPED = 4151, "НомерСтроки", ("S", "N", "D")
 TABLE_ERROR = "error:"
 # Classes of the description a step accepts; a text check reads any window.
-CLASSES = {"select": ("COMBOBOX",), "click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
+CLASSES = {"inspect_combo": ("COMBOBOX",), "select": ("COMBOBOX",), "click": ("BUTTON", "CHECKBOX"), "input": ("1CEDIT", "BMASKED"), "checked": ("CHECKBOX",)}
 NAME = re.compile(r"[^\W\d]\w*\Z")
 STEP_MARKER = "HARNESS77-STEP:"
 REQUEST = "form-step-request"
@@ -274,7 +274,7 @@ def steps(parameters):
         tail = result[viewing[0]['index']:]
         if len(viewing) != 1 or not tail or not any(s['kind'] == 'tab' for s in tail):
             raise ValueError('browse journal_children requires one handoff and tab steps')
-        if any(s['kind'] not in ('tab', 'check', 'value', 'rows', 'total') for s in tail):
+        if any(s['kind'] not in ('tab', 'check', 'inspect_combo', 'value', 'rows', 'total') for s in tail):
             raise ValueError('browse journal_children allows only read-only form steps')
     return result
 
@@ -375,7 +375,7 @@ def resolve(items, description):
             step.update(column=field["identifier"], column_class=field["class"], column_window=field.get("window_id"))
             if step["kind"] == "choose" and "catalog" not in step:
                 step["catalog"] = field["kind"]
-        if step["kind"] in ("click", "input", "select", "check"):
+        if step["kind"] in ("click", "input", "select", "inspect_combo", "check"):
             where = f"step {step['index']} ({step['kind']} {step['target']!r})"
             wanted = step["target"].casefold()
             found = [c for c in controls if (c.get("identifier") or "").casefold() == wanted] \
@@ -882,6 +882,8 @@ def judge(step, record, pending, form_open):
         return f"{name}: the form closed"
     if step['kind'] == 'tab' and not record.get('tab_verified'):
         return f"{name}: native tab selection was not verified"
+    if step['kind'] == 'inspect_combo' and not (record.get('combo_inspection') or {}).get('read_only_verified'):
+        return f"{name}: COMBOBOX inspection was not verified"
     if step["kind"] == "check":
         shown = record.get("state") or {}
         key = step["expect"]
