@@ -79,6 +79,11 @@ DEFAULTS = {
     ("BMASKED", "number"): _default("BMASKED", "1350565888", "N", flags="67108896"),
     ("BMASKED", "date"): _default("BMASKED", "1350565888", "D", flags="32"),
     ("CHECKBOX", "number"): _default("CHECKBOX", "1342177283", "N"),
+    # Task 107: COMBOBOX/U corpus layout with an enabled list (flag 16384
+    # in the most frequent normalized record disables the control).
+    # CBS_DROPDOWNLIST; the height includes the list opened below the field.
+    ("COMBOBOX", None): _default("COMBOBOX", "1352663107", flags="16777216"),
+    ("COMBOBOX", "undefined"): _default("COMBOBOX", "1352663107", flags="16777216"),
 }
 # The most frequent BMASKED record of each reference code differs from the number
 # field in the flags only (task 012): B 45 of 114, O 9 of 20, E 1 of 1, T 4 of 6,
@@ -94,6 +99,7 @@ NEW_CLASSES = {
     "1CEDIT": {"required": ("identifier", "type"), "kinds": ("string",), "formula": False},
     "BMASKED": {"required": ("identifier", "type"), "kinds": ("number", "date", REFERENCE), "formula": False},
     "CHECKBOX": {"required": ("caption", "identifier"), "kinds": ("number",), "formula": False},
+    "COMBOBOX": {"required": ("identifier",), "kinds": ("undefined",), "formula": False},
 }
 FORMULAS = {kind: rules["formula"] for kind, rules in NEW_CLASSES.items() if rules["formula"] is not None}
 CHECKBOX_TYPE = {"kind": "number", "length": 1}
@@ -476,6 +482,7 @@ def _new_type(item, kind, where, changes):
         return {"kind": REFERENCE, "length": 0, "precision": 0, "code": code, "name": kind}
     length, precision = value.get("length", 0), value.get("precision", 0)
     rules = {"string": (length >= 0 and precision == 0, "длина ≥ 0, без точности"),
+             "undefined": (length == 0 and precision == 0, "без длины и точности"),
              "number": (length >= 1 and 0 <= precision < length, "длина ≥ 1, 0 ≤ точность < длина"),
              "date": (length == 0 and precision == 0, "без длины и точности")}
     valid, rule = rules[value["kind"]]
@@ -731,6 +738,8 @@ def rebuild(text, description, module_text=None, metadata=None, template=None, c
                            f"получено {item['id']}")
         stored.append(control_id)
         where = f"Новый элемент {control_id} ({kind})"
+        if kind == "COMBOBOX" and context is not None:
+            raise ErtError(f"{where}: создание COMBOBOX поддерживается только в форме ERT")
         required = ("x", "y", "width", "height") + NEW_CLASSES[kind]["required"]
         missing = [key for key in required if key not in item or item[key] == ""]
         if missing:

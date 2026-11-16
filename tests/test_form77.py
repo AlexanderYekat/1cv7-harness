@@ -153,7 +153,7 @@ class ChangeTests(unittest.TestCase):
             "перестановка": change(lambda d: d["controls"].reverse()),
             "смена ID": change(control(0, id=4999)),
             "ID/класса": change(control(2, **{"class": "1CEDIT"})),
-            "класса COMBOBOX не поддерживается": change(new(**{"class": "COMBOBOX"})),
+            "класса LISTBOX не поддерживается": change(new(**{"class": "LISTBOX"})),
             "только следующий по порядку 4155, получено 4152": change(new(id=4152)),
             "получено 5000": change(new(id=5000)),
             "не идут подряд": change(new(), text=DIALOG.replace('"4153"', '"4999"', 1)),
