@@ -84,6 +84,33 @@ class SessionFailureTests(unittest.TestCase):
         self.cleanup.assert_called_once()
         self.assertNotIn("server", result)
 
+    def test_trace_finish_failure_does_not_skip_owned_cleanup_or_claim_success(self):
+        with patch.object(session.StartupTrace,'finish',side_effect=OSError('trace locked')):
+            result=self.run_to_exit([[],[]])
+        self.assertIn('trace locked',result['error'])
+        self.assertEqual(result['startup']['status'],'blocked')
+        self.assertTrue(result['cleanup_verified'])
+        self.cleanup.assert_called_once()
+        self.kernel.CloseHandle.assert_any_call(123)
+
+    def test_trace_finish_cannot_mask_primary_refusal_or_kill_unverified_handle(self):
+        with patch.object(session.StartupTrace,'finish',side_effect=OSError('secondary trace failure')):
+            result=self.run_simulated(wrong_image=True)
+        self.assertIn('executable mismatch',result['error'])
+        self.assertIn('secondary trace failure',result['startup_publication_error'])
+        self.assertTrue(result['cleanup_verified'])
+        self.kernel.TerminateProcess.assert_not_called()
+        self.kernel.CloseHandle.assert_called_once_with(123)
+
+    def test_initial_trace_failure_is_caught_before_any_process_or_registration(self):
+        with patch.object(session.StartupTrace,'save',side_effect=PermissionError('initial trace failure')):
+            result=self.run_simulated()
+        self.assertIn('initial trace failure',result['error'])
+        self.assertNotIn('debugger_pid',result)
+        self.assertFalse(result['registration_wait']['acquired'])
+        self.assertTrue(result['cleanup_verified'])
+        self.cleanup.assert_not_called()
+
     def test_caller_cancel_takes_the_owned_cleanup_and_client_limit_is_configurable(self):
         # Reach the main loop: the debugger reports ready, the client is a separate process.
         (self.out / "debugger.log").write_text("\nHARNESS77_STARTUP_COMMANDS:simulation\nHARNESS77_DEBUGGER_READY\n", encoding="ascii")
@@ -132,18 +159,20 @@ class SessionFailureTests(unittest.TestCase):
         client.poll.return_value = None
         client.wait.side_effect = lambda timeout=None: setattr(client.poll, "return_value", 0)
         # Opening (base, reindex, controller) has not reached the first command in time.
-        self.report.update(open_timeout_seconds=0.001, ert_commands=["check"])
+        self.report.update(open_timeout_seconds=10, ert_commands=["check"])
+        now = [0.0]
         self.inventory = [[], [self.candidate], [self.candidate], [self.candidate], []]
         launched = []
 
         def popen(command, **kwargs):
             launched.append(command)
+            if len(launched) > 1:
+                now[0] = 20.0
             return self.debugger if len(launched) == 1 else client
 
-        # A 1-s-per-read clock: Windows monotonic() before 3.13 ticks by ~16 ms and may not move at all.
-        ticks = iter(range(100000))
+        # Expire opening after owned processes exist, independently of clock-read count.
         with patch.object(session.subprocess, "Popen", side_effect=popen), patch.object(session.time, "sleep"), \
-                patch.object(session.time, "monotonic", side_effect=lambda: next(ticks)):
+                patch.object(session.time, "monotonic", side_effect=lambda: now[0]):
             result = self.run_simulated_popen()
         self.assertEqual(result["timeout_phase"], "open")
         self.assertIn("open deadline", result["error"])
@@ -339,6 +368,34 @@ class SessionFailureTests(unittest.TestCase):
         self.assertIn("owner process alive", result["error"])
         self.assertEqual(result["cleanup_errors"], [])
         self.assertTrue(result["cleanup_verified"])
+        self.kernel.TerminateProcess.assert_not_called()
+
+    def test_prelaunch_trace_refusal_retains_evidence_that_other_processes_survived(self):
+        identity=self.out/'proxy_identity77.dll'
+        identity.write_bytes(b'identity')
+        baseline=Mock(preserved=Mock(return_value=True))
+        fake=types.SimpleNamespace(BaselineProcesses=Mock(return_value=baseline))
+        concurrent=types.SimpleNamespace(IDENTITY_SHA='identity',unexpected_processes=Mock(),validate_proxy=Mock())
+        self.report['run_id']='8d3a4f0e-2c1b-4e5f-9a7b-6c5d4e3f2a10'
+        self.report['identity_registration']={'removed':False}
+        self.cleanup.side_effect=lambda:self.report['identity_registration'].update(removed=True)
+        foreign={'pid':99,'parent_pid':1}
+        with (patch.object(session,'kernel',self.kernel),
+              patch.object(session,'processes',side_effect=[[foreign],[foreign]]),
+              patch.object(session,'register_cleanup_helper',return_value=self.cleanup),
+              patch.object(session,'sha256',side_effect=lambda p:'identity' if p==identity else 'commands'),
+              patch.object(session.StartupTrace,'note',side_effect=PermissionError('trace locked')),
+              patch.object(session.subprocess,'Popen') as launch,
+              patch.dict(sys.modules,{'win32_session77':fake,'concurrent77':concurrent})):
+            result=session.run_session(self.out/'base',self.exe,self.out/'cdb.exe',self.helper,'test',
+                                       self.out,self.report,desktop='desktop',identity_dll=identity)
+        self.assertIn('trace locked',result['error'])
+        self.assertTrue(result['cleanup_verified'])
+        self.assertTrue(result['baseline_preserved'])
+        self.assertEqual(result['processes_before'],result['processes_after'])
+        baseline.close.assert_called_once()
+        self.cleanup.assert_called_once()
+        launch.assert_not_called()
         self.kernel.TerminateProcess.assert_not_called()
 
     def test_failure_stops_only_verified_handle_and_records_registry_error(self):

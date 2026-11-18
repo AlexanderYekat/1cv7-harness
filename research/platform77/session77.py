@@ -50,7 +50,7 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         + observer + '.echo ' + command_marker(report['run_id']) + '\n.echo HARNESS77_DEBUGGER_READY\ng\n', encoding="ascii")
     report["debugger_commands_sha256"] = sha256(commands)
     started = time.monotonic()
-    startup_trace = StartupTrace(out, report['run_id'])
+    startup_trace = StartupTrace(out, report['run_id'], publish=False)
     report['startup'] = startup_trace.data
     deadline = Deadline(started)
     debugger = client = registration_cleanup = None
@@ -102,6 +102,30 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             raise TimeoutError(report["timeout_phase"] + " deadline before launch")
         return min(100, math.ceil(1000 * (min(ownership_until, deadline.total_at) - now)))
 
+    def check_trace_write():
+        caller_cancelled()
+        now = time.monotonic()
+        expired = deadline.expired(now)
+        limit = min(deadline.total_at, deadline.shutdown_at or deadline.total_at)
+        phase = expired or 'open'
+        if 'server_owned' not in startup_trace.seen:
+            limit = min(limit, ownership_until)
+            phase = expired or ('open' if startup else 'ownership')
+        elif 'activation_ready' not in startup_trace.seen:
+            limit = min(limit, ready_until)
+            phase = expired or startup_trace.data['waiting_for'].replace('_', '-')
+        first = out / ('ert-' + report['ert_commands'][0] + '-started') if report.get('ert_commands') else None
+        if report.get('open_timeout_seconds') and (first is None or not first.exists()):
+            limit = min(limit, started + report['open_timeout_seconds'])
+            if now-started >= report['open_timeout_seconds']:
+                phase = expired or 'open'
+        if expired or now >= limit:
+            report['timeout_phase'] = phase
+            raise TimeoutError(phase + ' deadline while publishing startup trace')
+        return limit-now
+
+    startup_trace.check = check_trace_write
+
     def note(role, pid, process_handle):
         """Record a started process in the owner record of both temporary registrations."""
         for registration in (identity_cleanup, registration_cleanup):
@@ -145,14 +169,15 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
 
     lock = ExitStack()
     acquired = False
+    report['registration_wait'] = {'acquired': False, 'elapsed_s': 0.0}
     try:
+        startup_trace.save()
         # Both COM registrations and the process inventory belong to one session.
         wait_started = time.monotonic()
         try:
             on_wait = None if progress is None else lambda: progress("waiting")
             lock.enter_context(registration_lock(wait_ms=startup_wait_ms, on_wait=on_wait))
             acquired = True
-            startup_trace.note('registration_acquired', waiting_for='debugger_create')
         finally:
             report["registration_wait"] = {"acquired": acquired, "elapsed_s": round(time.monotonic() - wait_started, 3)}
         report["hashes_before"] = hashes()
@@ -175,6 +200,10 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             identity_cleanup = register_cleanup_helper(identity_dll, report, identity=True)
         elif report["processes_before"]:
             raise RuntimeError("existing 1C process; no process was started")
+        # Establish retained baseline handles before a diagnostic publication can
+        # fail. Then even a pre-launch refusal has evidence that others survived,
+        # and suite continuation can retain its existing strict cleanup gate.
+        startup_trace.note('registration_acquired', waiting_for='debugger_create')
         from shutdown77 import PINNED
         if report["hashes_before"] != (pinned or PINNED):
             raise RuntimeError("pinned files changed since preflight")
@@ -485,7 +514,6 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
         report["error"] = f"{type(error).__name__}: {error}"
         if isinstance(error, MarkerReadError):
             report["marker_read_failure"] = error.detail
-        startup_trace.finish(report['error'], bool(report.get('user_cancelled')))
     finally:
         # Every cleanup step is independent; a failed step must not skip the rest.
         def attempt(label, action):
@@ -574,6 +602,15 @@ def run_session(base, exe, cdb, helper_dll, user, out, report, desktop=None, ide
             and (identity_cleanup is None or report.get("identity_registration", {}).get("removed") is True)
             and (debugger is None or report.get("debugger_exit_code") is not None)
             and (client is None or report.get("helper_exit_code") is not None))
-        if not report.get('error'):
-            startup_trace.finish()
+        try:
+            startup_trace.finish(report.get('error'), bool(report.get('user_cancelled')))
+        except Exception as error:
+            # A locked trace must neither mask the primary error nor skip cleanup.
+            publication_error = f'{type(error).__name__}: {error}'
+            report['startup_publication_error'] = publication_error
+            if not report.get('error'):
+                report['error'] = publication_error
+            startup_trace.data.update(status='blocked', error=report['error'],
+                                      publication_error=publication_error)
+        report['elapsed_seconds'] = round(time.monotonic() - started, 3)
     return report
