@@ -1,0 +1,14 @@
+[fixture]
+date = 2026-08-01
+service = "Harness77 услуга 110"
+customer = "Harness77 покупатель 110"
+contract = "Harness77 договор 110"
+department = "Harness77 отдел 110"
+comment = "Harness77 услуги 110"
+service_type = 1
+rows = [{ quantity = 1, price = 50 }, { quantity = 1, price = 30 }]
+
+[reader]
+integers = { service_type = "ТипУслуги" }
+totals = { amount = "Сумма", total = "Всего" }
+rows = { quantity = "Количество", price = "Цена", amount = "Сумма", total = "Всего", vat = "НДС" }

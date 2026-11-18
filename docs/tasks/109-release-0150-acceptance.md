@@ -2,7 +2,8 @@
 
 Релиз объединяет принятые задачи [108](108-check-combo-acceptance.md)
 и [109](109-startup-publication-acceptance.md). Версия опубликована 18 ноября
-2026 года. [Релиз v0.15.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.15.0).
+2026 года. В тот же день владелец принял выпуск и проверку скачанного wheel.
+[Релиз v0.15.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.15.0).
 
 Аннотированный тег указывает на `b381faf7c5c5e980a9787880f64627b9a8b3c664`.
 CI этого коммита прошёл на Windows с Python 3.11, 3.13 и 3.15 и на Linux
