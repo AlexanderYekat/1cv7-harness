@@ -2,8 +2,9 @@
 
 Задача принята владельцем 19 ноября 2026 года.
 
-В локальном 0.17.0 `project-init --runtime forms` принимает
+В опубликованном 0.17.0 `project-init --runtime forms` принимает
 `--fixture-kind services|invoice` и необязательный `--fixture-recipe <TOML>`.
+[Проверка скачанного wheel](113-release-0170-acceptance.md).
 При отсутствии пути используется соответствующий образец из пакета. Входной
 `scenario.json` задаёт `form_object`, шаги и тест `verify` с ожиданиями.
 

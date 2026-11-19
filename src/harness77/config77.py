@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import tomllib
@@ -22,6 +23,8 @@ SCHEMA_VERSION = 1
 PROJECT_SCHEMA_VERSION = 2
 FILE_FIXTURE_SCHEMA_VERSION = 3
 JSON_FILE_SCHEMA_VERSION = 4
+FIXTURE_RECIPE_FILE = 'fixture-recipe.toml'
+FIXTURE_REFRESH_LOCK = '.harness77-fixture-refresh.lock'
 BACKENDS = ("native", "simulation", "import")
 TIMEOUT_KEYS = {"open": "open_timeout_s", "calculation": "calculation_timeout_s",
                 "cancel": "cancel_timeout_s", "shutdown": "shutdown_timeout_s",
@@ -117,9 +120,33 @@ def json_inputs(parameters, tests, base_dir, version):
     return effective, tests, tuple(inputs)
 
 
+def _fixture_state(base_dir):
+    """Detect refresh even if it finishes (or rolls back) between the two reads."""
+    lock = base_dir / FIXTURE_REFRESH_LOCK
+    if os.path.lexists(lock):
+        raise FixtureFileError(f'Обновление fixture не завершено: {lock}')
+    recipe = base_dir / FIXTURE_RECIPE_FILE
+    if not os.path.lexists(recipe):
+        return None
+    entries = []
+    for path in (recipe, base_dir / 'fixture.1s', base_dir / 'reader.1s'):
+        try:
+            stat = path.stat()
+            entries.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+        except FileNotFoundError:
+            entries.append(None)
+        except OSError as error:
+            raise FixtureFileError(f'Не удалось проверить состояние fixture: {error}') from None
+    if os.path.lexists(lock):
+        raise FixtureFileError(f'Обновление fixture не завершено: {lock}')
+    return tuple(entries)
+
+
 def fixture_parameters(parameters, base_dir, version):
     """Read each explicit file once; keep its exact bytes for execution evidence."""
     effective, inputs = dict(parameters), []
+    has_files = 'fixture_setup_file' in parameters or 'fixture_verify_file' in parameters
+    before = _fixture_state(base_dir) if has_files else None
     for role in ('fixture_setup', 'fixture_verify'):
         key = role + '_file'
         if key not in parameters:
@@ -144,6 +171,8 @@ def fixture_parameters(parameters, base_dir, version):
         effective.pop(key)
         effective[role] = text.replace('\r\n', '\n').replace('\r', '\n')
         inputs.append(FixtureFile(role, path, raw))
+    if has_files and before != _fixture_state(base_dir):
+        raise FixtureFileError('Fixture изменился во время чтения; повторите запуск')
     return effective, tuple(inputs)
 
 

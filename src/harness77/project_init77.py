@@ -12,7 +12,8 @@ import tempfile
 import tomllib
 
 from .artifacts import _container, _destination, _input
-from .config77 import load_project, fixture_parameters, json_inputs, FILE_FIXTURE_SCHEMA_VERSION, JSON_FILE_SCHEMA_VERSION
+from .config77 import (FILE_FIXTURE_SCHEMA_VERSION, FIXTURE_RECIPE_FILE, JSON_FILE_SCHEMA_VERSION,
+                       fixture_parameters, json_inputs, load_project)
 from .deadlines77 import Deadlines
 from .ert_module import ErtError, decompress_module
 from .report77 import sha256_bytes
@@ -173,7 +174,7 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
                 raise ValueError('--fixture-kind требует тест с command = verify')
             recipe_bytes, recipe_path, evidence = read_recipe(fixture_kind, fixture_recipe)
             fixture_payloads.update(render(fixture_kind, recipe_bytes))
-            recipe_name = 'fixture-recipe.toml'
+            recipe_name = FIXTURE_RECIPE_FILE
             fixture_payloads[recipe_name] = recipe_bytes
             if recipe_path is not None:
                 inputs.append((recipe_path, recipe_bytes))

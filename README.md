@@ -2,6 +2,10 @@
 
 Инструментарий для воспроизводимой разработки и проверки кода **1С 7.7**.
 
+[Релиз 0.17.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.17.0)
+подключает TOML-рецепт к `project-init`. Оба проекта из скачанного wheel
+прошли нативный запуск без правки профилей. [Проверка выпуска](docs/tasks/113-release-0170-acceptance.md).
+
 [Релиз 0.16.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.16.0)
 добавляет `fixture-render`. Команда готовит fixture и reader из TOML для
 «Оказания услуг» и «Счёта-фактуры». Оба прикладных цикла проверены на скачанном

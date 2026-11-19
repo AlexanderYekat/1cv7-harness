@@ -13,7 +13,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="harness77", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("command", choices=("lint", "compiler-protocol", "extract", "build", "run", "catalog",
-                                            "form-extract", "triage", "visual", "mcp", "md-extract", "md-build", "suite", "doctor", "stand-init", "project-init", "fixture-render", "connect"))
+                                            "form-extract", "triage", "visual", "mcp", "md-extract", "md-build", "suite", "doctor", "stand-init", "project-init", "fixture-render", "fixture-refresh", "connect"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.command == "lint":
@@ -32,6 +32,8 @@ def main(argv=None):
         from .project_init77 import main as operation
     elif args.command == "fixture-render":
         from .fixture_render77 import main as operation
+    elif args.command == "fixture-refresh":
+        from .fixture_refresh77 import main as operation
     elif args.command == "connect":
         from .connect77 import main as operation
     elif args.command == "catalog":
