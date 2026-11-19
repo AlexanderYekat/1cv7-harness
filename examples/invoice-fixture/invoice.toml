@@ -1,0 +1,13 @@
+[fixture]
+date = 2026-08-01
+product = "Harness77 товар 100"
+customer = "Harness77 покупатель 100"
+contract = "Harness77 договор 100"
+department = "Harness77 отдел 100"
+comment = "Harness77 счет-фактура 100"
+rows = [{ quantity = 1, price = 50 }, { quantity = 1, price = 30 }]
+
+[reader]
+integers = {}
+totals = { amount = "Сумма", total = "Всего" }
+rows = { quantity = "Количество", price = "Цена", amount = "Сумма", total = "Всего", vat = "НДС" }

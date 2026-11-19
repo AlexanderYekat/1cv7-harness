@@ -1,5 +1,7 @@
 # Самостоятельный проект счёта-фактуры (100)
 
+Для прямого сценария доступен [TOML-рецепт fixture и reader из задачи 111](../invoice-fixture/README.md).
+
 ## Файловые steps/expected (103, wheel 0.10.0)
 
 Для опубликованного [0.10.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.10.0)
