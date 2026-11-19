@@ -12,6 +12,6 @@ def regression_source(original):
 
 
 if __name__ == '__main__':
-    run(example=HERE, project_id='services110', kind='ОказаниеУслуг', recipe='services.toml',
+    run(project_id='services110', kind='ОказаниеУслуг', recipe='services.toml',
         steps_file=HERE.parent / 'services-project/steps.json', expected_file=HERE / 'expected.json',
         mutate=regression_source, regression_value=('service_type', 2))

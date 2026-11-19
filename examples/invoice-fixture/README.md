@@ -1,11 +1,12 @@
 # Fixture и reader по TOML для «Счёта-фактуры»
 
-`invoice.toml` описывает дату, товар, покупателя, договор, подразделение,
-комментарий и строки документа. В секции `reader` перечислены итоговые поля
-и поля строк. `render.py` создаёт два обычных файла сценария 1С 7.7.
+[Образец invoice.toml](../../src/harness77/fixture_recipes/invoice.toml) описывает
+дату, товар, покупателя, договор, подразделение, комментарий и строки документа.
+В секции `reader` перечислены итоговые поля и поля строк. Команда `fixture-render`
+создаёт два обычных файла сценария 1С 7.7.
 
 ```powershell
-python -B examples/invoice-fixture/render.py --output .local/invoice111
+harness77 fixture-render --kind invoice --output .local/invoice111
 ```
 
 В профиле прямого сценария укажите созданные файлы в `fixture_setup_file`
@@ -21,14 +22,13 @@ fixture и читает сохранённые значения после за�
 
 `run.py` воспроизводит цикл нативной проверки. Передайте профиль рабочего
 прямого сценария счёта-фактуры и профиль стенда с `runtime = "forms"` и
-`copy_path`. Запустите из окружения с установленным harness77 0.15.0.
+`copy_path`. Запустите из окружения с установленным harness77 0.16.0.
 
 ```powershell
-$python111 = '.artifacts/s110-release/download/venv/Scripts/python.exe'
-$stand111 = '.artifacts/s104-release-native-project/stand.toml'
-& $python111 -I -B examples/invoice-fixture/run.py `
-  --project .artifacts/s111-invoice-project/project.toml --stand $stand111 `
-  --output .artifacts/s111-invoice-cycle
+$qualification = 'C:/MyProjects/h77-112-qualify'
+& "$qualification/venv/Scripts/python.exe" -I -B examples/invoice-fixture/run.py `
+  --project "$qualification/invoice-project/project.toml" --stand "$qualification/stand.toml" `
+  --recipe "$qualification/invoice.toml" --output .artifacts/s112-invoice-replay
 ```
 
 В проверке один и тот же `expected.json` используется на всех трёх фазах.

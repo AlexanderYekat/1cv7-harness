@@ -83,7 +83,8 @@ def verify(args):
         wheel, = dist.glob("*.whl")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            for resource in ("lint77-builtins.json", "lint77-globals.json", "catalog77.json", "project_headless77.1s"):
+            for resource in ("lint77-builtins.json", "lint77-globals.json", "catalog77.json", "project_headless77.1s",
+                             "fixture_recipes/services.toml", "fixture_recipes/invoice.toml"):
                 assert "harness77/" + resource in names, resource
                 assert archive.read('harness77/' + resource) == (ROOT / 'src/harness77' / resource).read_bytes()
             assert all(n.startswith("harness77/") or re.fullmatch(r'harness77-[^/]+\.dist-info/.*', n) for n in names)
@@ -116,6 +117,16 @@ def verify(args):
             "print(json.dumps({'python':sys.version,'module':harness77.__file__,'builtins':len(load_builtins())}))"], foreign)
         run("console-version", [console, "--version"], foreign)
         run("module-version", [python, "-m", "harness77", "--version"], foreign)
+        for kind in ('services', 'invoice'):
+            result = run('console-fixture-' + kind, [console, 'fixture-render', '--kind', kind,
+                         '--output', kind, '--format', 'json'], foreign)
+            generated = json.loads(result.stdout)
+            assert generated['status'] == 'created' and not generated['platform_checked']
+            assert generated['recipe']['source'] == 'bundled'
+            assert set(generated['files']) == {'fixture.1s', 'reader.1s'}
+            for row in generated['files'].values():
+                content = Path(row['path']).read_bytes()
+                assert len(content) == row['size_bytes'] and hashlib.sha256(content).hexdigest() == row['sha256']
         cases = evidence / "cases"
         shutil.copytree(source / "tests", cases)
         result = run("installed-tests", [python, "-B", "-m", "unittest", "discover", "-s", cases, "-v"], foreign)

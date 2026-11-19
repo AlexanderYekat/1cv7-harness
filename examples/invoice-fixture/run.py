@@ -14,6 +14,6 @@ def regression_source(original):
 
 if __name__ == '__main__':
     invoice = HERE.parent / 'invoice-project'
-    run(example=HERE, project_id='invoice111', kind='СчетФактура', recipe='invoice.toml',
+    run(project_id='invoice111', kind='СчетФактура', recipe='invoice.toml',
         steps_file=invoice / 'direct-steps.json', expected_file=invoice / 'expected.json',
         mutate=regression_source, regression_value=('comment_ok', 0))

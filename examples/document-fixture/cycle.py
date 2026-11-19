@@ -1,6 +1,7 @@
 """Qualify both document examples against a single persisted field regression."""
 import argparse
 import difflib
+from importlib.resources import files
 import json
 import os
 from pathlib import Path
@@ -72,11 +73,11 @@ def audit(folder, phase, expected, inputs, names, regression_value):
                 ui_steps=len(steps))
 
 
-def run(*, example, project_id, kind, recipe, steps_file, expected_file, mutate, regression_value):
+def run(*, project_id, kind, recipe, steps_file, expected_file, mutate, regression_value):
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('project', 'stand', 'output'):
         parser.add_argument('--' + key, type=Path, required=True)
-    parser.add_argument('--recipe', type=Path, default=example / recipe)
+    parser.add_argument('--recipe', type=Path)
     args = parser.parse_args()
     project, stand, out = args.project.resolve(), args.stand.resolve(), args.output.resolve()
     stand_settings = tomllib.loads(stand.read_text(encoding='utf-8-sig'))['stand']
@@ -114,10 +115,18 @@ def run(*, example, project_id, kind, recipe, steps_file, expected_file, mutate,
     record = dict(status='running', before=before, python=sys.executable, runtime=inspect_runtime('forms'), runs=[])
     try:
         sources = out / 'inputs'
-        execute('render', [example / 'render.py', '--recipe', args.recipe.resolve(), '--output', sources])
-        for name, source in {recipe: args.recipe, 'expected.json': expected_file, 'steps.json': steps_file}.items():
+        recipe_input = (args.recipe if args.recipe is not None else
+                        files('harness77').joinpath('fixture_recipes', recipe))
+        render_args = ['-m', 'harness77', 'fixture-render', '--kind', Path(recipe).stem,
+                       '--output', sources, '--format', 'json']
+        if args.recipe is not None:
+            render_args.extend(['--recipe', args.recipe.resolve()])
+        rendered = json.loads(execute('render', render_args))
+        for name, source in {recipe: recipe_input, 'expected.json': expected_file, 'steps.json': steps_file}.items():
             (sources / name).write_bytes(source.read_bytes())
         inputs = {path.name: digest(path) for path in sources.iterdir()}
+        assert rendered['recipe']['sha256'] == inputs[recipe]
+        assert all(rendered['files'][name]['sha256'] == inputs[name] for name in ('fixture.1s', 'reader.1s'))
         record['inputs'] = inputs
         expected = read(sources / 'expected.json')
         field, wrong_value = regression_value

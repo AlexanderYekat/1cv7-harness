@@ -424,6 +424,10 @@ load_project; семантику UI/fixture и работу платформы �
 При headless эти два аргумента запрещены; прежний вызов без runtime сохраняется.
 [Команда и проверка из wheel](tasks/098-forms-project-init.md).
 
+`fixture-render` подготавливает `fixture.1s` и `reader.1s` по TOML для
+рассмотренных рецептов `services` и `invoice`. Результат подключается через
+существующие файловые поля профиля. [Контракт команды](tasks/112-fixture-render.md).
+
 ## Полный цикл — команда `run`
 
 ```text

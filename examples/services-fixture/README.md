@@ -1,6 +1,6 @@
 # Fixture и reader по описанию для «Оказания услуг»
 
-В `services.toml` задаются дата, имена связанных записей, комментарий,
+В [образце services.toml](../../src/harness77/fixture_recipes/services.toml) задаются дата, имена связанных записей, комментарий,
 тип услуги и строки документа. Там же перечислены числовые реквизиты шапки,
 итоги и поля строк для чтения. Имена реквизитов берутся из конфигурации 1С.
 Поля `integers` читаются как целые числа JSON. `totals` и `rows` сохраняют
@@ -10,7 +10,7 @@
 переиспользуется в [TOML-рецепте «Счёт-фактура»](../invoice-fixture/README.md).
 
 ```powershell
-python -B examples/services-fixture/render.py --output .local/services110
+harness77 fixture-render --kind services --output .local/services110
 ```
 
 Команда создаёт в новом каталоге `fixture.1s` и `reader.1s`. Подключите их в
@@ -23,14 +23,13 @@ python -B examples/services-fixture/render.py --output .local/services110
 `run.py` воспроизводит проверку задачи на квалифицированном Windows / 1С
 7.70.027 / DBF-стенде. Передайте профиль работающего примера 104 и его stand
 с `runtime = "forms"` и `copy_path`. Используйте Python с установленным
-`harness77` 0.15.0. Пример для локальных артефактов квалификации:
+`harness77` 0.16.0. Пример для локальных артефактов квалификации:
 
 ```powershell
-$python110 = '.artifacts/s110-release/download/venv/Scripts/python.exe'
-$services110 = '.artifacts/s104-release-native-project'
-& $python110 -I -B examples/services-fixture/run.py `
-  --project "$services110/project.toml" --stand "$services110/stand.toml" `
-  --output .artifacts/s110-services-cycle
+$qualification = 'C:/MyProjects/h77-112-qualify'
+& "$qualification/venv/Scripts/python.exe" -I -B examples/services-fixture/run.py `
+  --project "$qualification/services-project/project.toml" --stand "$qualification/stand.toml" `
+  --output .artifacts/s112-services-replay
 ```
 
 В цикле `baseline → regression → fixed` меняется только модуль формы в
