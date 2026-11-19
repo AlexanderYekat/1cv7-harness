@@ -15,7 +15,8 @@ from .ert_module import ErtError
 from .project_init77 import _rename_new, _write
 from .report77 import sha256_bytes
 
-KINDS = ('services', 'invoice')
+DOCUMENTS = {'services': 'ОказаниеУслуг', 'invoice': 'СчетФактура'}
+KINDS = tuple(DOCUMENTS)
 PREFIX = '.harness77-fixture-'
 
 
@@ -209,19 +210,24 @@ def render(kind, recipe):
     return {'fixture.1s': setup.encode('utf-8'), 'reader.1s': reader.encode('utf-8')}
 
 
-def render_to_directory(*, kind, output, recipe=None):
+def read_recipe(kind, recipe=None):
+    """Load a recipe, returning its bytes, input path (if external) and evidence."""
     if kind not in KINDS:
         raise ValueError('kind: expected services or invoice')
-    destination = _destination(output)
     if recipe is None:
         name = kind + '.toml'
         source = {'source': 'bundled', 'name': name}
         raw = files('harness77').joinpath('fixture_recipes', name).read_bytes()
-        inputs = []
+        path = None
     else:
         path, raw = _input(recipe)
         source = {'source': 'file', 'path': str(path)}
-        inputs = [(path, raw)]
+    return raw, path, {**source, 'sha256': sha256_bytes(raw), 'size_bytes': len(raw)}
+
+
+def render_to_directory(*, kind, output, recipe=None):
+    destination = _destination(output)
+    raw, path, source = read_recipe(kind, recipe)
     bodies = render(kind, raw)
     stage = Path(tempfile.mkdtemp(prefix=PREFIX, dir=destination.parent))
     published = False
@@ -230,7 +236,8 @@ def render_to_directory(*, kind, output, recipe=None):
             _write(stage / name, payload)
             if (stage / name).read_bytes() != payload:
                 raise OSError('Generated file differs after readback: ' + name)
-        _unchanged(inputs)
+        if path is not None:
+            _unchanged([(path, raw)])
         _rename_new(stage, destination)
         published = True
     finally:
@@ -241,7 +248,7 @@ def render_to_directory(*, kind, output, recipe=None):
                 stage.rmdir()
     return {'status': 'created', 'exit_code': 0, 'platform_checked': False, 'launch_performed': False,
             'kind': kind, 'directory': str(destination),
-            'recipe': {**source, 'sha256': sha256_bytes(raw), 'size_bytes': len(raw)},
+            'recipe': source,
             'files': {name: {'path': str(destination / name), 'sha256': sha256_bytes(payload),
                              'size_bytes': len(payload)} for name, payload in bodies.items()},
             'reason': None}

@@ -2,6 +2,11 @@
 
 Инструментарий для воспроизводимой разработки и проверки кода **1С 7.7**.
 
+[Релиз 0.16.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.16.0)
+добавляет `fixture-render`. Команда готовит fixture и reader из TOML для
+«Оказания услуг» и «Счёта-фактуры». Оба прикладных цикла проверены на скачанном
+wheel. [Проверка выпуска](docs/tasks/112-release-0160-acceptance.md).
+
 [Релиз 0.15.0](https://github.com/AlexanderYekat/1cv7-harness/releases/tag/v0.15.0)
 включает задачи 108 и 109. Скачанный wheel прошёл проверку `check_combo`
 и восстановления после блокировки `startup.json` через run, CLI suite и MCP.

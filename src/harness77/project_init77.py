@@ -108,7 +108,7 @@ def _cleanup(stage, parent, names=NAMES):
 
 def initialize(*, directory, project_id, template, open_timeout_s, calculation_timeout_s,
                cancel_timeout_s, shutdown_timeout_s, total_timeout_s, runtime='headless',
-               source=None, scenario=None):
+               source=None, scenario=None, fixture_kind=None, fixture_recipe=None):
     destination = _destination(directory)
     if runtime not in ('headless', 'forms'):
         raise ValueError('runtime: допустимы headless и forms')
@@ -116,6 +116,10 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
         raise ValueError('forms требует --source и --scenario')
     if runtime == 'headless' and (source is not None or scenario is not None):
         raise ValueError('--source и --scenario допустимы только с --runtime forms')
+    if fixture_kind is None and fixture_recipe is not None:
+        raise ValueError('--fixture-recipe требует --fixture-kind')
+    if fixture_kind is not None and runtime != 'forms':
+        raise ValueError('--fixture-kind допустим только с --runtime forms')
     if not isinstance(project_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', project_id) or project_id.endswith('.'):
         raise ValueError('id: нужны 1–64 ASCII-буквы/цифры, точка, дефис или подчёркивание; начало — буква/цифра')
     reserved = {'CON', 'PRN', 'AUX', 'NUL', *('COM' + str(i) for i in range(1, 10)), *('LPT' + str(i) for i in range(1, 10))}
@@ -132,6 +136,7 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
     platform = {'tests': [{'name': 'control-42', 'command': 'execute', 'expect': 'passed', 'expect_value': '42'}]}
     profile_version = 1 if runtime == 'headless' else 2
     fixture_payloads = {}
+    recipe_evidence = None
     if runtime == 'forms':
         source_path, source_bytes = _input(source)
         scenario_path, scenario_bytes = _input(scenario)
@@ -148,7 +153,34 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
                 inputs.append((item.path, item.content))
                 target = platform['parameters'] if item.test_index is None else platform['tests'][item.test_index]
                 target[item.role + '_file'] = name
-        if any(key in platform['parameters'] for key in ('fixture_setup_file', 'fixture_verify_file')):
+        parameters = platform['parameters']
+        if fixture_kind is not None:
+            # The renderer uses this module's atomic directory helpers for its CLI.
+            from .fixture_render77 import DOCUMENTS, KINDS, read_recipe, render
+
+            if fixture_kind not in KINDS:
+                raise ValueError('--fixture-kind: допустимы services и invoice')
+            if any(key in parameters for key in ('fixture_setup', 'fixture_verify',
+                                                'fixture_setup_file', 'fixture_verify_file')):
+                raise ValueError('--fixture-kind нельзя сочетать с fixture_setup или fixture_verify в сценарии')
+            form = parameters.get('form_object')
+            expected_form = 'Документ.' + DOCUMENTS[fixture_kind]
+            if not isinstance(form, str) or form.casefold() != expected_form.casefold():
+                raise ValueError('--fixture-kind требует form_object = ' + expected_form)
+            if parameters.get('fixture_mode', 'existing') != 'existing':
+                raise ValueError('--fixture-kind требует fixture_mode = existing')
+            if not any(test['command'] == 'verify' for test in platform['tests']):
+                raise ValueError('--fixture-kind требует тест с command = verify')
+            recipe_bytes, recipe_path, evidence = read_recipe(fixture_kind, fixture_recipe)
+            fixture_payloads.update(render(fixture_kind, recipe_bytes))
+            recipe_name = 'fixture-recipe.toml'
+            fixture_payloads[recipe_name] = recipe_bytes
+            if recipe_path is not None:
+                inputs.append((recipe_path, recipe_bytes))
+            recipe_evidence = {'kind': fixture_kind, **evidence, 'file': recipe_name}
+            parameters.update(fixture_mode='existing', fixture_setup_file='fixture.1s', fixture_verify_file='reader.1s')
+            profile_version = max(profile_version, FILE_FIXTURE_SCHEMA_VERSION)
+        elif any(key in parameters for key in ('fixture_setup_file', 'fixture_verify_file')):
             profile_version = max(profile_version, FILE_FIXTURE_SCHEMA_VERSION)
             _, referenced = fixture_parameters(platform['parameters'], scenario_path.parent, profile_version)
             for item in referenced:
@@ -194,15 +226,20 @@ def initialize(*, directory, project_id, template, open_timeout_s, calculation_t
     finally:
         if not published:
             _cleanup(stage, destination.parent, tuple(payloads))
-    return {'status': 'created', 'exit_code': 0, 'platform_checked': False, 'launch_performed': False,
+    report = {'status': 'created', 'exit_code': 0, 'platform_checked': False, 'launch_performed': False,
             'directory': str(destination), 'project': str(destination / 'project.toml'), 'runtime': runtime,
             'inputs': [{'path': str(path), 'sha256': sha256_bytes(data), 'size_bytes': len(data)} for path, data in inputs],
             'files': {name: {'sha256': sha256_bytes(data), 'size_bytes': len(data)} for name, data in payloads.items()},
             'directories': ['configuration'], 'template': {'path': str(original), 'sha256': sha256_bytes(raw)},
             'reason': None}
+    if recipe_evidence is not None:
+        report['fixture_recipe'] = recipe_evidence
+    return report
 
 
 def main(argv=None):
+    from .fixture_render77 import KINDS
+
     parser = argparse.ArgumentParser(prog='harness77 project-init', allow_abbrev=False, description=__doc__)
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--id', dest='project_id', required=True)
@@ -210,6 +247,8 @@ def main(argv=None):
     parser.add_argument('--runtime', choices=('headless', 'forms'), default='headless')
     parser.add_argument('--source', type=Path, help='UTF-8 модуль прикладного forms-проекта')
     parser.add_argument('--scenario', type=Path, help='UTF-8 JSON с parameters и tests для forms')
+    parser.add_argument('--fixture-kind', choices=KINDS, help='создать fixture и reader для forms')
+    parser.add_argument('--fixture-recipe', type=Path, help='UTF-8 TOML, по умолчанию образец из пакета')
     for phase in ('open', 'calculation', 'cancel', 'shutdown', 'total'):
         parser.add_argument('--' + phase + '-timeout-s', type=float, required=True)
     parser.add_argument('--format', choices=('text', 'json'), default='text')

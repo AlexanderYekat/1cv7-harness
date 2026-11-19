@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 from harness77 import artifacts, cli, ert_module as ert, project_init77 as init
 from harness77.config77 import load_project
+from harness77.fixture_render77 import read_recipe, render
 from test_ert_dialog import make_ert, DIALOG
 
 LIMITS = dict(open_timeout_s=10, calculation_timeout_s=20, cancel_timeout_s=3,
@@ -37,6 +38,85 @@ class ProjectInitTests(unittest.TestCase):
     def unpublished(self):
         self.assertFalse(self.output.exists())
         self.assertFalse(list(self.root.glob(init.PREFIX + '*')))
+
+    def recipe_scenario(self, kind='services', **changes):
+        source = self.root / 'source.1s'
+        source.write_text('Процедура ПриОткрытии()\nКонецПроцедуры\n', encoding='utf-8')
+        scenario = self.root / 'scenario.json'
+        document = {'services': 'ОказаниеУслуг', 'invoice': 'СчетФактура'}[kind]
+        parameters = {'form_object': 'Документ.' + document, 'steps_file': 'steps-input.json'}
+        parameters.update(changes)
+        (self.root / 'steps-input.json').write_text('[{"rows":2}]', encoding='utf-8')
+        (self.root / 'expected-input.json').write_text('{"posted":0}', encoding='utf-8')
+        scenario.write_text(json.dumps({'parameters': parameters, 'tests': [
+            {'name': 'saved', 'command': 'verify', 'expect': 'passed',
+             'expect_json_file': 'expected-input.json'}
+        ]}, ensure_ascii=False), encoding='utf-8')
+        return dict(runtime='forms', source=source, scenario=scenario, fixture_kind=kind)
+
+    def test_fixture_kind_creates_a_profile_ready_to_read_both_generated_files(self):
+        report = self.call(**self.recipe_scenario())
+        self.assertEqual(report['fixture_recipe']['source'], 'bundled')
+        self.assertFalse(report['launch_performed'])
+        expected, _, evidence = read_recipe('services')
+        self.assertEqual(report['fixture_recipe']['sha256'], evidence['sha256'])
+        self.assertEqual((self.output / 'fixture-recipe.toml').read_bytes(), expected)
+        project = load_project(self.output / 'project.toml')
+        self.assertEqual({p.role for p in project.fixture_files}, {'fixture_setup', 'fixture_verify'})
+        self.assertEqual(project.commands(), ['verify'])
+        self.assertEqual((self.output / 'expected.json').read_text('utf-8'), '{"posted":0}')
+        self.assertEqual((self.output / 'steps.json').read_text('utf-8'), '[{"rows":2}]')
+        for name, want in render('services', expected).items():
+            self.assertEqual((self.output / name).read_bytes(), want)
+
+    def test_custom_recipe_is_copied_and_the_project_survives_source_removal(self):
+        raw, _, _ = read_recipe('invoice')
+        raw = raw.replace('Harness77 товар 100'.encode(), 'Мой товар'.encode())
+        recipe = self.root / 'рецепт счёта-фактуры.toml'
+        recipe.write_bytes(raw)
+        options = self.recipe_scenario('invoice')
+        report = self.call(**options, fixture_recipe=recipe)
+        self.assertEqual(report['fixture_recipe']['source'], 'file')
+        self.assertEqual(report['fixture_recipe']['path'], str(recipe))
+        self.assertEqual((self.output / 'fixture-recipe.toml').read_bytes(), raw)
+        recipe.unlink()
+        options['scenario'].unlink()
+        loaded = load_project(self.output / 'project.toml')
+        self.assertEqual(len(loaded.fixture_files), 2)
+        for name in ('fixture.1s', 'reader.1s'):
+            self.assertIn('Мой товар', (self.output / name).read_text('utf-8'))
+
+    def test_recipe_conflicts_and_wrong_form_fail_before_project_publication(self):
+        for changes, complaint in [({'fixture_verify': 'existing reader'}, 'fixture_verify'),
+                                   ({'fixture_setup_file': 'mine.1s'}, 'fixture_setup'),
+                                   ({'form_object': 'Документ.СчетФактура'}, 'form_object'),
+                                   ({'fixture_mode': 'journal'}, 'fixture_mode')]:
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(ValueError, complaint):
+                    self.call(**self.recipe_scenario(**changes))
+                self.unpublished()
+        with self.assertRaisesRegex(ValueError, 'runtime forms'):
+            self.call(fixture_kind='services')
+        with self.assertRaisesRegex(ValueError, 'требует --fixture-kind'):
+            self.call(fixture_recipe=self.root / 'unused')
+        self.unpublished()
+
+    def test_invalid_recipe_or_scenario_without_verify_leaves_no_output(self):
+        options = self.recipe_scenario()
+        recipe = self.root / 'wrong.toml'
+        raw, _, _ = read_recipe('invoice')
+        recipe.write_bytes(raw)
+        with self.assertRaisesRegex(ValueError, 'fixture'):
+            self.call(**options, fixture_recipe=recipe)
+        self.assertEqual(recipe.read_bytes(), raw)
+        self.unpublished()
+        scenario = options['scenario']
+        content = json.loads(scenario.read_text('utf-8'))
+        content['tests'][0]['command'] = 'open'
+        scenario.write_text(json.dumps(content, ensure_ascii=False), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'command = verify'):
+            self.call(**options)
+        self.unpublished()
 
     def test_complete_project_round_trip_and_build_without_touching_template(self):
         before = (self.template.stat().st_mtime_ns, self.template.read_bytes())
